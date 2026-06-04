@@ -4,7 +4,19 @@
 // are missing — it must never break or slow a session in a non-roadmap repo.
 
 import { readFileSync, existsSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { join, dirname, resolve } from "node:path";
+
+// Merged PRs via gh, for reconcile detection. Guarded + short-timeout: if gh is missing, unauthed,
+// or slow, return [] so the hook stays fast and silent. Never throws.
+function mergedPrs(root) {
+  try {
+    const r = spawnSync("gh", ["pr", "list", "--state", "merged", "--limit", "100", "--json", "number,headRefName"],
+      { cwd: root, encoding: "utf8", timeout: 5000 });
+    if (r.status !== 0 || !r.stdout) return [];
+    return JSON.parse(r.stdout);
+  } catch { return []; }
+}
 
 function emit(ctx) {
   if (ctx) process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: ctx } }));
@@ -33,10 +45,20 @@ try {
   const { waves, held } = graph.computeWaves(model, cap);
   const ready = (waves[0] || []).map((n) => n.invoke);
   const onHuman = held.onHuman.map((n) => n.invoke);
-  if (!ready.length && !onHuman.length) emit("");
+
+  // Reconcile detection: slices whose fanout branch has a merged PR but are still open.
+  // Deterministic detection here; the agent does the judgment + the status flip (agentic sync).
+  let nudge = "";
+  try {
+    const sync = await import(new URL("../scripts/lib/sync-core.mjs", import.meta.url));
+    nudge = sync.reconcileNudge(sync.findUnrecordedMerges(g, mergedPrs(root)));
+  } catch { /* gh or sync-core unavailable — skip the nudge */ }
+
+  if (!ready.length && !onHuman.length && !nudge) emit("");
 
   let ctx = `slice-roadmap (${(g.pis || []).length} PIs): ready now (cap ${cap}) — ${ready.join(", ") || "none"}.`;
   if (onHuman.length) ctx += ` Held on a human: ${onHuman.join(", ")}.`;
+  if (nudge) ctx += ` ⟳ ${nudge}`;
   ctx += ` Use /slice <name> to orient, /slice-fanout to launch a wave, or 'roadmap plan' for the full wave map.`;
   emit(ctx);
 } catch {

@@ -14,6 +14,7 @@ import { launchDecision } from "../lib/fanout-core.mjs";
 import { terminalChoices, moveSelection, parseCap, buildFanArgs, autoOutName } from "../lib/wizard-core.mjs";
 import { TOOLS, addSprint, setStatus, setFields, prune, validateDocOrThrow, readValidate } from "../lib/mcp-core.mjs";
 import { diffPrStates, matchesRoadmapBranches, checksOf } from "../lib/pr-watch-core.mjs";
+import { findUnrecordedMerges, reconcileNudge } from "../lib/sync-core.mjs";
 import { parseDocument } from "yaml";
 import { join, resolve } from "node:path";
 
@@ -599,6 +600,24 @@ test("matchesRoadmapBranches keeps roadmap fanout branches and drops the rest", 
   const g = { meta: {}, pis: [{ id: "auth", title: "A", status: "active", sprints: [sp("s1", { invoke: "auth-login" })] }] };
   ok(matchesRoadmapBranches("auth/s1", g), "a roadmap branch matches");
   ok(!matchesRoadmapBranches("dependabot/npm/x", g), "an unrelated branch is dropped");
+});
+
+// ── reconcile detection (the agentic-sync trigger) ──────────────────────────
+// WHY: a merged PR that isn't recorded leaves the roadmap stale (a slice shows open after it
+// shipped). Detection must flag exactly the open slices whose branch merged, never re-flag a
+// done slice (churn) or one without a merged PR (false positive that erodes trust in the nudge).
+test("findUnrecordedMerges flags only open slices whose fanout branch merged", () => {
+  const g = { meta: {}, pis: [{ id: "auth", title: "A", status: "active", sprints: [
+    sp("s1", { status: "complete", invoke: "auth-login" }),
+    sp("s2", { status: "active", invoke: "auth-sessions" }),
+    sp("s3", { status: "active", invoke: "auth-logout" }),
+  ]}]};
+  const merged = [{ number: 42, headRefName: "auth/s2" }, { number: 7, headRefName: "auth/s1" }];
+  const found = findUnrecordedMerges(g, merged);
+  eq(found.map((u) => u.invoke), ["auth-sessions"], "only the open + merged slice (s1 done, s3 no PR)");
+  eq(found[0].pr, 42, "carries the PR number");
+  ok(reconcileNudge(found).includes("auth-sessions") && /set_status|slice-sync/.test(reconcileNudge(found)), "nudge names the slice + the action");
+  eq(reconcileNudge([]), "", "silent when nothing is unrecorded");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

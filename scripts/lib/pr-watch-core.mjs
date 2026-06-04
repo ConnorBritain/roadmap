@@ -30,7 +30,7 @@ export function prPhase(pr) {
 }
 
 const PHASE_MSG = {
-  merged: "merged",
+  merged: "merged — reconcile the roadmap (/slice-sync or the set_status tool)",
   closed: "closed without merging",
   draft: "opened as a draft",
   conflicts: "has merge conflicts",
