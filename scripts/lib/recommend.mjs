@@ -33,7 +33,7 @@ const BUILTIN_PATTERNS = {
   medium: [
     /dotnet build/, /\bcargo (build|check|clippy)\b/, /\bgo build\b/, /gradlew?\b[^\n]*\bbuild\b/,
     /\bmvn\b[^\n]*\b(compile|package)\b/, /\btsc\b/, /\bvitest\b/, /\beslint\b/, /\bruff\b/, /\bmypy\b/,
-    /(npm|yarn|pnpm)\s+(run\s+)?build\b/, /\bmake\b/, /\bbundle\b/, /\bwebpack\b/, /\bvite build\b/,
+    /(npm|yarn|pnpm)\s+(run\s+)?build\b/, /\bmake\b/, /\bcmake\b/, /\bbundle\b/, /\bwebpack\b/, /\bvite build\b/,
   ],
 };
 

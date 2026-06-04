@@ -269,6 +269,19 @@ test("nodeWeight recognizes non-.NET runners (cargo/pytest/go)", () => {
   eq(nodeWeight(m.nodes[3], g), "heavy", "vitest run (a full test-suite run) → heavy");
 });
 
+// WHY: the popular stacks (Java via Maven, C/C++ via CMake) must size correctly out of
+// the box; a 'mvn verify' mis-read as light over-subscribes RAM, and a 'cmake --build'
+// dismissed as free under-uses the machine. (Guards the classifier's breadth claim.)
+test("nodeWeight sizes Maven (heavy) and CMake (medium) runners", () => {
+  const g = { meta: {}, pis: [{ id: "j", title: "J", status: "active", sprints: [
+    sp("a", { gate: "mvn verify", touches: ["src/Main.java"] }),
+    sp("b", { gate: "cmake --build build", touches: ["src/main.cpp"] }),
+  ]}]};
+  const m = flatten(g);
+  eq(nodeWeight(m.nodes[0], g), "heavy", "mvn verify → heavy");
+  eq(nodeWeight(m.nodes[1], g), "medium", "cmake --build → medium");
+});
+
 // WHY: a repo with a bespoke runner must be able to teach the classifier without
 // forking the plugin — otherwise "portable" is a lie for anyone off the beaten path.
 test("meta.weight_patterns extends the classifier", () => {
