@@ -68,6 +68,8 @@ Run from anywhere inside a repo. `docs/roadmap/roadmap.yaml` is found by walking
 | `roadmap validate` | Structural, dependency, and cycle checks. Non-zero exit on error. |
 | `roadmap fan [-t wt\|warp\|tmux\|print\|background] [-c N] [-w N] [--lead-claude] [-d] [-o file] [--worker-mode <m>] [--autonomous --yes-spawn-autonomous]` | Launch a wave: a lead pane/tab plus one per slice, each in its own worktree with a synthesized kickoff brief. **Launches by default**; `-d/--dry` or `-o/--out` to preview. Worker **and** lead sessions take `--permission-mode` from `meta.worker_mode` (falls back to `plan`); `--worker-mode` overrides per run. Terminal defaults per platform (win32 to `wt`, else `tmux`). |
 | `roadmap cleanup [-r] [-f]` | Prune fanout worktrees merged into the base branch and clean. **Dry by default**; `-r/--remove` acts; `-f/--force` includes unmerged/dirty. Only touches worktrees under the worktree root. |
+| `roadmap mcp` | Run the MCP server (stdio JSON-RPC) directly, for debugging or non-plugin registration. The plugin starts it for you. |
+| `roadmap watch` | Watch this roadmap's fanout PRs and print a line as each becomes ready / conflicts / merges. The plugin runs it as a monitor; this is the manual pane version. |
 | `roadmap sync` / `roadmap init` | Reserved on the CLI. Reconcile and bootstrap live as the `/slice-sync` and `/slice-init` **plugin skills** (surface 2). |
 
 Short flags (`-w -c -t -d -o -j -r -f -lc -wm`) expand to their long forms; positional slice keys pass through untouched.
@@ -113,10 +115,12 @@ The CLI and the plugin share the same scripts: the CLI is your *shell* entry, th
 
 ### 3 · MCP (agent-callable)
 
-Two ways `roadmap` meets MCP:
+The plugin ships its own MCP server (`.mcp.json`, auto-started on install), so an agent drives the roadmap with typed tools instead of shelling out and parsing text:
 
-- **Launched sessions inherit your MCP servers.** Each fanout worker (and the lead) is a normal Claude Code session, so it can drive whatever MCP servers your repo or session already has wired (issue trackers, databases, browsers) while it works its slice. Bring your own; `roadmap` doesn't get in the way.
-- **Roadmap-as-tools** *(planned, not shipped).* Exposing the read-only queries (`ready_wave`, `recommend_cap`, `plan`) over MCP via `.mcp.json`, so an agent can ask the roadmap what's runnable instead of shelling out to the CLI.
+- **Read:** `plan`, `ready_wave`, `show`, `validate` return structured JSON.
+- **Mutate:** `add_pi`, `add_sprint`, `set_status`, `set_fields`, `prune` edit `roadmap.yaml` through the YAML Document API (comments preserved), refuse any edit that would corrupt the graph (duplicate invoke key, unresolved dependency, cycle), and re-render `SLICES.md` in the same step. Seed and scaffold a roadmap, flip a slice to complete with its PR, or prune finished work, all schema-safe and atomic.
+
+Mutators are natural `ask`-list entries in a consuming repo's `.claude/settings.json` (reads can be `allow`-listed). Separately, launched fanout sessions inherit whatever other MCP servers your repo already has wired, so a worker can drive your issue tracker or database while it works its slice.
 
 ---
 
@@ -213,11 +217,11 @@ Don't commit a device-specific alias into a repo. Point contributors at this too
 - **Scheduler** (`scheduler.mjs`): recommended-cap eval (CPU / RAM / independent-work / review ceiling, reporting which binds) plus the waves.
 - **Fanout** (`fanout.mjs`): `tmux`, `wt`, `warp`, `print`, `background` adapters; per-slice worktree plus synthesized kickoff brief; the interactive console (`wizard.mjs`); guarded launch (`--dry`/`--out` preview, autonomous double-ack); `cleanup.mjs` worktree pruning.
 - **Plugin surface**: four skills (`slice`, `slice-sync`, `slice-init`, `slice-fanout`), four agents, and a `SessionStart` hook.
-- **Tests**: `npm test` runs the zero-dependency suite over the pure brain (graph, recommender, brief, CLI core, wizard core).
+- **MCP server** (`mcp.mjs` + `lib/mcp-core.mjs`): a bundled, hand-rolled JSON-RPC stdio server with read tools (plan / ready_wave / show / validate) and comment-preserving, schema-validated mutate tools (add_pi / add_sprint / set_status / set_fields / prune) that re-render `SLICES.md` on every edit.
+- **PR-watch monitor** (`watch-prs.mjs` + `lib/pr-watch-core.mjs` + `monitors/monitors.json`): polls `gh` for the fanout branches and notifies the lead on each PR phase transition.
+- **Tests**: `npm test` runs the zero-dependency suite over the pure brain (graph, recommender, brief, plan, render, validate, CLI core, wizard core, MCP core, PR-watch core).
 
 The resource classifier matches build/test runner commands, not languages. It ships patterns for the common runners (`npm`/`yarn`/`pnpm`, `jest`, `vitest`, `tsc`, `pytest`, `tox`, Maven, Gradle, `make`, CMake/CTest, `go`, `cargo`, and more), ordered by how common they are, and `meta.weight_patterns` teaches it any bespoke runner.
-
-Planned: roadmap-as-MCP-tools (`.mcp.json`) and a background PR-watch monitor for the lead.
 
 ## Requirements & license
 
