@@ -1,0 +1,23 @@
+{
+  "name": "slice-roadmap",
+  "version": "0.1.0",
+  "description": "Hierarchical roadmap graph + multi-session fanout for Claude Code. YAML canonical, SLICES.md generated.",
+  "type": "module",
+  "private": true,
+  "author": "Connor England",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/ConnorBritain/roadmap.git" },
+  "homepage": "https://github.com/ConnorBritain/roadmap#readme",
+  "engines": { "node": ">=18" },
+  "bin": {
+    "roadmap": "scripts/cli.mjs"
+  },
+  "scripts": {
+    "validate": "node scripts/validate.mjs",
+    "render": "node scripts/render.mjs",
+    "test": "node scripts/test/run.mjs"
+  },
+  "dependencies": {
+    "yaml": "^2.5.0"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "name": "slice-roadmap",
+  "description": "Hierarchical roadmap graph (PIs → sprints, deps, session estimates) + deterministic multi-session fanout. YAML is the source of truth; SLICES.md is generated. Orient with /slice, refresh with /slice-sync, bootstrap with /slice-init, fan out concurrent sessions with /slice-fanout.",
+  "version": "0.1.0",
+  "author": { "name": "Connor England" },
+  "homepage": "https://github.com/ConnorBritain/roadmap",
+  "license": "MIT"
+}

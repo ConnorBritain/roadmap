@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ConnorBritain/roadmap/schema/roadmap.schema.json",
+  "title": "slice-roadmap roadmap.yaml",
+  "description": "Canonical roadmap graph: PIs containing sprints, with dependency edges, file-ownership for two-wave detection, session estimates, gates, and per-sprint kickoff briefs. SLICES.md is generated from this file; do not edit the generated markdown.",
+  "type": "object",
+  "required": ["meta", "pis"],
+  "additionalProperties": false,
+  "properties": {
+    "meta": {
+      "type": "object",
+      "required": ["schema_version", "program"],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": { "const": 1 },
+        "program": { "type": "string", "description": "Active program label, e.g. Q3-PLATFORM" },
+        "north_star": { "type": "string", "description": "Path to the strategy / vision source of truth" },
+        "updated": { "type": "string", "description": "ISO date of last hand-edit" },
+        "default_gate": { "type": "string", "description": "Verification gate inherited by sprints whose gate is 'default' or interpolates {{default}}" },
+        "branch_convention": { "type": "string", "default": "{pi}/{sprint}" },
+        "worktree_root": { "type": "string", "description": "Parent dir for per-sprint worktrees; use a WSL/Linux-fs path, NOT a OneDrive-synced checkout" },
+        "terminal": { "enum": ["warp", "wt", "tmux", "iterm", "background", "print"], "default": "print", "description": "Default terminal adapter for /slice-fanout launches" },
+        "default_concurrency": { "type": "integer", "minimum": 1, "default": 3 },
+        "worker_mode": { "enum": ["plan", "auto", "acceptEdits", "bypassPermissions"], "default": "plan", "description": "Default --permission-mode for launched worker + lead sessions; --worker-mode overrides. 'auto' = auto-approve tool/bash/MCP with safety checks (NOT a bypass); 'plan' = read-only research that gates edits behind plan approval." },
+        "completed_window_days": { "type": "integer", "minimum": 1, "default": 14, "description": "How recently a sprint must have completed to appear in the Recently-completed table" },
+        "base_branch": { "type": "string", "default": "main", "description": "Branch worktrees are cut from + PR base" },
+        "remote": { "type": "string", "default": "origin", "description": "Git remote name for fetch + worktree base ref" },
+        "default_weight": { "enum": ["heavy", "medium", "light"], "description": "Weight assumed for a slice whose gate runner isn't recognized and that touches no code (default light)" },
+        "weight_patterns": {
+          "type": "object", "additionalProperties": false,
+          "description": "Extend the built-in multi-ecosystem runner classifier with repo-specific regexes (case-insensitive strings)",
+          "properties": {
+            "heavy": { "type": "array", "items": { "type": "string" } },
+            "medium": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "weight_cost": {
+          "type": "object", "additionalProperties": false,
+          "description": "Override per-class per-session resource cost used by the concurrency recommender",
+          "properties": {
+            "heavy": { "$ref": "#/$defs/cost" },
+            "medium": { "$ref": "#/$defs/cost" },
+            "light": { "$ref": "#/$defs/cost" }
+          }
+        },
+        "links": {
+          "type": "object", "additionalProperties": true,
+          "description": "Optional repo cross-references the renderer links from (all optional; omitted ones are skipped)",
+          "properties": {
+            "narrative": { "type": "string" },
+            "status": { "type": "string" },
+            "tracker": { "type": "string" },
+            "bootstrap": { "type": "string" },
+            "strategy": { "type": "string" }
+          }
+        }
+      }
+    },
+    "pis": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/pi" }
+    }
+  },
+  "$defs": {
+    "cost": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Per-session resource cost for a weight class",
+      "properties": {
+        "ram": { "type": "number", "description": "GB RAM per session" },
+        "cores": { "type": "number", "description": "CPU cores per session" }
+      }
+    },
+    "status": {
+      "enum": ["active", "next", "scheduled", "complete", "blocked", "paused", "gated", "optionality"],
+      "description": "Canonical status. Emoji derived: active 🟢 · next 🟡 · scheduled ⚪ · complete ✅ · blocked 🔴 · paused ⏸️ · gated 🔒 · optionality 🟣"
+    },
+    "pi": {
+      "type": "object",
+      "required": ["id", "title", "status", "sprints"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$", "description": "Stable PI slug; matches the branch-slug and the tracker row" },
+        "title": { "type": "string" },
+        "theme": { "type": "string" },
+        "program_label": { "type": "string", "description": "Display string for the 'PI / program' column when it differs from id (e.g. 'Billing Rewrite P2'). Optional; defaults to the uppercased id." },
+        "status": { "$ref": "#/$defs/status" },
+        "deps": { "type": "array", "items": { "type": "string" }, "description": "PI-level dependencies (PI ids)" },
+        "estimate_weeks": { "type": "string" },
+        "exit_criteria": { "type": "string" },
+        "detail": { "type": "string", "description": "Pointer to the sprint dir / detail doc" },
+        "exec_hint": { "type": ["string", "null"], "description": "Optional human override of the derived exec-plan line; rendered alongside the derived line" },
+        "sprints": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/sprint" } }
+      }
+    },
+    "sprint": {
+      "type": "object",
+      "required": ["id", "title", "status", "invoke"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$", "description": "Sprint slug local to its PI, e.g. s1, s3, m1-s2" },
+        "title": { "type": "string" },
+        "status": { "$ref": "#/$defs/status" },
+        "status_label": { "type": "string", "description": "Display override for the status cell (e.g. 'Planned', 'Queued', 'Gated (Connor)', 'Next'); defaults to the capitalized enum" },
+        "invoke": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$", "description": "The /slice invocation key. Stable — renames break references. Unique across the whole file." },
+        "what": { "type": "string", "description": "One-line summary for the At-a-glance table" },
+        "est_sessions": { "type": "number", "minimum": 0, "description": "Focused Claude sessions remaining to clear this sprint (0 when done)" },
+        "weight": { "enum": ["heavy", "medium", "light"], "description": "Optional override of the inferred resource weight (heavy=dotnet test, medium=build/vitest, light=docs); drives the concurrency recommender" },
+        "deps": { "type": "array", "items": { "type": "string" }, "description": "Dependency edges: sibling sprint id (s2), fully-qualified pi-id/sprint-id, or a PI id (complete-when-all-sprints-complete)" },
+        "touches": { "type": "array", "items": { "type": "string" }, "description": "Files this sprint writes; used to detect shared-file contention (two-wave) in the scheduler" },
+        "owns": { "type": "array", "items": { "type": "string" }, "description": "Dirs/files this sprint exclusively owns" },
+        "gate": { "type": "string", "description": "'default' (inherit meta.default_gate) or a string; {{default}} interpolates meta.default_gate" },
+        "gated_on": { "type": "string", "description": "Name of the human this is gated on; such a node never enters the auto-ready set" },
+        "optional": { "type": "boolean", "default": false },
+        "read_order": { "type": "array", "items": { "type": "string" }, "description": "Ordered docs/sections a session reads to self-orient (markdown link or 'path — note')" },
+        "resume_action": { "type": "string", "description": "The next action; first sentence is the immediate step" },
+        "kickoff_brief": { "type": "string", "description": "'brief' = synthesize from fields; or an inline brief string; or a path to a brief file" },
+        "prs": { "type": "array", "items": { "type": "string" }, "description": "Merged PR refs, e.g. ['#359']" },
+        "completed_on": { "type": "string", "description": "ISO date a sprint flipped to complete (drives the Recently-completed window)" }
+      }
+    }
+  }
+}
