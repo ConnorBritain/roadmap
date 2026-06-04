@@ -1,0 +1,11 @@
+{
+  "name": "roadmap",
+  "owner": { "name": "Connor England", "url": "https://github.com/ConnorBritain" },
+  "plugins": [
+    {
+      "name": "slice-roadmap",
+      "source": "./",
+      "description": "Hierarchical roadmap graph + multi-session fanout. Skills (/slice, /slice-sync, /slice-init, /slice-fanout), four agents, a SessionStart hook (ready-wave + unrecorded-merge reconcile nudge), a PR-watch monitor, and an MCP server (read + comment-preserving mutate)."
+    }
+  ]
+}
