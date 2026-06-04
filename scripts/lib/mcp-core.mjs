@@ -49,7 +49,7 @@ export const TOOLS = [
   { name: "set_fields", description: "Set one or more allowed fields on a slice (by invoke). null value deletes a field. Re-renders.",
     inputSchema: { type: "object", required: ["invoke", "fields"], properties: {
       invoke: { type: "string" }, fields: { type: "object" } } } },
-  { name: "prune", description: "Remove a slice (by invoke), a whole PI (by pi id), or every complete slice (scope='completed'). Re-renders. Rejected if it would orphan a dependency.",
+  { name: "prune", description: "Remove a slice (by invoke), a whole PI (by pi id), or every complete slice (scope='completed'). Re-renders SLICES.md. Validated before writing: the removal is rejected with no change made if it would orphan a dependency, duplicate an invoke key, or otherwise break the graph.",
     inputSchema: { type: "object", properties: {
       invoke: { type: "string" }, pi: { type: "string" }, scope: { enum: ["completed"] } } } },
 ];

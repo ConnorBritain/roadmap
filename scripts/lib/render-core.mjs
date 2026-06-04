@@ -184,7 +184,7 @@ export function renderMarkdown(graph, opts = {}) {
     return String(s).replace(/\s*\n\s*/g, " ").trim();
   }
   function fmt(n) {
-    return Number.isInteger(n) ? String(n) : String(n);
+    return String(n);
   }
   function short(p) {
     const segs = String(p).split("/");

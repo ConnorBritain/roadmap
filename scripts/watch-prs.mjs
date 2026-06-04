@@ -12,7 +12,7 @@ import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { findRepoRoot, REL } from "./lib/cli-core.mjs";
 import { loadGraph } from "./lib/graph.mjs";
-import { diffPrStates, roadmapBranches } from "./lib/pr-watch-core.mjs";
+import { diffPrStates, roadmapBranches, checksOf } from "./lib/pr-watch-core.mjs";
 
 const POLL_MS = Number(process.env.ROADMAP_WATCH_INTERVAL_MS || 30000);
 const log = (m) => process.stdout.write(m + "\n");
@@ -38,16 +38,6 @@ function fetchPrs(root) {
     { cwd: root, encoding: "utf8" });
   if (r.status !== 0) return null;
   try { return JSON.parse(r.stdout); } catch { return null; }
-}
-
-// Reduce a PR's statusCheckRollup to one of: none | passing | pending | failing.
-function checksOf(pr) {
-  const rollup = pr.statusCheckRollup || [];
-  if (!rollup.length) return "none";
-  const states = rollup.map((c) => String(c.conclusion || c.state || c.status || "").toUpperCase());
-  if (states.some((s) => ["FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE"].includes(s))) return "failing";
-  if (states.some((s) => ["PENDING", "IN_PROGRESS", "QUEUED", "WAITING", "REQUESTED", ""].includes(s))) return "pending";
-  return "passing";
 }
 
 function snapshot(prs, graph) {

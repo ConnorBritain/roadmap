@@ -13,7 +13,7 @@ import { route, classify, buildArgs, findRepoRoot, missingRoadmapHelp, expandSho
 import { launchDecision } from "../lib/fanout-core.mjs";
 import { terminalChoices, moveSelection, parseCap, buildFanArgs, autoOutName } from "../lib/wizard-core.mjs";
 import { TOOLS, addSprint, setStatus, setFields, prune, validateDocOrThrow, readValidate } from "../lib/mcp-core.mjs";
-import { diffPrStates, matchesRoadmapBranches } from "../lib/pr-watch-core.mjs";
+import { diffPrStates, matchesRoadmapBranches, checksOf } from "../lib/pr-watch-core.mjs";
 import { parseDocument } from "yaml";
 import { join, resolve } from "node:path";
 
@@ -582,6 +582,15 @@ test("diffPrStates is silent on no change and speaks on open->merged", () => {
   const merged = diffPrStates({ 1: pr({ n: 1 }) }, { 1: pr({ n: 1, state: "MERGED" }) });
   eq(merged.length, 1, "merge emits");
   ok(/merged/.test(merged[0].message), "merged message");
+});
+
+// WHY: prPhase keys off the reduced `checks` value, so a wrong rollup->enum mapping would announce
+// a PR with a failing or still-running check as "ready to merge" and mislead the lead into a bad merge.
+test("checksOf reduces a statusCheckRollup to none/passing/pending/failing", () => {
+  eq(checksOf({ statusCheckRollup: [] }), "none", "no checks -> none");
+  eq(checksOf({ statusCheckRollup: [{ conclusion: "SUCCESS" }, { conclusion: "NEUTRAL" }] }), "passing", "all green -> passing");
+  eq(checksOf({ statusCheckRollup: [{ conclusion: "SUCCESS" }, { status: "IN_PROGRESS" }] }), "pending", "any in-progress -> pending");
+  eq(checksOf({ statusCheckRollup: [{ conclusion: "SUCCESS" }, { conclusion: "FAILURE" }] }), "failing", "any failure -> failing");
 });
 
 // WHY: the lead must hear about ITS wave, not every PR in the repo. A branch outside the roadmap's

@@ -6,7 +6,7 @@
 // Default: in=docs/roadmap/roadmap.yaml, out=docs/SLICES.md. --stdout prints instead of writing.
 
 import { writeFileSync } from "node:fs";
-import { loadGraph, flatten } from "./lib/graph.mjs";
+import { loadGraph } from "./lib/graph.mjs";
 import { renderMarkdown } from "./lib/render-core.mjs";
 
 const args = process.argv.slice(2);
@@ -26,6 +26,6 @@ if (toStdout) {
   process.stdout.write(out);
 } else {
   writeFileSync(outPath, out, "utf8");
-  const model = flatten(graph);
-  console.error(`✓ rendered ${outPath} (${graph.pis.length} PIs, ${model.nodes.length} sprints)`);
+  const sprintCount = (graph.pis || []).reduce((a, p) => a + ((p.sprints || []).length), 0);
+  console.error(`✓ rendered ${outPath} (${(graph.pis || []).length} PIs, ${sprintCount} sprints)`);
 }
