@@ -25,6 +25,8 @@ COMMANDS
   fan             launch a wave — a lead + one pane/tab per slice, each in its own worktree
   cleanup         prune fanout worktrees merged into the base branch + clean
   validate        structural + dependency + cycle checks
+  mcp             run the MCP server (stdio); read + mutate tools over JSON-RPC
+  watch           watch fanout PRs and print a line as each lands (lead notifications)
   sync | init     (plugin skills) reconcile+re-render / PM-interview bootstrap
   help            this help
 

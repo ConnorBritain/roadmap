@@ -12,6 +12,9 @@ import { synthesizeBrief, branchFor, worktreeFor, baseRefOf, baseBranchOf, remot
 import { route, classify, buildArgs, findRepoRoot, missingRoadmapHelp, expandShort, REL } from "../lib/cli-core.mjs";
 import { launchDecision } from "../lib/fanout-core.mjs";
 import { terminalChoices, moveSelection, parseCap, buildFanArgs, autoOutName } from "../lib/wizard-core.mjs";
+import { TOOLS, addSprint, setStatus, setFields, prune, validateDocOrThrow, readValidate } from "../lib/mcp-core.mjs";
+import { diffPrStates, matchesRoadmapBranches, checksOf } from "../lib/pr-watch-core.mjs";
+import { parseDocument } from "yaml";
 import { join, resolve } from "node:path";
 
 let passed = 0, failed = 0;
@@ -269,6 +272,19 @@ test("nodeWeight recognizes non-.NET runners (cargo/pytest/go)", () => {
   eq(nodeWeight(m.nodes[3], g), "heavy", "vitest run (a full test-suite run) → heavy");
 });
 
+// WHY: the popular stacks (Java via Maven, C/C++ via CMake) must size correctly out of
+// the box; a 'mvn verify' mis-read as light over-subscribes RAM, and a 'cmake --build'
+// dismissed as free under-uses the machine. (Guards the classifier's breadth claim.)
+test("nodeWeight sizes Maven (heavy) and CMake (medium) runners", () => {
+  const g = { meta: {}, pis: [{ id: "j", title: "J", status: "active", sprints: [
+    sp("a", { gate: "mvn verify", touches: ["src/Main.java"] }),
+    sp("b", { gate: "cmake --build build", touches: ["src/main.cpp"] }),
+  ]}]};
+  const m = flatten(g);
+  eq(nodeWeight(m.nodes[0], g), "heavy", "mvn verify → heavy");
+  eq(nodeWeight(m.nodes[1], g), "medium", "cmake --build → medium");
+});
+
 // WHY: a repo with a bespoke runner must be able to teach the classifier without
 // forking the plugin — otherwise "portable" is a lie for anyone off the beaten path.
 test("meta.weight_patterns extends the classifier", () => {
@@ -441,6 +457,148 @@ test("autoOutName picks ps1 for wt/warp and sh otherwise", () => {
   eq(autoOutName("warp", 2), "wave2.ps1", "warp → ps1");
   eq(autoOutName("tmux", 3), "wave3.sh", "tmux → sh");
   eq(autoOutName("print", 1), "wave1.sh", "print → sh");
+});
+
+// ── MCP brain: tool registry + comment-preserving mutations + integrity gate ────
+const MCP_FIX = `meta:
+  schema_version: 1
+  program: TEST
+  default_gate: npm test
+pis:
+  - id: auth          # the auth epic
+    title: Auth
+    status: active
+    sprints:
+      - id: s1
+        title: Login
+        status: complete
+        invoke: auth-login
+        prs: ["#1"]
+      - id: s2
+        title: Sessions
+        status: active
+        invoke: auth-sessions
+        deps: [s1]
+`;
+
+// WHY: the registry is the contract Claude sees; a tool missing a name/description/inputSchema
+// is invisible or uncallable, so the whole MCP surface must stay well-formed.
+test("TOOLS registry is well-formed and includes the key read + mutate tools", () => {
+  ok(Array.isArray(TOOLS) && TOOLS.length >= 9, "at least 9 tools");
+  ok(TOOLS.every((t) => t.name && t.description && t.inputSchema && t.inputSchema.type === "object"), "each tool well-formed");
+  for (const n of ["plan", "show", "validate", "add_sprint", "set_status", "prune"]) {
+    ok(TOOLS.some((t) => t.name === n), `tool ${n} present`);
+  }
+});
+
+// WHY: the entire reason to mutate via the Document API (not YAML.parse + re-dump) is to keep the
+// human's comments. If add_sprint drops them, the roadmap's authored context is silently destroyed.
+test("add_sprint appends the node AND preserves existing comments", () => {
+  const doc = parseDocument(MCP_FIX);
+  addSprint(doc, { pi: "auth", id: "s3", title: "Logout", invoke: "auth-logout", status: "next", deps: ["s2"] });
+  const out = doc.toString();
+  ok(out.includes("# the auth epic"), "inline comment survived the edit");
+  ok(/invoke: auth-logout/.test(out), "new sprint serialized");
+  const g = validateDocOrThrow(doc);
+  eq(g.pis[0].sprints.length, 3, "three sprints now");
+});
+
+// WHY: the write gate exists so a bad edit never lands. A duplicate invoke key would make two
+// slices answer the same /slice command; it must be rejected before the file is written.
+test("validateDocOrThrow rejects a duplicate invoke key", () => {
+  const doc = parseDocument(MCP_FIX);
+  addSprint(doc, { pi: "auth", id: "s3", title: "Dup", invoke: "auth-login" });
+  throws(() => validateDocOrThrow(doc), "corrupt", "duplicate invoke must be rejected");
+});
+
+// WHY: a cyclic dependency is un-runnable; an edit that introduces one must be refused, not written
+// and discovered later when the scheduler chokes.
+test("validateDocOrThrow rejects an edit that forms a dependency cycle", () => {
+  const doc = parseDocument(MCP_FIX);
+  setFields(doc, { invoke: "auth-login", fields: { deps: ["s2"] } }); // s1->s2 while s2->s1
+  throws(() => validateDocOrThrow(doc), "cycle", "cycle must be rejected");
+});
+
+// WHY: set_status is the merge-time workhorse (flip to complete, record the PR). It must write all
+// three fields, or the Recently-completed view and sessions-remaining rollup go wrong.
+test("set_status records status + prs + completed_on", () => {
+  const doc = parseDocument(MCP_FIX);
+  setStatus(doc, { invoke: "auth-sessions", status: "complete", prs: ["#9"], completed_on: "2026-06-04" });
+  const sp = doc.toJS().pis[0].sprints.find((s) => s.invoke === "auth-sessions");
+  eq(sp.status, "complete", "status set");
+  eq(sp.prs, ["#9"], "prs set");
+  eq(sp.completed_on, "2026-06-04", "completed_on set");
+});
+
+// WHY: pruning is how the roadmap stays legible over time; scope='completed' must drop finished,
+// undepended slices (and leave live ones), so the graph shrinks safely.
+test("prune scope=completed removes finished slices and keeps live ones", () => {
+  const doc = parseDocument(`meta: {schema_version: 1, program: T}
+pis:
+  - id: p
+    title: P
+    status: active
+    sprints:
+      - {id: s1, title: Done, status: complete, invoke: p-done, prs: ["#1"]}
+      - {id: s2, title: Live, status: active, invoke: p-active}
+`);
+  const r = prune(doc, { scope: "completed" });
+  eq(r.pruned, ["p-done"], "reported the pruned slice");
+  const g = validateDocOrThrow(doc);
+  ok(!g.pis[0].sprints.some((s) => s.invoke === "p-done"), "completed slice gone");
+  ok(g.pis[0].sprints.some((s) => s.invoke === "p-active"), "live slice kept");
+});
+
+// WHY: the validate read tool is the agent's pre-flight; a clean roadmap must report ok=true so an
+// agent can trust it before launching, and a real error must surface as ok=false.
+test("readValidate reports ok on a clean graph", () => {
+  const r = readValidate(parseDocument(MCP_FIX).toJS());
+  ok(r.ok === true, "clean fixture validates");
+  eq(r.errors.length, 0, "no errors");
+});
+
+// ── PR-watch monitor brain ──────────────────────────────────────────────────
+const pr = (o) => ({
+  number: o.n, title: o.t || "T", headRefName: o.b || "auth/s1",
+  state: o.state || "OPEN", isDraft: !!o.draft, mergeStateStatus: o.merge || "CLEAN", checks: o.checks || "none",
+});
+
+// WHY: the monitor's whole value is telling the lead the moment a PR is actionable. If a newly
+// opened, check-green PR isn't surfaced as "ready to merge", the lead is back to polling by hand.
+test("diffPrStates announces a new ready PR and a draft->ready transition", () => {
+  const newReady = diffPrStates({}, { 1: pr({ n: 1 }) });
+  eq(newReady.length, 1, "one event for the new PR");
+  ok(/ready to merge/.test(newReady[0].message), "phrased as ready to merge");
+  const promoted = diffPrStates({ 1: pr({ n: 1, draft: true }) }, { 1: pr({ n: 1, draft: false }) });
+  eq(promoted.length, 1, "draft->ready emits");
+  ok(/ready to merge/.test(promoted[0].message), "ready message");
+});
+
+// WHY: noise kills a notifier. If an unchanged poll re-emits, the lead learns to ignore the
+// channel; only genuine phase changes (here, open->merged) may speak.
+test("diffPrStates is silent on no change and speaks on open->merged", () => {
+  const same = { 1: pr({ n: 1 }) };
+  eq(diffPrStates(same, same).length, 0, "no change, no event");
+  const merged = diffPrStates({ 1: pr({ n: 1 }) }, { 1: pr({ n: 1, state: "MERGED" }) });
+  eq(merged.length, 1, "merge emits");
+  ok(/merged/.test(merged[0].message), "merged message");
+});
+
+// WHY: prPhase keys off the reduced `checks` value, so a wrong rollup->enum mapping would announce
+// a PR with a failing or still-running check as "ready to merge" and mislead the lead into a bad merge.
+test("checksOf reduces a statusCheckRollup to none/passing/pending/failing", () => {
+  eq(checksOf({ statusCheckRollup: [] }), "none", "no checks -> none");
+  eq(checksOf({ statusCheckRollup: [{ conclusion: "SUCCESS" }, { conclusion: "NEUTRAL" }] }), "passing", "all green -> passing");
+  eq(checksOf({ statusCheckRollup: [{ conclusion: "SUCCESS" }, { status: "IN_PROGRESS" }] }), "pending", "any in-progress -> pending");
+  eq(checksOf({ statusCheckRollup: [{ conclusion: "SUCCESS" }, { conclusion: "FAILURE" }] }), "failing", "any failure -> failing");
+});
+
+// WHY: the lead must hear about ITS wave, not every PR in the repo. A branch outside the roadmap's
+// fanout naming must be filtered out, or the channel fills with unrelated noise.
+test("matchesRoadmapBranches keeps roadmap fanout branches and drops the rest", () => {
+  const g = { meta: {}, pis: [{ id: "auth", title: "A", status: "active", sprints: [sp("s1", { invoke: "auth-login" })] }] };
+  ok(matchesRoadmapBranches("auth/s1", g), "a roadmap branch matches");
+  ok(!matchesRoadmapBranches("dependabot/npm/x", g), "an unrelated branch is dropped");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
