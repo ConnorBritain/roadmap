@@ -199,10 +199,18 @@ roadmap() { node "$HOME/Code/roadmap/scripts/cli.mjs" "$@"; }
 
 ### As a Claude plugin
 
+The repo is its own marketplace (`.claude-plugin/marketplace.json`). Add it, then install:
+
 ```bash
-claude --plugin-dir /path/to/roadmap        # single session
-/plugin install --local /path/to/roadmap    # all sessions
+# from a GitHub clone:
+claude plugin marketplace add ConnorBritain/roadmap
+# or from a local checkout:
+claude plugin marketplace add /path/to/roadmap
+
+claude plugin install slice-roadmap@roadmap   # user scope; --scope project to pin per-repo
 ```
+
+That wires the skills, agents, the SessionStart hook, the PR-watch monitor, and the MCP server in one step (new sessions pick them up; `/mcp` reconnects the current one). The plugin bundles its MCP via `.mcp.json`, so don't also `claude mcp add roadmap` (you would get two servers named `roadmap`).
 
 ### Recommending it in a consuming repo
 
