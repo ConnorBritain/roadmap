@@ -12,6 +12,8 @@ import { synthesizeBrief, branchFor, worktreeFor, baseRefOf, baseBranchOf, remot
 import { route, classify, buildArgs, findRepoRoot, missingRoadmapHelp, expandShort, REL } from "../lib/cli-core.mjs";
 import { launchDecision } from "../lib/fanout-core.mjs";
 import { terminalChoices, moveSelection, parseCap, buildFanArgs, autoOutName } from "../lib/wizard-core.mjs";
+import { TOOLS, addSprint, setStatus, setFields, prune, validateDocOrThrow, readValidate } from "../lib/mcp-core.mjs";
+import { parseDocument } from "yaml";
 import { join, resolve } from "node:path";
 
 let passed = 0, failed = 0;
@@ -454,6 +456,104 @@ test("autoOutName picks ps1 for wt/warp and sh otherwise", () => {
   eq(autoOutName("warp", 2), "wave2.ps1", "warp → ps1");
   eq(autoOutName("tmux", 3), "wave3.sh", "tmux → sh");
   eq(autoOutName("print", 1), "wave1.sh", "print → sh");
+});
+
+// ── MCP brain: tool registry + comment-preserving mutations + integrity gate ────
+const MCP_FIX = `meta:
+  schema_version: 1
+  program: TEST
+  default_gate: npm test
+pis:
+  - id: auth          # the auth epic
+    title: Auth
+    status: active
+    sprints:
+      - id: s1
+        title: Login
+        status: complete
+        invoke: auth-login
+        prs: ["#1"]
+      - id: s2
+        title: Sessions
+        status: active
+        invoke: auth-sessions
+        deps: [s1]
+`;
+
+// WHY: the registry is the contract Claude sees; a tool missing a name/description/inputSchema
+// is invisible or uncallable, so the whole MCP surface must stay well-formed.
+test("TOOLS registry is well-formed and includes the key read + mutate tools", () => {
+  ok(Array.isArray(TOOLS) && TOOLS.length >= 9, "at least 9 tools");
+  ok(TOOLS.every((t) => t.name && t.description && t.inputSchema && t.inputSchema.type === "object"), "each tool well-formed");
+  for (const n of ["plan", "show", "validate", "add_sprint", "set_status", "prune"]) {
+    ok(TOOLS.some((t) => t.name === n), `tool ${n} present`);
+  }
+});
+
+// WHY: the entire reason to mutate via the Document API (not YAML.parse + re-dump) is to keep the
+// human's comments. If add_sprint drops them, the roadmap's authored context is silently destroyed.
+test("add_sprint appends the node AND preserves existing comments", () => {
+  const doc = parseDocument(MCP_FIX);
+  addSprint(doc, { pi: "auth", id: "s3", title: "Logout", invoke: "auth-logout", status: "next", deps: ["s2"] });
+  const out = doc.toString();
+  ok(out.includes("# the auth epic"), "inline comment survived the edit");
+  ok(/invoke: auth-logout/.test(out), "new sprint serialized");
+  const g = validateDocOrThrow(doc);
+  eq(g.pis[0].sprints.length, 3, "three sprints now");
+});
+
+// WHY: the write gate exists so a bad edit never lands. A duplicate invoke key would make two
+// slices answer the same /slice command; it must be rejected before the file is written.
+test("validateDocOrThrow rejects a duplicate invoke key", () => {
+  const doc = parseDocument(MCP_FIX);
+  addSprint(doc, { pi: "auth", id: "s3", title: "Dup", invoke: "auth-login" });
+  throws(() => validateDocOrThrow(doc), "corrupt", "duplicate invoke must be rejected");
+});
+
+// WHY: a cyclic dependency is un-runnable; an edit that introduces one must be refused, not written
+// and discovered later when the scheduler chokes.
+test("validateDocOrThrow rejects an edit that forms a dependency cycle", () => {
+  const doc = parseDocument(MCP_FIX);
+  setFields(doc, { invoke: "auth-login", fields: { deps: ["s2"] } }); // s1->s2 while s2->s1
+  throws(() => validateDocOrThrow(doc), "cycle", "cycle must be rejected");
+});
+
+// WHY: set_status is the merge-time workhorse (flip to complete, record the PR). It must write all
+// three fields, or the Recently-completed view and sessions-remaining rollup go wrong.
+test("set_status records status + prs + completed_on", () => {
+  const doc = parseDocument(MCP_FIX);
+  setStatus(doc, { invoke: "auth-sessions", status: "complete", prs: ["#9"], completed_on: "2026-06-04" });
+  const sp = doc.toJS().pis[0].sprints.find((s) => s.invoke === "auth-sessions");
+  eq(sp.status, "complete", "status set");
+  eq(sp.prs, ["#9"], "prs set");
+  eq(sp.completed_on, "2026-06-04", "completed_on set");
+});
+
+// WHY: pruning is how the roadmap stays legible over time; scope='completed' must drop finished,
+// undepended slices (and leave live ones), so the graph shrinks safely.
+test("prune scope=completed removes finished slices and keeps live ones", () => {
+  const doc = parseDocument(`meta: {schema_version: 1, program: T}
+pis:
+  - id: p
+    title: P
+    status: active
+    sprints:
+      - {id: s1, title: Done, status: complete, invoke: p-done, prs: ["#1"]}
+      - {id: s2, title: Live, status: active, invoke: p-active}
+`);
+  const r = prune(doc, { scope: "completed" });
+  eq(r.pruned, ["p-done"], "reported the pruned slice");
+  const g = validateDocOrThrow(doc);
+  ok(!g.pis[0].sprints.some((s) => s.invoke === "p-done"), "completed slice gone");
+  ok(g.pis[0].sprints.some((s) => s.invoke === "p-active"), "live slice kept");
+});
+
+// WHY: the validate read tool is the agent's pre-flight; a clean roadmap must report ok=true so an
+// agent can trust it before launching, and a real error must surface as ok=false.
+test("readValidate reports ok on a clean graph", () => {
+  const r = readValidate(parseDocument(MCP_FIX).toJS());
+  ok(r.ok === true, "clean fixture validates");
+  eq(r.errors.length, 0, "no errors");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
