@@ -13,6 +13,7 @@ import { route, classify, buildArgs, findRepoRoot, missingRoadmapHelp, expandSho
 import { launchDecision } from "../lib/fanout-core.mjs";
 import { terminalChoices, moveSelection, parseCap, buildFanArgs, autoOutName } from "../lib/wizard-core.mjs";
 import { TOOLS, addSprint, setStatus, setFields, prune, validateDocOrThrow, readValidate } from "../lib/mcp-core.mjs";
+import { diffPrStates, matchesRoadmapBranches } from "../lib/pr-watch-core.mjs";
 import { parseDocument } from "yaml";
 import { join, resolve } from "node:path";
 
@@ -554,6 +555,41 @@ test("readValidate reports ok on a clean graph", () => {
   const r = readValidate(parseDocument(MCP_FIX).toJS());
   ok(r.ok === true, "clean fixture validates");
   eq(r.errors.length, 0, "no errors");
+});
+
+// ── PR-watch monitor brain ──────────────────────────────────────────────────
+const pr = (o) => ({
+  number: o.n, title: o.t || "T", headRefName: o.b || "auth/s1",
+  state: o.state || "OPEN", isDraft: !!o.draft, mergeStateStatus: o.merge || "CLEAN", checks: o.checks || "none",
+});
+
+// WHY: the monitor's whole value is telling the lead the moment a PR is actionable. If a newly
+// opened, check-green PR isn't surfaced as "ready to merge", the lead is back to polling by hand.
+test("diffPrStates announces a new ready PR and a draft->ready transition", () => {
+  const newReady = diffPrStates({}, { 1: pr({ n: 1 }) });
+  eq(newReady.length, 1, "one event for the new PR");
+  ok(/ready to merge/.test(newReady[0].message), "phrased as ready to merge");
+  const promoted = diffPrStates({ 1: pr({ n: 1, draft: true }) }, { 1: pr({ n: 1, draft: false }) });
+  eq(promoted.length, 1, "draft->ready emits");
+  ok(/ready to merge/.test(promoted[0].message), "ready message");
+});
+
+// WHY: noise kills a notifier. If an unchanged poll re-emits, the lead learns to ignore the
+// channel; only genuine phase changes (here, open->merged) may speak.
+test("diffPrStates is silent on no change and speaks on open->merged", () => {
+  const same = { 1: pr({ n: 1 }) };
+  eq(diffPrStates(same, same).length, 0, "no change, no event");
+  const merged = diffPrStates({ 1: pr({ n: 1 }) }, { 1: pr({ n: 1, state: "MERGED" }) });
+  eq(merged.length, 1, "merge emits");
+  ok(/merged/.test(merged[0].message), "merged message");
+});
+
+// WHY: the lead must hear about ITS wave, not every PR in the repo. A branch outside the roadmap's
+// fanout naming must be filtered out, or the channel fills with unrelated noise.
+test("matchesRoadmapBranches keeps roadmap fanout branches and drops the rest", () => {
+  const g = { meta: {}, pis: [{ id: "auth", title: "A", status: "active", sprints: [sp("s1", { invoke: "auth-login" })] }] };
+  ok(matchesRoadmapBranches("auth/s1", g), "a roadmap branch matches");
+  ok(!matchesRoadmapBranches("dependabot/npm/x", g), "an unrelated branch is dropped");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

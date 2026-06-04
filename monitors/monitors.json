@@ -1,0 +1,8 @@
+[
+  {
+    "name": "roadmap-prs",
+    "description": "Watches this roadmap's fanout PRs and notifies the lead as each becomes ready, conflicts, fails checks, or merges.",
+    "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/watch-prs.mjs",
+    "when": "on-skill-invoke:slice-fanout"
+  }
+]
