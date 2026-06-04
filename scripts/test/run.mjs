@@ -12,7 +12,7 @@ import { synthesizeBrief, branchFor, worktreeFor, baseRefOf, baseBranchOf, remot
 import { route, classify, buildArgs, findRepoRoot, missingRoadmapHelp, expandShort, REL } from "../lib/cli-core.mjs";
 import { launchDecision } from "../lib/fanout-core.mjs";
 import { terminalChoices, moveSelection, parseCap, buildFanArgs, autoOutName } from "../lib/wizard-core.mjs";
-import { TOOLS, addSprint, setStatus, setFields, prune, validateDocOrThrow, readValidate } from "../lib/mcp-core.mjs";
+import { TOOLS, addSprint, setStatus, setFields, prune, validateDocOrThrow, readValidate, serialize } from "../lib/mcp-core.mjs";
 import { diffPrStates, matchesRoadmapBranches, checksOf } from "../lib/pr-watch-core.mjs";
 import { findUnrecordedMerges, reconcileNudge } from "../lib/sync-core.mjs";
 import { parseDocument } from "yaml";
@@ -618,6 +618,21 @@ test("findUnrecordedMerges flags only open slices whose fanout branch merged", (
   eq(found[0].pr, 42, "carries the PR number");
   ok(reconcileNudge(found).includes("auth-sessions") && /set_status|slice-sync/.test(reconcileNudge(found)), "nudge names the slice + the action");
   eq(reconcileNudge([]), "", "silent when nothing is unrecorded");
+});
+
+// ── serializer fidelity (diff-minimal mutations) ────────────────────────────
+// WHY: mutations write via serialize(); if it pads flow collections or re-wraps long scalars, every
+// edit churns the whole hand-authored roadmap and the diff becomes unreviewable. It must keep
+// comments, leave long scalars on one line, and not pad flow collections.
+test("serialize keeps comments, leaves long scalars unwrapped, and does not pad flow collections", () => {
+  const long = "x".repeat(120);
+  const doc = parseDocument(`# header\nk:\n  seq: ["#1", "#2"]   # inline\n  long: ${long}\n`);
+  const out = serialize(doc);
+  ok(out.includes("# header") && out.includes("# inline"), "comments preserved");
+  ok(out.includes('["#1", "#2"]') && !out.includes('[ "#1"'), "flow seq stays unpadded");
+  ok(out.includes(long), "120-char scalar not wrapped");
+  // idempotent: re-serializing its own output is a no-op (so post-normalize mutations are clean)
+  eq(serialize(parseDocument(out)), out, "serialize is idempotent");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -193,6 +193,14 @@ export const MUTATION_HANDLERS = { add_pi: addPi, add_sprint: addSprint, set_sta
 // Throws if the edited Document would corrupt the roadmap (duplicate invoke, unresolved
 // dependency, dependency cycle, or an invalid status). Returns the plain graph on success,
 // so the server can hand it straight to renderMarkdown.
+// Serialize a mutated Document back to YAML with options that MINIMIZE diff churn against a
+// hand-authored roadmap.yaml: lineWidth 0 (never re-wrap long scalars like resume_action) and no
+// flow-collection padding (match the common ["#1"] / [s1] style). Comments survive either way.
+// Residual churn is irreducible when the source mixes flow styles; this picks the lower-churn side.
+export function serialize(doc) {
+  return doc.toString({ lineWidth: 0, flowCollectionPadding: false });
+}
+
 export function validateDocOrThrow(doc) {
   const graph = doc.toJS();
   let model;

@@ -14,7 +14,7 @@ import YAML from "yaml";
 import { findRepoRoot, REL } from "./lib/cli-core.mjs";
 import { loadGraph } from "./lib/graph.mjs";
 import { renderMarkdown } from "./lib/render-core.mjs";
-import { TOOLS, READ_HANDLERS, MUTATION_HANDLERS, validateDocOrThrow } from "./lib/mcp-core.mjs";
+import { TOOLS, READ_HANDLERS, MUTATION_HANDLERS, validateDocOrThrow, serialize } from "./lib/mcp-core.mjs";
 
 const PROTOCOL_VERSION = "2024-11-05";
 const SERVER_INFO = { name: "roadmap", version: "0.1.0" };
@@ -35,7 +35,7 @@ function callTool(name, args) {
     const doc = YAML.parseDocument(readFileSync(p.yaml, "utf8"));
     const summary = MUTATION_HANDLERS[name](doc, args || {});
     const graph = validateDocOrThrow(doc);          // throws -> caught below, file untouched
-    writeFileSync(p.yaml, doc.toString(), "utf8");
+    writeFileSync(p.yaml, serialize(doc), "utf8");
     writeFileSync(p.slices, renderMarkdown(graph), "utf8");
     return { ...summary, rerendered: "docs/SLICES.md" };
   }
