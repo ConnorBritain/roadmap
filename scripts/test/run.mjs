@@ -21,7 +21,8 @@ import {
 } from "../lib/execution.mjs";
 import { renderMarkdown } from "../lib/render-core.mjs";
 import { validateGraph } from "../lib/validate-core.mjs";
-import { getHarness, isKnownHarness, supportsModeNatively, DEFAULT_HARNESS } from "../lib/harness.mjs";
+import { getHarness, isKnownHarness, supportsModeNatively, normalizePermission, DEFAULT_HARNESS } from "../lib/harness.mjs";
+import { buildAcpManifest } from "../lib/acp.mjs";
 import { parseDocument } from "yaml";
 import { join, resolve } from "node:path";
 
@@ -918,6 +919,83 @@ test("renderMarkdown honors meta.harness and the opts.harness override", () => {
   ok(renderMarkdown(g({ harness: "codex" })).includes("codex exec"), "meta.harness=codex → codex wording");
   ok(renderMarkdown(g({}), { harness: "codex" }).includes("codex exec"), "opts.harness override → codex wording");
   ok(renderMarkdown(g({})).includes("Invoke Agent Teams now"), "default → claude wording");
+});
+
+// ── cross-harness stage 2: profile-driven launch commands ────────────────────
+const PROMPT = "Read the .kickoff.md file in this directory. Do NOT merge.";
+
+// WHY: the launch layer must stay byte-identical for claude — the same `claude --permission-mode …`
+// (and the same `-p` headless form, and the same bash-only api-lane wrap) the fanout emitted before
+// the harness seam, in BOTH the bash and powershell quoting, or every existing launch script churns.
+test("claude.launch reproduces the original command in bash + pwsh, headless, and api-lane forms", () => {
+  const c = getHarness("claude");
+  eq(c.launch({ prompt: PROMPT, workerMode: "plan", shell: "bash" }), `claude --permission-mode plan "${PROMPT}"`, "bash interactive");
+  eq(c.launch({ prompt: PROMPT, workerMode: "acceptEdits", shell: "pwsh" }), `claude --permission-mode acceptEdits '${PROMPT}'`, "pwsh single-quoted");
+  eq(c.launch({ prompt: PROMPT, autonomous: true, shell: "bash" }), `claude -p "${PROMPT}" --permission-mode acceptEdits`, "headless");
+  eq(c.launch({ prompt: PROMPT, workerMode: "plan", shell: "bash", lane: "api" }), `ANTHROPIC_API_KEY="$SLICE_ROADMAP_API_KEY" claude --permission-mode plan "${PROMPT}"`, "api lane wraps bash");
+  eq(c.launch({ prompt: PROMPT, workerMode: "plan", shell: "pwsh", lane: "api" }), `claude --permission-mode plan '${PROMPT}'`, "api lane NOT wired for pwsh (unchanged)");
+});
+
+// WHY: a codex launch must use codex's real surface — `codex exec` for headless, the bare `codex`
+// TUI for interactive, and the worker_mode mapped to its sandbox+approval flags — not claude's, or
+// the spawned process is wrong. Permission normalization is the contract feeding that map.
+test("codex.launch uses codex exec + sandbox/approval flags, and normalizePermission maps worker_mode", () => {
+  eq(normalizePermission("plan"), "readonly", "plan → readonly");
+  eq(normalizePermission("acceptEdits"), "edit", "acceptEdits → edit");
+  eq(normalizePermission("auto"), "edit", "auto → edit");
+  eq(normalizePermission("bypassPermissions"), "full-auto", "bypass → full-auto");
+  const x = getHarness("codex");
+  eq(x.launch({ prompt: PROMPT, workerMode: "plan", shell: "bash" }), `codex --sandbox read-only --ask-for-approval untrusted "${PROMPT}"`, "interactive readonly");
+  eq(x.launch({ prompt: PROMPT, workerMode: "acceptEdits", autonomous: true, shell: "bash" }), `codex exec --sandbox workspace-write --ask-for-approval on-request "${PROMPT}"`, "headless exec + edit sandbox");
+  eq(x.launch({ prompt: PROMPT, workerMode: "bypassPermissions", autonomous: true, shell: "bash", lane: "api" }), `OPENAI_API_KEY="$SLICE_ROADMAP_API_KEY" codex exec --sandbox danger-full-access --ask-for-approval never "${PROMPT}"`, "full-auto + codex api lane");
+});
+
+// WHY: the generic profile must NOT be silently spawnable — it has no binary, so a direct launch
+// would run a bogus command. It's flagged non-spawnable (fanout refuses + points at --emit acp) and
+// its launch string is an obvious placeholder, never a real harness command.
+test("generic profile is non-spawnable and emits a clearly-templated placeholder", () => {
+  const g = getHarness("generic");
+  ok(g.spawnable === false, "generic is not directly spawnable");
+  ok(getHarness("claude").spawnable === true && getHarness("codex").spawnable === true, "claude + codex are spawnable");
+  ok(/<agent-cli>/.test(g.launch({ prompt: PROMPT })), "placeholder, not a real command");
+});
+
+// ── cross-harness stage 3: ACP wave export (Tier B orchestrator interop) ─────
+const acpGraph = {
+  meta: { schema_version: 1, program: "T", default_gate: "npm test", branch_convention: "{pi}/{sprint}", worktree_root: "/wt" },
+  pis: [{ id: "a", title: "A", status: "active", sprints: [
+    sp("s1", { status: "active", invoke: "wide", touches: ["a/x", "b/y"], execution: { mode: "agent-team", concurrency: 3, min_concurrency: 2,
+      team: [{ role: "verifier" }, { role: "implementer" }, { role: "integrator" }] } }),
+  ]}],
+};
+
+// WHY: this is the whole Tier-B integration — OpenClaw/Hermes/ACP editors dispatch the wave from this
+// manifest. Each session must carry the sessions_spawn shape (agentId/task/cwd/mode) AND the cwd/
+// branch/baseRef an orchestrator needs to create the worktree, or it can't actually launch the slice.
+test("buildAcpManifest emits sessions_spawn-shaped specs with the brief as the task", () => {
+  const wave = flatten(acpGraph).nodes;
+  const m = buildAcpManifest(wave, acpGraph, { harness: "codex", wave: 1 });
+  eq(m.protocol, "acp", "protocol tag");
+  eq(m.version, 1, "ACP version");
+  eq(m.harness, "codex", "records the harness");
+  eq(m.sessions.length, 1, "one session per slice");
+  const s = m.sessions[0];
+  eq(s.agentId, "codex", "agentId defaults to the harness's ACP id");
+  eq(s.label, "wide", "labelled by invoke");
+  eq(s.cwd, "/wt/a-s1", "cwd is the worktree");
+  eq(s.branch, "a/s1", "carries the branch");
+  eq(s.baseRef, "origin/main", "carries the base ref to cut from");
+  eq(s.mode, "session", "interactive → persistent session mode");
+  ok(/## 0\. Execution strategy/.test(s.task) && /codex exec/.test(s.task), "task is the self-contained brief in the codex dialect");
+});
+
+// WHY: the generic profile has no ACP agent of its own, so the caller MUST be able to name the target
+// agent (--agent); and an autonomous run is a one-shot, which ACP expresses as mode "run".
+test("buildAcpManifest honors the --agent override and maps autonomous → run mode", () => {
+  const wave = flatten(acpGraph).nodes;
+  const m = buildAcpManifest(wave, acpGraph, { harness: "generic", agent: "gemini", autonomous: true });
+  eq(m.sessions[0].agentId, "gemini", "explicit --agent wins (generic has none)");
+  eq(m.sessions[0].mode, "run", "autonomous → one-shot run");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

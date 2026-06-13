@@ -100,27 +100,46 @@ keeping the neutral computation (worker count, floor, composition) shared. With 
 
 ## Staged delivery
 
-1. **Seam (this branch).** `harness.mjs` registry with `claude` (default, current behavior), `codex`, and
-   `generic` profiles for the **directive layer** only. `executionDirectiveLines` becomes harness-aware.
-   `meta.harness`/`--harness` plumbed through `show`. Tests prove: claude output unchanged; codex/generic
-   reword `agent-team` without Agent-Teams-only language. **Lowest risk, highest signal.**
-2. **Launch layer.** Refactor `fanout.mjs`'s hardcoded `claude …` into `profile.launch(...)`; map worker_mode
-   → profile permissions; emit AGENTS.md alongside/instead of the CLAUDE.md reference per profile.
-3. **ACP export (Tier B).** `roadmap fan --emit acp` → a JSON wave manifest of `sessions_spawn`-shaped specs
-   (`{ task: <brief>, cwd: <worktree>, agentId, mode }`) so OpenClaw/Hermes/ACP editors dispatch each slice.
-   The kickoff brief becomes the neutral `task`.
-4. **More profiles.** `opencode`, `gemini`, etc., mostly declarative once the seam + launch layer exist.
+1. **Seam — DONE.** `harness.mjs` registry with `claude` (default, current behavior), `codex`, and
+   `generic` profiles. `executionDirectiveLines` is harness-aware; `meta.harness`/`--harness` plumbed
+   through render/show/brief. claude output is byte-identical; codex/generic reword `agent-team`
+   without Agent-Teams-only language.
+2. **Launch layer — DONE.** `fanout.mjs`'s hardcoded `claude …` is now `profile.launch(...)`. worker_mode
+   normalizes ({readonly|edit|full-auto}) and each profile maps it to its real flags (claude
+   `--permission-mode`; codex `--sandbox` + `--ask-for-approval`). claude commands are byte-identical in
+   both bash and powershell forms; the handoff-doc reference (CLAUDE.md vs AGENTS.md) comes from the profile.
+   The non-spawnable `generic` profile refuses a direct launch and points at the ACP export.
+3. **ACP export (Tier B) — DONE.** `roadmap fan --emit acp` writes a JSON wave manifest of
+   `sessions_spawn`-shaped specs (`{ agentId, task: <brief>, cwd, branch, baseRef, mode }`) so
+   OpenClaw/Hermes/ACP editors dispatch each slice. The self-contained kickoff brief (in the selected
+   dialect) is the `task`; `--agent <id>` names the target ACP agent (required for `generic`); autonomous
+   maps to ACP `mode: "run"`, else `"session"`.
+4. **More profiles — future.** `opencode`, `gemini`, etc., are mostly declarative now the seam + launch
+   layer exist: add a profile object (handoffDoc, nativeModes, permission map, launch, directive).
 
 ---
 
-## Open decisions
+## Decisions (resolved)
 
-1. **`agent-team` naming.** Keep the Claude-native value as the neutral semantic (backward-compatible —
-   recommended), or add a neutral alias like `cluster-parallel` with `agent-team` as a claude-profile synonym.
-2. **Degrade vs. refuse.** When a slice asks for `agent-team` on a harness without native teams, default to
-   **degrade + warn**. A `--strict-harness` flag could turn it into an error for CI.
-3. **Handoff doc.** Emit `AGENTS.md` (the emerging cross-agent standard) for non-claude profiles; keep the
-   CLAUDE.md reference only for the claude profile. Possibly emit both when ambiguous.
+1. **`agent-team` naming — keep it.** The Claude-native value stays as the neutral semantic
+   ("many independent clusters, peer-coordinated, max parallelism"); each profile renders it. No alias.
+   Backward-compatible with the shipped `execution:` block.
+2. **Degrade, don't refuse.** A mode a harness can't run natively (e.g. `agent-team` on codex) **degrades
+   to its equivalent + warns** (never errors). A future `--strict-harness` could make it fatal for CI.
+3. **Handoff doc — per profile.** Non-claude profiles reference `AGENTS.md` (the emerging cross-agent
+   standard) in their directives; the claude profile keeps CLAUDE.md. Driven by `profile.handoffDoc`.
+
+## Consuming the ACP export
+
+```bash
+roadmap fan --wave 1 --harness codex --emit acp --out wave1.acp.json
+# → { protocol:"acp", version:1, harness:"codex", sessions:[ { agentId, task, cwd, branch, baseRef, mode } ] }
+```
+
+An orchestrator creates each worktree (`git worktree add <cwd> -b <branch> <baseRef>`) and dispatches the
+session — e.g. OpenClaw `sessions_spawn({ runtime:"acp", agentId, task, cwd, mode })`. For a non-specific
+target use `--harness generic --agent <id>` to name the ACP agent. The `task` is the full kickoff brief, so
+the session is self-contained — no plugin or `/slice` command required on the far side.
 
 ---
 

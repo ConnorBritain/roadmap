@@ -11,6 +11,23 @@
 
 export const DEFAULT_HARNESS = "claude";
 
+// Normalize Claude's worker_mode vocabulary (the existing meta field) to a harness-neutral
+// permission LEVEL. Non-claude profiles map the level to their own real flags; the claude
+// profile passes the raw worker_mode straight through (it already speaks claude's dialect),
+// so existing claude launches are byte-identical.
+export function normalizePermission(workerMode) {
+  switch (workerMode) {
+    case "bypassPermissions": return "full-auto";
+    case "auto": return "edit";
+    case "acceptEdits": return "edit";
+    case "plan": default: return "readonly";
+  }
+}
+
+// Outer quote char for the prompt, per target shell (bash → ", powershell → '). The launch prompt
+// is built to contain no quotes or ';' (see brief.launchPrompt), so a bare wrap is safe.
+const quoteFor = (shell) => (shell === "pwsh" ? "'" : '"');
+
 // ── shared framing (same neutral computation, different dialect on line 2) ──────
 function headline(spec) {
   if (spec.mode === "solo") return `▶ EXECUTION: solo — single agent, no fan-out.`;
@@ -30,9 +47,23 @@ const nWorkers = (spec) => (spec.workers != null ? `${spec.workers} ` : "");
 const claude = {
   id: "claude",
   handoffDoc: "CLAUDE.md",
+  acpAgentId: "claude",
+  spawnable: true,
   nativeModes: new Set(["solo", "subagents", "dynamic-workflow", "agent-team"]),
   // normalized {readonly|edit|full-auto} -> claude --permission-mode value
   permission: { readonly: "plan", edit: "acceptEdits", "full-auto": "bypassPermissions" },
+  // Build the per-session launch command. claude passes the RAW worker_mode through (its own
+  // dialect), so this is byte-identical to the pre-harness fanout. Lane (api overflow key) wraps
+  // only the bash form, matching the original (the pwsh adapters never wired --lane api).
+  launch({ prompt, workerMode = "plan", autonomous = false, shell = "bash", lane = "max" }) {
+    const q = quoteFor(shell);
+    const base = autonomous
+      ? `claude -p ${q}${prompt}${q} --permission-mode acceptEdits`
+      : `claude --permission-mode ${workerMode} ${q}${prompt}${q}`;
+    return shell !== "pwsh" && lane === "api"
+      ? `ANTHROPIC_API_KEY="$SLICE_ROADMAP_API_KEY" ${base}`
+      : base;
+  },
   directive(spec) {
     const lines = [headline(spec)];
     const fc = floorClause(spec);
@@ -53,12 +84,25 @@ const claude = {
 const codex = {
   id: "codex",
   handoffDoc: "AGENTS.md",
+  acpAgentId: "codex",
+  spawnable: true,
   nativeModes: new Set(["solo", "subagents", "dynamic-workflow"]), // agent-team degrades to parallel sessions
   // normalized -> codex sandbox + approval flags
   permission: {
     readonly: "--sandbox read-only --ask-for-approval untrusted",
     edit: "--sandbox workspace-write --ask-for-approval on-request",
     "full-auto": "--sandbox danger-full-access --ask-for-approval never",
+  },
+  // `codex exec` is non-interactive (headless/autonomous); the bare `codex` TUI is interactive. The
+  // normalized worker_mode maps to codex's sandbox + approval flags. Lane uses OPENAI_API_KEY (bash).
+  launch({ prompt, workerMode = "plan", autonomous = false, shell = "bash", lane = "max" }) {
+    const q = quoteFor(shell);
+    const flags = this.permission[normalizePermission(workerMode)];
+    const bin = autonomous ? "codex exec" : "codex";
+    const base = `${bin} ${flags} ${q}${prompt}${q}`;
+    return shell !== "pwsh" && lane === "api"
+      ? `OPENAI_API_KEY="$SLICE_ROADMAP_API_KEY" ${base}`
+      : base;
   },
   directive(spec) {
     const lines = [headline(spec)];
@@ -80,8 +124,17 @@ const codex = {
 const generic = {
   id: "generic",
   handoffDoc: "AGENTS.md",
+  acpAgentId: null,           // no specific ACP agent — the orchestrator/caller picks (--agent)
+  spawnable: false,           // no binary to spawn directly; use `roadmap fan --emit acp`
   nativeModes: new Set(["solo", "subagents", "dynamic-workflow"]),
   permission: { readonly: "readonly", edit: "edit", "full-auto": "full-auto" },
+  // The generic profile has no binary of its own — it targets ACP orchestrators (OpenClaw/Hermes/
+  // editors), which consume `roadmap fan --emit acp`. This template is a clearly-placeholder preview
+  // for --dry; a real launch is refused (spawnable:false) and pointed at the ACP export.
+  launch({ prompt, workerMode = "plan", shell = "bash" }) {
+    const q = quoteFor(shell);
+    return `<agent-cli> --permission ${normalizePermission(workerMode)} ${q}${prompt}${q}`;
+  },
   directive(spec) {
     const lines = [headline(spec)];
     const fc = floorClause(spec);
