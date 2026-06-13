@@ -6,6 +6,7 @@
 import { flatten, detectCycle, STATUS } from "./graph.mjs";
 import { buildPlan } from "./plan.mjs";
 import { validateGraph } from "./validate-core.mjs";
+import { normalizeExecution, suggestedConcurrency, validateExecution } from "./execution.mjs";
 
 const STATUSES = Object.keys(STATUS);
 const VALID_STATUS = new Set(STATUSES);
@@ -16,7 +17,7 @@ const DONE = new Set(STATUSES.filter((s) => STATUS[s].done));
 const SETTABLE = new Set([
   "title", "what", "status", "status_label", "est_sessions", "weight",
   "deps", "touches", "owns", "gate", "gated_on", "read_order", "resume_action",
-  "prs", "completed_on", "optional",
+  "prs", "completed_on", "optional", "execution", "track",
 ]);
 
 // ── tool registry ─────────────────────────────────────────────────────────────
@@ -72,6 +73,7 @@ export function readShow(graph, args) {
     deps: n.deps, piDeps: n.piDeps, touches: n.touches, owns: n.owns, gate: n.gate,
     gatedOn: n.gatedOn, readOrder: n.readOrder, resumeAction: n.resumeAction,
     estSessions: n.estSessions, prs: n.prs,
+    track: n.track, execution: normalizeExecution(n.execution), suggestedConcurrency: suggestedConcurrency(n),
   };
 }
 export function readValidate(graph) {
@@ -213,6 +215,8 @@ export function validateDocOrThrow(doc) {
   if (cyc) throw new Error(`edit would create a dependency cycle: ${cyc.join(" -> ")}`);
   for (const n of model.nodes) {
     if (!VALID_STATUS.has(n.status)) throw new Error(`invalid status "${n.status}" on slice "${n.invoke}"`);
+    const { errors } = validateExecution(n.execution, n.invoke);
+    if (errors.length) throw new Error(`edit would corrupt the roadmap: ${errors[0]}`);
   }
   return graph;
 }

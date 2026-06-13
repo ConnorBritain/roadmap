@@ -116,7 +116,33 @@
         "resume_action": { "type": "string", "description": "The next action; first sentence is the immediate step" },
         "kickoff_brief": { "type": "string", "description": "'brief' = synthesize from fields; or an inline brief string; or a path to a brief file" },
         "prs": { "type": "array", "items": { "type": "string" }, "description": "Merged PR refs, e.g. ['#359']" },
-        "completed_on": { "type": "string", "description": "ISO date a sprint flipped to complete (drives the Recently-completed window)" }
+        "completed_on": { "type": "string", "description": "ISO date a sprint flipped to complete (drives the Recently-completed window)" },
+        "track": { "type": "string", "description": "Optional lane label for the three-track partition (e.g. A | B | C). --track filters a fanout to one lane. Omit for an untracked slice." },
+        "execution": { "$ref": "#/$defs/execution" }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Per-slice staffing-strategy HINT: how to fan this slice out (topology + suggested LIVE worker count + team composition). All fields optional and backward-compatible — a slice that omits the block behaves exactly as before; the lead chooses by gut. Rendered as an imperative directive so a launched session staffs at the declared topology instead of chronically under-parallelizing.",
+      "properties": {
+        "mode": {
+          "enum": ["solo", "subagents", "dynamic-workflow", "agent-team"],
+          "description": "Fan-out topology. solo = atomic/exploratory/branching-sequential (no fan-out). subagents = scoped sprint, lead-merges + disjoint-file workers (the current default). dynamic-workflow = an in-slice pipeline whose steps depend on each other. agent-team = many genuinely-independent file-clusters + peer coordination (native Agent Teams)."
+        },
+        "concurrency": { "type": "integer", "minimum": 1, "description": "Suggested LIVE worker count" },
+        "min_concurrency": { "type": "integer", "minimum": 1, "description": "Floor — warn/refuse if a run uses fewer on disjoint files. Must be ≤ concurrency when both are set." },
+        "team": { "type": "array", "description": "Team composition; omit for solo. When concurrency is also set, the head-count must agree.", "items": { "$ref": "#/$defs/execRole" } },
+        "rationale": { "type": "string", "description": "Why this topology + count (surfaced verbatim in the directive)" }
+      }
+    },
+    "execRole": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role"],
+      "properties": {
+        "role": { "enum": ["verifier", "implementer", "reviewer", "researcher", "integrator"] },
+        "count": { "type": "integer", "minimum": 1, "default": 1, "description": "How many of this role (default 1)" }
       }
     }
   }

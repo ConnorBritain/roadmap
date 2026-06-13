@@ -7,6 +7,7 @@
 import { flatten, computeWaves, readyNodes } from "./graph.mjs";
 import { recommendConcurrency, nodeWeight } from "./recommend.mjs";
 import { branchFor, worktreeFor, launchPrompt } from "./brief.mjs";
+import { normalizeExecution, suggestedConcurrency } from "./execution.mjs";
 
 const round = (x) => Math.round(x * 10) / 10;
 
@@ -38,6 +39,9 @@ export function buildPlan(graph, opts = {}) {
         worktree: worktreeFor(n, graph),
         prompt: launchPrompt(n),
         what: n.what,
+        track: n.track,
+        execution: normalizeExecution(n.execution),
+        suggestedConcurrency: suggestedConcurrency(n),
       }))
     ),
     held: {

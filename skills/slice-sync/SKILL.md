@@ -11,6 +11,7 @@ You reconcile `docs/roadmap/roadmap.yaml` against what actually shipped, then re
 2. **Ground truth.** `gh pr list --state merged --search "merged:>=<date>" --json number,title,mergedAt` + `git log --since=<date> --first-parent --oneline`. Read STATUS/tracker if the repo has them (see `meta.links`).
 3. **Compute deltas** per sprint: a slice whose work merged → flip its `status` to `complete` and add the PR to `prs` (cite it); a `next`/`scheduled` slice with merges against it → promote; a newly-scoped PI → propose adding it (flag for a detail entry). **Keep `invoke` keys stable** — they're the `/slice` keys.
 4. **Apply** with `Edit` to the YAML, then **re-render**: `roadmap render` (regenerates SLICES.md from the YAML). With `--dry-run`, print the proposed YAML edits + PR→change mapping and stop.
-5. **Report** a concise PR→change mapping. Cite a merged PR for every status flip; surface anything ambiguous rather than guessing.
+5. **Under-parallelization guardrail.** For a slice you're flipping to complete that declares an `execution.min_concurrency` and touches disjoint dirs, check how many live workers it actually ran (PR/commit authorship, session logs, or the user). If it ran with fewer than its floor, surface a one-line warning — *"slice X ran 2 workers; min_concurrency 4 — under-parallelized"* — so the next run staffs correctly. (`underParallelizedWarnings` in `lib/sync-core.mjs` computes these from `[{ invoke, workers }]` telemetry.) Don't block the sync on it; it's a nudge.
+6. **Report** a concise PR→change mapping. Cite a merged PR for every status flip; surface anything ambiguous rather than guessing.
 
 This is a docs/data refresh — no test gate. If the working tree has unrelated dirty changes, note it.
