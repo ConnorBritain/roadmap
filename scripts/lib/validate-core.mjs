@@ -3,6 +3,7 @@
 // Structural checks + dependency resolution (via flatten) + cycle detection.
 
 import { flatten, detectCycle, STATUS } from "./graph.mjs";
+import { validateExecution } from "./execution.mjs";
 
 const isDone = (s) => !!(STATUS[s] && STATUS[s].done);
 
@@ -39,6 +40,10 @@ export function validateGraph(graph) {
       if (!sp.invoke) err(`${where}: invoke key required`);
       if (sp.gated_on && sp.status !== "gated") warn(`${where}: gated_on set but status is "${sp.status}" (expected gated)`);
       if (!isDone(sp.status) && sp.est_sessions == null) warn(`${where}: no est_sessions (sessions-remaining rollup will undercount)`);
+      // Optional execution-strategy hint. Absent → no-op (backward-compatible); present → enum/type/consistency checks.
+      const exec = validateExecution(sp.execution, where);
+      for (const e of exec.errors) err(e);
+      for (const w of exec.warnings) warn(w);
     }
   }
 

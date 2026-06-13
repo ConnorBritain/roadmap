@@ -66,7 +66,7 @@ Run from anywhere inside a repo. `docs/roadmap/roadmap.yaml` is found by walking
 | `roadmap plan [-c N] [--review-ceiling N] [--use-free-ram] [-j]` | **Recommended cap** (and what constrains it), the execution **waves**, and per-node launch commands. Spawns nothing. `-j/--json` emits the plan for tooling. |
 | `roadmap render [-c N] [-s]` | Regenerate `docs/SLICES.md` from the YAML (`-s/--stdout` prints instead of writing). |
 | `roadmap validate` | Structural, dependency, and cycle checks. Non-zero exit on error. |
-| `roadmap fan [-t wt\|warp\|tmux\|print\|background] [-c N] [-w N] [--lead-claude] [-d] [-o file] [--worker-mode <m>] [--autonomous --yes-spawn-autonomous]` | Launch a wave: a lead pane/tab plus one per slice, each in its own worktree with a synthesized kickoff brief. **Launches by default**; `-d/--dry` or `-o/--out` to preview. Worker **and** lead sessions take `--permission-mode` from `meta.worker_mode` (falls back to `plan`); `--worker-mode` overrides per run. Terminal defaults per platform (win32 to `wt`, else `tmux`). |
+| `roadmap fan [-t wt\|warp\|tmux\|print\|background] [-c N] [-w N] [--track A] [--lead-claude] [-d] [-o file] [--worker-mode <m>] [--autonomous --yes-spawn-autonomous]` | Launch a wave: a lead pane/tab plus one per slice, each in its own worktree with a synthesized kickoff brief. **Launches by default**; `-d/--dry` or `-o/--out` to preview. `--track <lane>` fans out only the slices in that lane. Worker **and** lead sessions take `--permission-mode` from `meta.worker_mode` (falls back to `plan`); `--worker-mode` overrides per run. Terminal defaults per platform (win32 to `wt`, else `tmux`). |
 | `roadmap cleanup [-r] [-f]` | Prune fanout worktrees merged into the base branch and clean. **Dry by default**; `-r/--remove` acts; `-f/--force` includes unmerged/dirty. Only touches worktrees under the worktree root. |
 | `roadmap mcp` | Run the MCP server (stdio JSON-RPC) directly, for debugging or non-plugin registration. The plugin starts it for you. |
 | `roadmap watch` | Watch this roadmap's fanout PRs and print a line as each becomes ready / conflicts / merges. The plugin runs it as a monitor; this is the manual pane version. |
@@ -165,6 +165,17 @@ pis:
           PLUS the session integration tests
         read_order: ["docs/auth.md (the design)"]
         resume_action: Wire JWT issuance + refresh; thread through middleware.
+        track: A                  # optional lane label (forward-compat with the three-track partition)
+        execution:                # optional per-slice staffing-strategy hint (see below)
+          mode: agent-team
+          concurrency: 5
+          min_concurrency: 4
+          team:
+            - role: verifier
+            - role: implementer
+              count: 3
+            - role: reviewer
+          rationale: "16 disjoint fault-class files; verifier-first; one reviewer reconciles."
 ```
 
 - **`invoke`** is the slice key you launch with. Stable and unique across the file, so renaming a title never breaks a reference.
@@ -172,6 +183,45 @@ pis:
 - **`touches`/`owns`** mechanize the two-wave pattern: two ready slices that write the same file never share a wave; a convergence sprint just `deps`-on the divergent ones.
 - **`gated_on: <name>`** marks a human-gated slice. It never auto-schedules; it surfaces under "held on a human."
 - **`worker_mode`** sets the `--permission-mode` launched sessions start in; **`weight`** (`heavy|medium|light`) optionally overrides a sprint's inferred resource class.
+- **`execution`** declares HOW to staff the slice (see [Execution strategy hints](#execution-strategy-hints)); **`track`** tags the slice's lane for `--track`.
+
+### Execution strategy hints
+
+Agents chronically **under-parallelize** — a lone subagent where a team fits, 2–3 workers where 5+ are fruitful, rarely reaching for Agent Teams. The optional per-slice `execution:` block lets the author *declare* the staffing so the launched session works at the intended topology instead of choosing by gut. **Every field is optional and backward-compatible: a slice that omits the block behaves exactly as before, and an existing `roadmap.yaml` validates and renders unchanged.**
+
+```yaml
+execution:
+  mode: agent-team        # solo | subagents | dynamic-workflow | agent-team
+  concurrency: 5          # suggested LIVE worker count
+  min_concurrency: 4      # floor — /slice-sync warns if a run used fewer on disjoint files
+  team:                   # composition (omit for solo); roles: verifier|implementer|reviewer|researcher|integrator
+    - role: verifier
+    - role: implementer
+      count: 3
+    - role: reviewer
+  rationale: "16 disjoint fault-class files; verifier-first; one reviewer reconciles."
+```
+
+**Modes** (the topology rubric):
+
+| `mode` | When | What the directive tells the session |
+|---|---|---|
+| `solo` | Atomic, exploratory, or branching-sequential work. | Single agent, no fan-out. |
+| `subagents` | A scoped sprint: lead-merges + disjoint-file workers (the current default). | Spawn N background subagents per CLAUDE.md § Subagent Hand-off. |
+| `dynamic-workflow` | An in-slice pipeline whose steps depend on each other. | Run a step-gated pipeline; don't collapse it to one pass. |
+| `agent-team` | Many genuinely-independent file-clusters needing peer coordination. | Invoke Agent Teams now (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`) with the named count + composition. |
+
+The block renders as an **imperative directive** at the top of the slice's read-out — in `SLICES.md`, in `roadmap show` / `/slice`, and verbatim in each launched session's kickoff brief:
+
+```
+▶ EXECUTION: agent-team — 5 workers (1 verifier · 3 implementers · 1 reviewer).
+  The touched files are disjoint. DO NOT run solo or fewer than 4. Invoke Agent Teams now (set CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1).
+  Rationale: 16 disjoint fault-class files; verifier-first; one reviewer reconciles.
+```
+
+**Validation** (`roadmap validate`) checks the enums (`mode`, `role`), the integer bounds (`concurrency`/`min_concurrency`/`count` ≥ 1), `min_concurrency ≤ concurrency`, and that a declared `team` head-count agrees with `concurrency` when both are present. When `execution` is absent or `concurrency` is unset, a *suggested* floor is computed from the slice's `touches` (the count of distinct disjoint top-level dir clusters, capped at 6) and surfaced as a hint — never a hard default. After a wave, `/slice-sync` flags any slice that declared a `min_concurrency` floor, touches disjoint dirs, yet ran with fewer live workers (*"slice X ran 2 workers; min_concurrency 4 — under-parallelized"*).
+
+**`--track`** lets one person fan out only their lane: `roadmap fan --wave 1 --track A` keeps just the wave's slices tagged `track: A` (forward-compat with the three-track partition).
 
 ---
 

@@ -7,6 +7,7 @@ import {
   flatten, computeWaves, execPlan, sessionsRemaining,
   statusDisplay, emojiFor, isDone,
 } from "./graph.mjs";
+import { executionDirectiveLines } from "./execution.mjs";
 
 // renderMarkdown(graph, { cap }) -> string. cap defaults to meta.default_concurrency (or 3).
 export function renderMarkdown(graph, opts = {}) {
@@ -130,6 +131,13 @@ export function renderMarkdown(graph, opts = {}) {
       if (isDone(sp.status)) continue;
       const node = model.nodes.find((n) => n.nodeKey === `${pi.id}/${sp.id}`);
       w(`### ${B}${sp.invoke}${B}`);
+      // Execution directive at the TOP of the read-out (only when the slice declares one — a
+      // slice without an execution block renders byte-identically to before).
+      const exec = executionDirectiveLines(node);
+      if (exec) {
+        exec.forEach((line) => w(`> ${line}`));
+        w("");
+      }
       w(`- **What:** ${sp.what || sp.title}`);
       w(`- **Status:** ${statusDisplay(sp.status, sp.status_label)} (${pi.program_label || pi.id.toUpperCase()}${pi.id ? ` · ${sp.id.toUpperCase()}` : ""})`);
       if (node && (node.deps.length || node.piDeps.length)) {

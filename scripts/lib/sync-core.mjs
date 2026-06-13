@@ -5,6 +5,7 @@
 
 import { flatten, isDone } from "./graph.mjs";
 import { branchFor } from "./brief.mjs";
+import { normalizeExecution, dirClusters } from "./execution.mjs";
 
 // findUnrecordedMerges(graph, mergedPrs): mergedPrs is [{ number, headRefName }] (state=merged).
 // Returns the not-done slices whose fanout branch has a merged PR: [{ invoke, pr, branch }].
@@ -19,6 +20,28 @@ export function findUnrecordedMerges(graph, mergedPrs) {
     if (isDone(n.status)) continue;
     const branch = branchFor(n, graph);
     if (byBranch.has(branch)) out.push({ invoke: n.invoke, pr: byBranch.get(branch), branch });
+  }
+  return out;
+}
+
+// Post-run guardrail (the under-parallelization warning surfaced in /slice-sync). `runStats` is the
+// observed run telemetry/log: [{ invoke, workers }] (the LIVE worker count a slice actually ran with).
+// Flags any slice that declares a `min_concurrency` floor, touches ≥2 disjoint dir clusters (so it
+// COULD have parallelized), and ran with fewer live workers than its floor. Returns warning strings.
+export function underParallelizedWarnings(graph, runStats) {
+  const model = flatten(graph);
+  const byInvoke = new Map(model.nodes.map((n) => [n.invoke, n]));
+  const out = [];
+  for (const r of runStats || []) {
+    if (!r || r.workers == null || !Number.isFinite(r.workers)) continue;
+    const n = byInvoke.get(r.invoke);
+    if (!n || !n.execution) continue;
+    const exec = normalizeExecution(n.execution);
+    if (!exec || exec.minConcurrency == null) continue;
+    const disjoint = dirClusters([...(n.touches || []), ...(n.owns || [])]).size >= 2;
+    if (disjoint && r.workers < exec.minConcurrency) {
+      out.push(`slice ${r.invoke} ran ${r.workers} worker${r.workers === 1 ? "" : "s"}; min_concurrency ${exec.minConcurrency} — under-parallelized`);
+    }
   }
   return out;
 }

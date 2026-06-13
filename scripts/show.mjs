@@ -4,6 +4,7 @@
 
 import { loadGraph, flatten, statusDisplay, resolveGate } from "./lib/graph.mjs";
 import { branchFor, worktreeFor } from "./lib/brief.mjs";
+import { executionDirectiveLines } from "./lib/execution.mjs";
 
 const args = process.argv.slice(2);
 const val = (n, d) => { const i = args.indexOf(n); return i >= 0 && args[i + 1] && !args[i + 1].startsWith("--") ? args[i + 1] : d; };
@@ -27,6 +28,9 @@ const out = [];
 out.push(`Slice: ${node.invoke}  [${statusDisplay(node.status, node.statusLabel)}]`);
 out.push(`PI:    ${node.programLabel} · ${node.id.toUpperCase()}${node.estSessions != null ? `  (~${node.estSessions} sessions)` : ""}`);
 out.push(`What:  ${node.what}`);
+// Execution directive at the top of the read-out (only when the slice declares one).
+const execLines = executionDirectiveLines(node);
+if (execLines) { out.push(""); execLines.forEach((l) => out.push(l)); }
 if (deps.length) out.push(`Deps:  ${deps.join(", ")}`);
 out.push(`Branch:   ${branchFor(node, graph)}`);
 out.push(`Worktree: ${worktreeFor(node, graph)}`);

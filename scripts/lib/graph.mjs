@@ -72,6 +72,8 @@ export function flatten(graph) {
         gate: sp.gate || "default",
         gatedOn: sp.gated_on || null,
         optional: !!sp.optional,
+        execution: sp.execution || null,   // optional staffing-strategy hint (see lib/execution.mjs)
+        track: sp.track || null,            // optional lane label for the three-track partition (--track)
         readOrder: sp.read_order || [],
         resumeAction: sp.resume_action || "",
         kickoffBrief: sp.kickoff_brief || "brief",

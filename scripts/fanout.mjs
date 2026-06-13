@@ -22,6 +22,7 @@ import { recommendConcurrency } from "./lib/recommend.mjs";
 import { synthesizeBrief, branchFor, worktreeFor, launchPrompt, baseRefOf, remoteOf } from "./lib/brief.mjs";
 import { launchDecision } from "./lib/fanout-core.mjs";
 import { terminalChoices } from "./lib/wizard-core.mjs";
+import { filterByTrack } from "./lib/execution.mjs";
 
 const args = process.argv.slice(2);
 const val = (n, d) => { const i = args.indexOf(n); return i >= 0 && args[i + 1] && !args[i + 1].startsWith("--") ? args[i + 1] : d; };
@@ -29,6 +30,7 @@ const has = (n) => args.includes(n);
 
 const inPath = val("--in", "docs/roadmap/roadmap.yaml");
 const waveIdx = Number(val("--wave", 1));
+const track = val("--track", null);             // forward-compat: fan out only one lane of the three-track partition
 const lane = val("--lane", "max");              // max (subscription) | api (ANTHROPIC_API_KEY)
 const autonomous = has("--autonomous");          // headless claude -p (else interactive, watchable)
 const dry = has("--dry") || has("--print");      // preview only — launch is the DEFAULT
@@ -57,8 +59,14 @@ let waves;
 try { ({ waves } = computeWaves(model, cap)); }
 catch (e) { console.error(`✗ ${e.message}`); process.exit(1); }
 
-const wave = waves[waveIdx - 1] || [];
-if (!wave.length) { console.error(`No runnable slices in wave ${waveIdx} (cap ${cap}).`); process.exit(0); }
+const fullWave = waves[waveIdx - 1] || [];
+// Optional --track filter: a person fans out only their lane (slices whose `track` matches).
+const wave = filterByTrack(fullWave, track);
+if (!wave.length) {
+  const trackNote = track ? ` on track ${track} (of ${fullWave.length} in the wave)` : "";
+  console.error(`No runnable slices in wave ${waveIdx} (cap ${cap})${trackNote}.`);
+  process.exit(0);
+}
 
 // claude invocation per session. Interactive workers START IN PLAN MODE (--permission-mode
 // plan) so each plans its slice before touching anything; autonomous workers run headless.
@@ -253,7 +261,7 @@ const withBom = (s) => (psScript ? "﻿" : "") + s;
 // Launch is the DEFAULT (interactive). --dry/--out preview; autonomous needs the double-ack.
 const decision = launchDecision({ dry, out: outFile, autonomous, okAutonomous });
 
-console.error(`fanout: wave ${waveIdx}/${waves.length} · cap ${cap} (recommended ${rec.recommended}, bound by ${rec.binding.why.split(" — ")[0]}) · term=${term} · lane=${lane} · ${decision.mode}`);
+console.error(`fanout: wave ${waveIdx}/${waves.length} · cap ${cap} (recommended ${rec.recommended}, bound by ${rec.binding.why.split(" — ")[0]}) · term=${term} · lane=${lane}${track ? ` · track=${track}` : ""} · ${decision.mode}`);
 console.error(`slices: ${wave.map((n) => n.invoke).join(", ")}`);
 
 if (outFile) {

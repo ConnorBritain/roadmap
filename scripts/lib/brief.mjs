@@ -5,6 +5,7 @@
 // watched session owns its atomic sequence and never merges its own work.
 
 import { resolveGate } from "./graph.mjs";
+import { executionDirectiveLines } from "./execution.mjs";
 import { resolve } from "node:path";
 
 // Repo conventions (default to git's common defaults; overridable in meta).
@@ -45,6 +46,17 @@ export function synthesizeBrief(node, graph) {
   const owns = [...(node.owns || []), ...(node.touches || [])];
   const ro = (node.readOrder || []).map((r, i) => `${i + 1}. ${r}`).join("\n") || "_(see the slice's detail entry in docs/SLICES.md)_";
 
+  // Carry the imperative execution directive VERBATIM (only when the slice declares one), so the
+  // launched session staffs at the declared topology — an agent-team slice invokes Agent Teams
+  // rather than running solo. Section 0 = the very first thing the session reads.
+  const execLines = executionDirectiveLines(node);
+  const execSection = execLines
+    ? `## 0. Execution strategy — staff this BEFORE you start
+${execLines.join("\n")}
+
+`
+    : "";
+
   return `# Kickoff — ${node.invoke}  (${node.programLabel} · ${node.id.toUpperCase()})
 
 > Uncommitted brief for this fanout session. You own the atomic sequence
@@ -53,7 +65,7 @@ export function synthesizeBrief(node, graph) {
 **Slice:** \`${node.invoke}\`  ·  **Branch:** \`${branch}\`
 **What:** ${node.what || node.title}
 
-## 1. Scope / target
+${execSection}## 1. Scope / target
 ${owns.length ? owns.map((f) => `- \`${f}\``).join("\n") : "- (scope to this slice only; see read-order)"}
 
 ## 2. Read-order (orient first — paths are relative to \`docs/\`; you're at the repo root, so e.g. \`sprints/...\` = \`docs/sprints/...\`, and \`../STATUS.md\` = \`STATUS.md\`)
