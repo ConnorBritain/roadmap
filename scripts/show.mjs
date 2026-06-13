@@ -28,8 +28,10 @@ const out = [];
 out.push(`Slice: ${node.invoke}  [${statusDisplay(node.status, node.statusLabel)}]`);
 out.push(`PI:    ${node.programLabel} · ${node.id.toUpperCase()}${node.estSessions != null ? `  (~${node.estSessions} sessions)` : ""}`);
 out.push(`What:  ${node.what}`);
-// Execution directive at the top of the read-out (only when the slice declares one).
-const execLines = executionDirectiveLines(node);
+// Execution directive at the top of the read-out (only when the slice declares one). The dialect
+// is the harness from --harness, else meta.harness, else the default (claude).
+const harness = val("--harness", null) || (graph.meta && graph.meta.harness);
+const execLines = executionDirectiveLines(node, { harness });
 if (execLines) { out.push(""); execLines.forEach((l) => out.push(l)); }
 if (deps.length) out.push(`Deps:  ${deps.join(", ")}`);
 out.push(`Branch:   ${branchFor(node, graph)}`);

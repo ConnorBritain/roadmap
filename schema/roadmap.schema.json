@@ -20,6 +20,7 @@
         "branch_convention": { "type": "string", "default": "{pi}/{sprint}" },
         "worktree_root": { "type": "string", "description": "Parent dir for per-sprint worktrees; use a WSL/Linux-fs path, NOT a OneDrive-synced checkout" },
         "terminal": { "enum": ["warp", "wt", "tmux", "iterm", "background", "print"], "default": "print", "description": "Default terminal adapter for /slice-fanout launches" },
+        "harness": { "type": "string", "default": "claude", "description": "Agent harness the execution directives are written for: claude (default, native Agent Teams) | codex | generic (any ACP orchestrator). Selects the directive dialect; --harness overrides per run. See docs/cross-harness.md." },
         "default_concurrency": { "type": "integer", "minimum": 1, "default": 3 },
         "worker_mode": { "enum": ["plan", "auto", "acceptEdits", "bypassPermissions"], "default": "plan", "description": "Default --permission-mode for launched worker + lead sessions; --worker-mode overrides. 'auto' = auto-approve tool/bash/MCP with safety checks (NOT a bypass); 'plan' = read-only research that gates edits behind plan approval." },
         "completed_window_days": { "type": "integer", "minimum": 1, "default": 14, "description": "How recently a sprint must have completed to appear in the Recently-completed table" },

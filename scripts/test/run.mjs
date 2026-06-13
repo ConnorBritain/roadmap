@@ -21,6 +21,8 @@ import {
 } from "../lib/execution.mjs";
 import { renderMarkdown } from "../lib/render-core.mjs";
 import { validateGraph } from "../lib/validate-core.mjs";
+import { getHarness, isKnownHarness, supportsModeNatively, normalizePermission, DEFAULT_HARNESS } from "../lib/harness.mjs";
+import { buildAcpManifest } from "../lib/acp.mjs";
 import { parseDocument } from "yaml";
 import { join, resolve } from "node:path";
 
@@ -836,6 +838,164 @@ test("underParallelizedWarnings flags a disjoint slice that ran below its floor,
   eq(warns.length, 1, "only the genuinely under-parallelized slice warns");
   ok(/slice wide ran 2 workers; min_concurrency 4 — under-parallelized/.test(warns[0]), "warning names the slice, the count, and the floor");
   eq(underParallelizedWarnings(g, []), [], "no telemetry → no warnings");
+});
+
+// ── cross-harness profiles: the directive dialect seam ───────────────────────
+const teamExec = { mode: "agent-team", concurrency: 5, min_concurrency: 4,
+  team: [{ role: "verifier" }, { role: "implementer", count: 3 }, { role: "reviewer" }],
+  rationale: "16 disjoint fault-class files; verifier-first; one reviewer reconciles." };
+
+// WHY: backward compatibility is the whole contract — the default (claude) dialect must produce the
+// EXACT wording it did before the harness seam existed, or every existing repo's SLICES.md churns.
+test("executionDirectiveLines default (claude) is byte-identical to the pre-harness wording", () => {
+  const node = { touches: ["a/x", "b/y"], execution: teamExec };
+  const expected = [
+    "▶ EXECUTION: agent-team — 5 workers (1 verifier · 3 implementers · 1 reviewer).",
+    "  The touched files are disjoint. DO NOT run solo or fewer than 4. Invoke Agent Teams now (set CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1).",
+    "  Rationale: 16 disjoint fault-class files; verifier-first; one reviewer reconciles.",
+  ];
+  eq(executionDirectiveLines(node), expected, "no opts → claude wording");
+  eq(executionDirectiveLines(node, { harness: "claude" }), expected, "explicit claude → same");
+  eq(executionDirectiveLines(node, { harness: "bogus" }), expected, "unknown harness falls back to claude");
+  eq(DEFAULT_HARNESS, "claude", "claude is the default");
+});
+
+// WHY: the point of the feature is that Agent-Teams-only language doesn't leak onto harnesses that
+// can't run it. codex must REWORD agent-team into its truthful equivalent (parallel codex exec +
+// integrator) and reference AGENTS.md, not CLAUDE.md.
+test("codex dialect degrades agent-team to parallel codex exec and never emits Claude-only language", () => {
+  const text = executionDirectiveLines({ touches: ["a/x", "b/y"], execution: teamExec }, { harness: "codex" }).join("\n");
+  ok(/▶ EXECUTION: agent-team — 5 workers \(1 verifier · 3 implementers · 1 reviewer\)\./.test(text), "headline keeps the neutral count + composition");
+  ok(/codex exec/.test(text), "names the codex exec mechanism");
+  ok(/integrator/.test(text), "integrator reconciles");
+  ok(!/Agent Teams now/.test(text) && !/CLAUDE_CODE_EXPERIMENTAL/.test(text), "no Agent-Teams-only language");
+  ok(!/CLAUDE\.md/.test(text), "no CLAUDE.md reference");
+  // subagents on codex → codex exec sessions per AGENTS.md
+  const subs = executionDirectiveLines({ touches: ["a/x"], execution: { mode: "subagents", concurrency: 3, min_concurrency: 2 } }, { harness: "codex" }).join("\n");
+  ok(/codex exec.*AGENTS\.md/.test(subs) && /DO NOT run solo or fewer than 2\./.test(subs), "subagents → codex exec + AGENTS.md + floor");
+});
+
+// WHY: the generic profile is the catch-all for any ACP orchestrator (OpenClaw/Hermes/editors); it
+// must be harness-neutral — no claude/codex-specific verbs — so it reads correctly everywhere.
+test("generic dialect is harness-neutral and degrades agent-team to parallel worker sessions", () => {
+  const text = executionDirectiveLines({ touches: ["a/x", "b/y"], execution: teamExec }, { harness: "generic" }).join("\n");
+  ok(/parallel worker sessions/.test(text) && /integrator/.test(text), "neutral parallel-sessions wording");
+  ok(!/Agent Teams/.test(text) && !/codex/.test(text) && !/CLAUDE\.md/.test(text), "no harness-specific verbs");
+});
+
+// WHY: a profile's metadata drives later stages (launch command, handoff doc, degrade warnings); the
+// registry + capability lookups must be correct or those stages mis-staff.
+test("harness registry: known ids, handoff doc, and native-mode capability", () => {
+  ok(isKnownHarness("claude") && isKnownHarness("codex") && isKnownHarness("generic"), "the three seed profiles exist");
+  ok(!isKnownHarness("nope"), "unknown id is not known");
+  eq(getHarness("codex").handoffDoc, "AGENTS.md", "codex reads AGENTS.md");
+  eq(getHarness("claude").handoffDoc, "CLAUDE.md", "claude reads CLAUDE.md");
+  ok(supportsModeNatively("claude", "agent-team"), "claude runs agent-team natively");
+  ok(!supportsModeNatively("codex", "agent-team"), "codex degrades agent-team");
+  ok(supportsModeNatively("codex", "subagents") && supportsModeNatively("generic", "solo"), "common modes are native everywhere");
+});
+
+// WHY: an unknown harness id is a typo, not a crash — it must warn (and fall back), and a non-native
+// mode must surface a degrade notice so the author isn't surprised by reworded output.
+test("validateGraph warns on an unknown harness and on a non-native mode (never errors)", () => {
+  const mk = (meta, execution) => ({ meta: { schema_version: 1, program: "T", ...meta },
+    pis: [{ id: "a", title: "A", status: "active", sprints: [sp("s1", { status: "active", est_sessions: 1, execution })] }] });
+  const unknown = validateGraph(mk({ harness: "bogus" }, { mode: "subagents", concurrency: 2 }));
+  eq(unknown.errors.length, 0, "unknown harness is not fatal");
+  ok(unknown.warnings.some((w) => /harness "bogus" is not a known profile/.test(w)), "warns on unknown harness");
+  const degrade = validateGraph(mk({ harness: "codex" }, { mode: "agent-team", concurrency: 2 }));
+  eq(degrade.errors.length, 0, "non-native mode is not fatal");
+  ok(degrade.warnings.some((w) => /not native to harness "codex"; the directive degrades/.test(w)), "warns on degrade");
+  // claude (native) → no degrade warning
+  ok(!validateGraph(mk({ harness: "claude" }, { mode: "agent-team", concurrency: 2 })).warnings.some((w) => /degrades/.test(w)), "native mode → no degrade warning");
+});
+
+// WHY: renderMarkdown must honor meta.harness AND an explicit opts.harness override, so a repo can
+// pin its dialect and a one-off render can switch it — without either touching a no-execution slice.
+test("renderMarkdown honors meta.harness and the opts.harness override", () => {
+  const g = (meta) => ({ meta: { schema_version: 1, program: "T", ...meta }, pis: [{ id: "a", title: "A", status: "active",
+    sprints: [{ id: "s1", title: "Fan", status: "active", invoke: "fan-slice", what: "do it", est_sessions: 1,
+      touches: ["a/x", "b/y"], execution: teamExec }] }] });
+  ok(renderMarkdown(g({ harness: "codex" })).includes("codex exec"), "meta.harness=codex → codex wording");
+  ok(renderMarkdown(g({}), { harness: "codex" }).includes("codex exec"), "opts.harness override → codex wording");
+  ok(renderMarkdown(g({})).includes("Invoke Agent Teams now"), "default → claude wording");
+});
+
+// ── cross-harness stage 2: profile-driven launch commands ────────────────────
+const PROMPT = "Read the .kickoff.md file in this directory. Do NOT merge.";
+
+// WHY: the launch layer must stay byte-identical for claude — the same `claude --permission-mode …`
+// (and the same `-p` headless form, and the same bash-only api-lane wrap) the fanout emitted before
+// the harness seam, in BOTH the bash and powershell quoting, or every existing launch script churns.
+test("claude.launch reproduces the original command in bash + pwsh, headless, and api-lane forms", () => {
+  const c = getHarness("claude");
+  eq(c.launch({ prompt: PROMPT, workerMode: "plan", shell: "bash" }), `claude --permission-mode plan "${PROMPT}"`, "bash interactive");
+  eq(c.launch({ prompt: PROMPT, workerMode: "acceptEdits", shell: "pwsh" }), `claude --permission-mode acceptEdits '${PROMPT}'`, "pwsh single-quoted");
+  eq(c.launch({ prompt: PROMPT, autonomous: true, shell: "bash" }), `claude -p "${PROMPT}" --permission-mode acceptEdits`, "headless");
+  eq(c.launch({ prompt: PROMPT, workerMode: "plan", shell: "bash", lane: "api" }), `ANTHROPIC_API_KEY="$SLICE_ROADMAP_API_KEY" claude --permission-mode plan "${PROMPT}"`, "api lane wraps bash");
+  eq(c.launch({ prompt: PROMPT, workerMode: "plan", shell: "pwsh", lane: "api" }), `claude --permission-mode plan '${PROMPT}'`, "api lane NOT wired for pwsh (unchanged)");
+});
+
+// WHY: a codex launch must use codex's real surface — `codex exec` for headless, the bare `codex`
+// TUI for interactive, and the worker_mode mapped to its sandbox+approval flags — not claude's, or
+// the spawned process is wrong. Permission normalization is the contract feeding that map.
+test("codex.launch uses codex exec + sandbox/approval flags, and normalizePermission maps worker_mode", () => {
+  eq(normalizePermission("plan"), "readonly", "plan → readonly");
+  eq(normalizePermission("acceptEdits"), "edit", "acceptEdits → edit");
+  eq(normalizePermission("auto"), "edit", "auto → edit");
+  eq(normalizePermission("bypassPermissions"), "full-auto", "bypass → full-auto");
+  const x = getHarness("codex");
+  eq(x.launch({ prompt: PROMPT, workerMode: "plan", shell: "bash" }), `codex --sandbox read-only --ask-for-approval untrusted "${PROMPT}"`, "interactive readonly");
+  eq(x.launch({ prompt: PROMPT, workerMode: "acceptEdits", autonomous: true, shell: "bash" }), `codex exec --sandbox workspace-write --ask-for-approval on-request "${PROMPT}"`, "headless exec + edit sandbox");
+  eq(x.launch({ prompt: PROMPT, workerMode: "bypassPermissions", autonomous: true, shell: "bash", lane: "api" }), `OPENAI_API_KEY="$SLICE_ROADMAP_API_KEY" codex exec --sandbox danger-full-access --ask-for-approval never "${PROMPT}"`, "full-auto + codex api lane");
+});
+
+// WHY: the generic profile must NOT be silently spawnable — it has no binary, so a direct launch
+// would run a bogus command. It's flagged non-spawnable (fanout refuses + points at --emit acp) and
+// its launch string is an obvious placeholder, never a real harness command.
+test("generic profile is non-spawnable and emits a clearly-templated placeholder", () => {
+  const g = getHarness("generic");
+  ok(g.spawnable === false, "generic is not directly spawnable");
+  ok(getHarness("claude").spawnable === true && getHarness("codex").spawnable === true, "claude + codex are spawnable");
+  ok(/<agent-cli>/.test(g.launch({ prompt: PROMPT })), "placeholder, not a real command");
+});
+
+// ── cross-harness stage 3: ACP wave export (Tier B orchestrator interop) ─────
+const acpGraph = {
+  meta: { schema_version: 1, program: "T", default_gate: "npm test", branch_convention: "{pi}/{sprint}", worktree_root: "/wt" },
+  pis: [{ id: "a", title: "A", status: "active", sprints: [
+    sp("s1", { status: "active", invoke: "wide", touches: ["a/x", "b/y"], execution: { mode: "agent-team", concurrency: 3, min_concurrency: 2,
+      team: [{ role: "verifier" }, { role: "implementer" }, { role: "integrator" }] } }),
+  ]}],
+};
+
+// WHY: this is the whole Tier-B integration — OpenClaw/Hermes/ACP editors dispatch the wave from this
+// manifest. Each session must carry the sessions_spawn shape (agentId/task/cwd/mode) AND the cwd/
+// branch/baseRef an orchestrator needs to create the worktree, or it can't actually launch the slice.
+test("buildAcpManifest emits sessions_spawn-shaped specs with the brief as the task", () => {
+  const wave = flatten(acpGraph).nodes;
+  const m = buildAcpManifest(wave, acpGraph, { harness: "codex", wave: 1 });
+  eq(m.protocol, "acp", "protocol tag");
+  eq(m.version, 1, "ACP version");
+  eq(m.harness, "codex", "records the harness");
+  eq(m.sessions.length, 1, "one session per slice");
+  const s = m.sessions[0];
+  eq(s.agentId, "codex", "agentId defaults to the harness's ACP id");
+  eq(s.label, "wide", "labelled by invoke");
+  eq(s.cwd, "/wt/a-s1", "cwd is the worktree");
+  eq(s.branch, "a/s1", "carries the branch");
+  eq(s.baseRef, "origin/main", "carries the base ref to cut from");
+  eq(s.mode, "session", "interactive → persistent session mode");
+  ok(/## 0\. Execution strategy/.test(s.task) && /codex exec/.test(s.task), "task is the self-contained brief in the codex dialect");
+});
+
+// WHY: the generic profile has no ACP agent of its own, so the caller MUST be able to name the target
+// agent (--agent); and an autonomous run is a one-shot, which ACP expresses as mode "run".
+test("buildAcpManifest honors the --agent override and maps autonomous → run mode", () => {
+  const wave = flatten(acpGraph).nodes;
+  const m = buildAcpManifest(wave, acpGraph, { harness: "generic", agent: "gemini", autonomous: true });
+  eq(m.sessions[0].agentId, "gemini", "explicit --agent wins (generic has none)");
+  eq(m.sessions[0].mode, "run", "autonomous → one-shot run");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

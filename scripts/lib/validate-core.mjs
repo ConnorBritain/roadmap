@@ -4,6 +4,7 @@
 
 import { flatten, detectCycle, STATUS } from "./graph.mjs";
 import { validateExecution } from "./execution.mjs";
+import { isKnownHarness, supportsModeNatively } from "./harness.mjs";
 
 const isDone = (s) => !!(STATUS[s] && STATUS[s].done);
 
@@ -18,6 +19,11 @@ export function validateGraph(graph) {
   if (!meta.program) err("meta.program is required");
   if (meta.terminal && !["warp", "wt", "tmux", "iterm", "background", "print"].includes(meta.terminal)) {
     err(`meta.terminal "${meta.terminal}" is not a known adapter`);
+  }
+  // Unknown harness isn't fatal — it falls back to claude — but warn so a typo doesn't silently
+  // ship the wrong dialect.
+  if (meta.harness && !isKnownHarness(meta.harness)) {
+    warn(`meta.harness "${meta.harness}" is not a known profile (claude | codex | generic); falling back to claude`);
   }
 
   const validStatus = new Set(Object.keys(STATUS));
@@ -44,6 +50,12 @@ export function validateGraph(graph) {
       const exec = validateExecution(sp.execution, where);
       for (const e of exec.errors) err(e);
       for (const w of exec.warnings) warn(w);
+      // Harness-aware degrade notice: a mode the selected harness can't run natively (e.g. agent-team
+      // on codex) still works — it degrades to the equivalent — but warn so the author knows.
+      if (meta.harness && isKnownHarness(meta.harness) && sp.execution && sp.execution.mode &&
+          !supportsModeNatively(meta.harness, sp.execution.mode)) {
+        warn(`${where}: execution.mode "${sp.execution.mode}" is not native to harness "${meta.harness}"; the directive degrades to its equivalent`);
+      }
     }
   }
 

@@ -23,6 +23,8 @@ import { synthesizeBrief, branchFor, worktreeFor, launchPrompt, baseRefOf, remot
 import { launchDecision } from "./lib/fanout-core.mjs";
 import { terminalChoices } from "./lib/wizard-core.mjs";
 import { filterByTrack } from "./lib/execution.mjs";
+import { getHarness } from "./lib/harness.mjs";
+import { buildAcpManifest } from "./lib/acp.mjs";
 
 const args = process.argv.slice(2);
 const val = (n, d) => { const i = args.indexOf(n); return i >= 0 && args[i + 1] && !args[i + 1].startsWith("--") ? args[i + 1] : d; };
@@ -41,9 +43,17 @@ const outFile = val("--out", null);
 // workers' context (separate processes) but observes their PRs/branches and merges.
 const LEAD_PROMPT = "You are the LEAD for this fanout wave. The other panes are independent worker sessions - each owns one slice in its own git worktree and opens a PR. You cannot see their context, but you can observe their work: run gh pr list to see PRs, use git to inspect branches and worktrees, and review then merge each PR in dependency order as it lands. Only you merge - workers never do. Do not write slice code yourself.";
 
+const emit = val("--emit", null);                // --emit acp → write an ACP wave manifest, spawn nothing
+const agentOverride = val("--agent", null);      // ACP agentId override (required for the generic harness)
+
 const graph = loadGraph(inPath);
 const wtRootOverride = val("--worktree-root", null);
 if (wtRootOverride) (graph.meta ||= {}).worktree_root = wtRootOverride;
+// Harness override: flag > meta.harness > 'claude'. Applied to the graph so the directive dialect in
+// every synthesized brief (and the launch command below) matches the selected harness.
+const harnessOverride = val("--harness", null);
+if (harnessOverride) (graph.meta ||= {}).harness = harnessOverride;
+const profile = getHarness(graph.meta && graph.meta.harness);
 const model = flatten(graph);
 // Terminal default is platform-aware (no machine-specifics in the committed YAML):
 // Windows → Windows Terminal tabs; elsewhere → tmux panes. terminalChoices() owns that rule.
@@ -68,17 +78,29 @@ if (!wave.length) {
   process.exit(0);
 }
 
-// claude invocation per session. Interactive workers START IN PLAN MODE (--permission-mode
-// plan) so each plans its slice before touching anything; autonomous workers run headless.
-function claudeCmd(node) {
-  const prompt = launchPrompt(node);
-  const base = autonomous
-    ? `claude -p "${prompt}" --permission-mode acceptEdits`   // NOTE: confirm flag at build/test time
-    : `claude --permission-mode ${workerMode} "${prompt}"`;
-  const withLane = lane === "api"
-    ? `ANTHROPIC_API_KEY="$SLICE_ROADMAP_API_KEY" ${base}`     // api overflow lane (rarely used)
-    : base;                                                    // max: inherit the logged-in subscription
-  return withLane;
+// --emit acp: don't launch — emit an ACP wave manifest an orchestrator (OpenClaw/Hermes/editor)
+// dispatches. Tier B of the cross-harness design; covers every ACP consumer with one export.
+if (emit) {
+  if (emit !== "acp") { console.error(`unknown --emit "${emit}" (supported: acp)`); process.exit(2); }
+  const manifest = buildAcpManifest(wave, graph, { harness: graph.meta && graph.meta.harness, agent: agentOverride, autonomous, wave: waveIdx, track });
+  const json = JSON.stringify(manifest, null, 2) + "\n";
+  if (outFile) {
+    writeFileSync(outFile, json, "utf8");
+    console.error(`✓ wrote ACP wave manifest → ${outFile} (${manifest.sessions.length} session spec(s), agentId=${manifest.sessions[0] ? manifest.sessions[0].agentId : "—"})`);
+  } else {
+    process.stdout.write(json);
+  }
+  process.exit(0);
+}
+
+// Per-session launch command, built by the active harness profile. Interactive workers start in the
+// configured permission mode (default plan — research before edits); autonomous workers run headless.
+// claude reproduces the original command byte-for-byte; codex/generic use their own dialect.
+function workerLaunch(node, shell) {
+  return profile.launch({ prompt: launchPrompt(node), workerMode, autonomous, shell, lane });
+}
+function leadLaunch(shell) {
+  return profile.launch({ prompt: LEAD_PROMPT, workerMode, autonomous: false, shell, lane });
 }
 
 const repoRoot = process.cwd();
@@ -107,13 +129,13 @@ function tmuxScript() {
   L.push(`tmux set -g pane-border-status top 2>/dev/null || true`);
   L.push(`tmux select-pane -t ${session} -T "LEAD — review + merge PRs (workers never merge)"`);
   L.push(leadClaude
-    ? `tmux send-keys -t ${session} 'claude --permission-mode ${workerMode} "${LEAD_PROMPT}"' C-m`
+    ? `tmux send-keys -t ${session} '${leadLaunch("bash")}' C-m`
     : `tmux send-keys -t ${session} 'echo "LEAD pane - review + merge each slice PR as it lands. Workers do NOT merge."' C-m`);
   for (const n of wave) {
     const wt = worktreeFor(n, graph);
     L.push(`tmux split-window -t ${session} -c "${wt}"`);
     L.push(`tmux select-pane -t ${session} -T "${n.invoke}"`);
-    L.push(`tmux send-keys -t ${session} '${claudeCmd(n)}' C-m`);
+    L.push(`tmux send-keys -t ${session} '${workerLaunch(n, "bash")}' C-m`);
     L.push(`tmux select-layout -t ${session} tiled >/dev/null`);
   }
   L.push(`tmux select-layout -t ${session} main-vertical`);
@@ -127,7 +149,7 @@ function printCommands() {
   out.push(`git fetch ${remoteOf(graph)} --quiet`);
   for (const n of wave) {
     out.push(`git worktree add "${worktreeFor(n, graph)}" -b "${branchFor(n, graph)}" ${baseRefOf(graph)}   # ${n.invoke}`);
-    out.push(`(cd "${worktreeFor(n, graph)}" && ${claudeCmd(n)})`);
+    out.push(`(cd "${worktreeFor(n, graph)}" && ${workerLaunch(n, "bash")})`);
   }
   return out.join("\n") + "\n";
 }
@@ -136,20 +158,13 @@ function basicTerminalScript(kind) {
   // warp / wt / background — minimal per-node launchers (full adapters are P3 polish).
   const out = [`# fanout wave ${waveIdx} via ${kind} (basic adapter)`];
   for (const n of wave) {
-    const wt = worktreeFor(n, graph), cmd = claudeCmd(n);
+    const wt = worktreeFor(n, graph), cmd = workerLaunch(n, "bash");
     out.push(`git worktree add "${wt}" -b "${branchFor(n, graph)}" ${baseRefOf(graph)} 2>/dev/null || true   # ${n.invoke}`);
     if (kind === "wt") out.push(`wt new-tab --title "${n.invoke}" -d "${wt}" powershell -NoExit -Command '${cmd}'`);
     else if (kind === "warp") out.push(`# Warp: open a tab at ${wt} running: ${cmd}  (Warp launch-config adapter is P3)`);
     else out.push(`(cd "${wt}" && ${cmd}) &   # background`);
   }
   return out.join("\n") + "\n";
-}
-
-// claude invocation for a PowerShell tab (single-quote the prompt so the outer -Command "" needs no escaping).
-// Interactive workers start in PLAN MODE; autonomous run headless.
-function claudeCmdPwsh(node) {
-  const prompt = launchPrompt(node);
-  return autonomous ? `claude -p '${prompt}' --permission-mode acceptEdits` : `claude --permission-mode ${workerMode} '${prompt}'`;
 }
 
 // Windows Terminal adapter: a self-contained PowerShell script — worktree + brief per slice,
@@ -175,11 +190,11 @@ function wtScript() {
   // inside a tab command (a ';' in a prompt would spawn bogus tabs). Replace with a comma.
   const wtSafe = (s) => s.replace(/;/g, ",");
   const lead = leadClaude
-    ? `claude --permission-mode ${workerMode} '${LEAD_PROMPT}'`
+    ? leadLaunch("pwsh")
     : `Write-Host 'LEAD tab - review + merge each slice PR as it lands. Workers do NOT merge.'`;
   const parts = [`new-tab --title "LEAD" -d "${repoRoot}" powershell -NoExit -Command "${wtSafe(lead)}"`];
   for (const n of wave) {
-    parts.push(`new-tab --title "${n.invoke}" -d "${worktreeFor(n, graph)}" powershell -NoExit -Command "${wtSafe(claudeCmdPwsh(n))}"`);
+    parts.push(`new-tab --title "${n.invoke}" -d "${worktreeFor(n, graph)}" powershell -NoExit -Command "${wtSafe(workerLaunch(n, "pwsh"))}"`);
   }
   // Launch via Start-Process so ShellExecute resolves the 'wt' App Execution Alias — bare `wt`
   // name-resolution fails from a non-interactive script (the alias is a 0-byte reparse point).
@@ -211,10 +226,10 @@ function warpTabConfigToml() {
   const L = [`name = "slice-roadmap-wave${waveIdx}"`, `color = "blue"`, ``];
   // lead on the left; slices stacked on the right (one pane each)
   L.push(tomlSplit("root", "horizontal", wave.length === 1 ? ["lead", "s0"] : ["lead", "slices"]));
-  const leadCmd = leadClaude ? `claude --permission-mode ${workerMode} '${LEAD_PROMPT}'` : `echo 'LEAD - review + merge each slice PR; workers do NOT merge'`;
+  const leadCmd = leadClaude ? leadLaunch("pwsh") : `echo 'LEAD - review + merge each slice PR; workers do NOT merge'`;
   L.push(tomlLeaf("lead", repoRoot, leadCmd, true));
   if (wave.length > 1) L.push(tomlSplit("slices", "vertical", ids));
-  wave.forEach((n, i) => L.push(tomlLeaf(`s${i}`, worktreeFor(n, graph), claudeCmdPwsh(n), false)));
+  wave.forEach((n, i) => L.push(tomlLeaf(`s${i}`, worktreeFor(n, graph), workerLaunch(n, "pwsh"), false)));
   return L.join("\n");
 }
 function warpScript() {
@@ -261,8 +276,15 @@ const withBom = (s) => (psScript ? "﻿" : "") + s;
 // Launch is the DEFAULT (interactive). --dry/--out preview; autonomous needs the double-ack.
 const decision = launchDecision({ dry, out: outFile, autonomous, okAutonomous });
 
-console.error(`fanout: wave ${waveIdx}/${waves.length} · cap ${cap} (recommended ${rec.recommended}, bound by ${rec.binding.why.split(" — ")[0]}) · term=${term} · lane=${lane}${track ? ` · track=${track}` : ""} · ${decision.mode}`);
+console.error(`fanout: wave ${waveIdx}/${waves.length} · cap ${cap} (recommended ${rec.recommended}, bound by ${rec.binding.why.split(" — ")[0]}) · term=${term} · harness=${profile.id} · lane=${lane}${track ? ` · track=${track}` : ""} · ${decision.mode}`);
 console.error(`slices: ${wave.map((n) => n.invoke).join(", ")}`);
+
+// The generic profile has no binary to spawn directly — it targets ACP orchestrators. A preview
+// (--dry/--out) still renders the templated commands; a real launch is refused and pointed at --emit acp.
+if (decision.spawn && !profile.spawnable) {
+  console.error(`\n⚠ harness "${profile.id}" has no direct launcher. Use 'roadmap fan --emit acp' to emit a wave manifest for your ACP orchestrator (OpenClaw/Hermes/editor), or pick --harness claude|codex.`);
+  process.exit(0);
+}
 
 if (outFile) {
   writeFileSync(outFile, withBom(artifact), "utf8");

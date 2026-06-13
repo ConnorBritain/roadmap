@@ -13,6 +13,7 @@ import { executionDirectiveLines } from "./execution.mjs";
 export function renderMarkdown(graph, opts = {}) {
   const model = flatten(graph);
   const cap = opts.cap != null ? Number(opts.cap) : ((graph.meta && graph.meta.default_concurrency) || 3);
+  const harness = opts.harness || (graph.meta && graph.meta.harness);   // execution-directive dialect (default claude)
   const links = (graph.meta && graph.meta.links) || {};   // optional repo cross-refs (narrative/status/tracker/bootstrap/strategy)
   const mdlink = (label, path) => (path ? `[\`${path}\`](${path})` : null);
 
@@ -133,7 +134,7 @@ export function renderMarkdown(graph, opts = {}) {
       w(`### ${B}${sp.invoke}${B}`);
       // Execution directive at the TOP of the read-out (only when the slice declares one — a
       // slice without an execution block renders byte-identically to before).
-      const exec = executionDirectiveLines(node);
+      const exec = executionDirectiveLines(node, { harness });
       if (exec) {
         exec.forEach((line) => w(`> ${line}`));
         w("");
