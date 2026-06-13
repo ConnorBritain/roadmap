@@ -49,7 +49,7 @@ export function synthesizeBrief(node, graph) {
   // Carry the imperative execution directive VERBATIM (only when the slice declares one), so the
   // launched session staffs at the declared topology — an agent-team slice invokes Agent Teams
   // rather than running solo. Section 0 = the very first thing the session reads.
-  const execLines = executionDirectiveLines(node);
+  const execLines = executionDirectiveLines(node, { harness: graph.meta && graph.meta.harness });
   const execSection = execLines
     ? `## 0. Execution strategy — staff this BEFORE you start
 ${execLines.join("\n")}

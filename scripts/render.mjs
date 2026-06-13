@@ -18,9 +18,10 @@ const inPath = flag("--in", "docs/roadmap/roadmap.yaml");
 const outPath = flag("--out", "docs/SLICES.md");
 const toStdout = args.includes("--stdout");
 const cap = args.includes("--cap") ? Number(flag("--cap")) : undefined;
+const harness = flag("--harness", undefined);   // override the execution-directive dialect (else meta.harness)
 
 const graph = loadGraph(inPath);
-const out = renderMarkdown(graph, { cap });
+const out = renderMarkdown(graph, { cap, harness });
 
 if (toStdout) {
   process.stdout.write(out);

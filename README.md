@@ -223,6 +223,8 @@ The block renders as an **imperative directive** at the top of the slice's read-
 
 **`--track`** lets one person fan out only their lane: `roadmap fan --wave 1 --track A` keeps just the wave's slices tagged `track: A` (forward-compat with the three-track partition).
 
+**Cross-harness.** The directive's *intent* (mode, count, composition, floor) is harness-neutral; only the *wording* is dialect. `meta.harness` (`claude` default | `codex` | `generic`) — or `--harness` per run — selects the profile, so `agent-team` renders as "Invoke Agent Teams" on Claude but degrades to "N parallel `codex exec` sessions; the integrator reconciles" on Codex (and a neutral form for any ACP orchestrator like OpenClaw/Hermes). An unknown harness or non-native mode warns and falls back/degrades — never errors. See [`docs/cross-harness.md`](docs/cross-harness.md) for the full two-tier design (launch profiles vs. ACP interop).
+
 ---
 
 ## Install

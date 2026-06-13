@@ -9,6 +9,8 @@
 // as before. validate-core checks it, render-core / show / brief render the directive, and
 // fanout honors the topology.
 
+import { getHarness } from "./harness.mjs";
+
 export const EXEC_MODES = ["solo", "subagents", "dynamic-workflow", "agent-team"];
 export const EXEC_ROLES = ["verifier", "implementer", "reviewer", "researcher", "integrator"];
 
@@ -126,44 +128,33 @@ export function validateExecution(raw, where) {
 
 // The IMPERATIVE directive lines for a slice — the single canonical block reused verbatim by
 // SLICES.md, `roadmap show`/`/slice`, and the kickoff brief. Returns null when no execution block.
-// Example (agent-team):
+// `opts.harness` selects the dialect (default `claude` → original Agent-Teams-native wording,
+// byte-identical to before). codex / generic degrade `agent-team` to parallel sessions + integrator.
+// Example (claude, agent-team):
 //   ▶ EXECUTION: agent-team — 5 workers (1 verifier · 3 implementers · 1 reviewer).
 //     The touched files are disjoint. DO NOT run solo or fewer than 4. Invoke Agent Teams now (set CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1).
 //     Rationale: 16 disjoint fault-class files; verifier-first; one reviewer reconciles.
-export function executionDirectiveLines(node) {
+export function executionDirectiveLines(node, opts = {}) {
+  const spec = executionSpec(node);
+  if (!spec) return null;
+  return getHarness(opts.harness).directive(spec);
+}
+
+// The NEUTRAL, harness-agnostic directive spec for a slice: mode + worker count + floor +
+// composition + rationale, derived once. A harness profile turns this into the dialect wording.
+// Returns null when the slice declares no execution block.
+export function executionSpec(node) {
   const exec = normalizeExecution(node && node.execution);
   if (!exec) return null;
-
   const mode = exec.mode || "subagents";
   const suggested = suggestedConcurrency(node);
-  const workers = exec.concurrency ?? teamSize(exec.team) ?? suggested ?? (mode === "solo" ? 1 : null);
-  const floor = exec.minConcurrency ?? exec.concurrency ?? suggested ?? null;
-  const comp = composition(exec.team);
-  const lines = [];
-
-  // Line 1 — headline: mode + worker count + composition.
-  if (mode === "solo") {
-    lines.push(`▶ EXECUTION: solo — single agent, no fan-out.`);
-  } else {
-    const wk = workers != null ? `${workers} worker${workers === 1 ? "" : "s"}` : `worker count TBD`;
-    lines.push(`▶ EXECUTION: ${mode} — ${wk}${comp ? ` (${comp})` : ""}.`);
-  }
-
-  // Line 2 — the imperative instruction, per topology.
-  const floorClause = mode !== "solo" && floor != null ? ` DO NOT run solo or fewer than ${floor}.` : "";
-  if (mode === "agent-team") {
-    lines.push(`  The touched files are disjoint.${floorClause} Invoke Agent Teams now (set CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1).`);
-  } else if (mode === "subagents") {
-    const n = workers != null ? `${workers} ` : "";
-    lines.push(`  Spawn ${n}background subagents per CLAUDE.md § Subagent Hand-off (disjoint files; the lead merges).${floorClause}`);
-  } else if (mode === "dynamic-workflow") {
-    lines.push(`  Run an in-slice pipeline — each step gates the next; do not collapse it to a single pass.${floorClause}`);
-  } else if (mode === "solo") {
-    lines.push(`  Single agent, no fan-out — atomic/exploratory/branching-sequential. Do not spawn workers.`);
-  }
-
-  if (exec.rationale) lines.push(`  Rationale: ${exec.rationale}`);
-  return lines;
+  return {
+    mode,
+    workers: exec.concurrency ?? teamSize(exec.team) ?? suggested ?? (mode === "solo" ? 1 : null),
+    floor: exec.minConcurrency ?? exec.concurrency ?? suggested ?? null,
+    composition: composition(exec.team),
+    rationale: exec.rationale,
+  };
 }
 
 // "1 verifier · 3 implementers · 1 reviewer" from a normalized team (null when none).

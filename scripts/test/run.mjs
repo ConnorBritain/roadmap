@@ -21,6 +21,7 @@ import {
 } from "../lib/execution.mjs";
 import { renderMarkdown } from "../lib/render-core.mjs";
 import { validateGraph } from "../lib/validate-core.mjs";
+import { getHarness, isKnownHarness, supportsModeNatively, DEFAULT_HARNESS } from "../lib/harness.mjs";
 import { parseDocument } from "yaml";
 import { join, resolve } from "node:path";
 
@@ -836,6 +837,87 @@ test("underParallelizedWarnings flags a disjoint slice that ran below its floor,
   eq(warns.length, 1, "only the genuinely under-parallelized slice warns");
   ok(/slice wide ran 2 workers; min_concurrency 4 — under-parallelized/.test(warns[0]), "warning names the slice, the count, and the floor");
   eq(underParallelizedWarnings(g, []), [], "no telemetry → no warnings");
+});
+
+// ── cross-harness profiles: the directive dialect seam ───────────────────────
+const teamExec = { mode: "agent-team", concurrency: 5, min_concurrency: 4,
+  team: [{ role: "verifier" }, { role: "implementer", count: 3 }, { role: "reviewer" }],
+  rationale: "16 disjoint fault-class files; verifier-first; one reviewer reconciles." };
+
+// WHY: backward compatibility is the whole contract — the default (claude) dialect must produce the
+// EXACT wording it did before the harness seam existed, or every existing repo's SLICES.md churns.
+test("executionDirectiveLines default (claude) is byte-identical to the pre-harness wording", () => {
+  const node = { touches: ["a/x", "b/y"], execution: teamExec };
+  const expected = [
+    "▶ EXECUTION: agent-team — 5 workers (1 verifier · 3 implementers · 1 reviewer).",
+    "  The touched files are disjoint. DO NOT run solo or fewer than 4. Invoke Agent Teams now (set CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1).",
+    "  Rationale: 16 disjoint fault-class files; verifier-first; one reviewer reconciles.",
+  ];
+  eq(executionDirectiveLines(node), expected, "no opts → claude wording");
+  eq(executionDirectiveLines(node, { harness: "claude" }), expected, "explicit claude → same");
+  eq(executionDirectiveLines(node, { harness: "bogus" }), expected, "unknown harness falls back to claude");
+  eq(DEFAULT_HARNESS, "claude", "claude is the default");
+});
+
+// WHY: the point of the feature is that Agent-Teams-only language doesn't leak onto harnesses that
+// can't run it. codex must REWORD agent-team into its truthful equivalent (parallel codex exec +
+// integrator) and reference AGENTS.md, not CLAUDE.md.
+test("codex dialect degrades agent-team to parallel codex exec and never emits Claude-only language", () => {
+  const text = executionDirectiveLines({ touches: ["a/x", "b/y"], execution: teamExec }, { harness: "codex" }).join("\n");
+  ok(/▶ EXECUTION: agent-team — 5 workers \(1 verifier · 3 implementers · 1 reviewer\)\./.test(text), "headline keeps the neutral count + composition");
+  ok(/codex exec/.test(text), "names the codex exec mechanism");
+  ok(/integrator/.test(text), "integrator reconciles");
+  ok(!/Agent Teams now/.test(text) && !/CLAUDE_CODE_EXPERIMENTAL/.test(text), "no Agent-Teams-only language");
+  ok(!/CLAUDE\.md/.test(text), "no CLAUDE.md reference");
+  // subagents on codex → codex exec sessions per AGENTS.md
+  const subs = executionDirectiveLines({ touches: ["a/x"], execution: { mode: "subagents", concurrency: 3, min_concurrency: 2 } }, { harness: "codex" }).join("\n");
+  ok(/codex exec.*AGENTS\.md/.test(subs) && /DO NOT run solo or fewer than 2\./.test(subs), "subagents → codex exec + AGENTS.md + floor");
+});
+
+// WHY: the generic profile is the catch-all for any ACP orchestrator (OpenClaw/Hermes/editors); it
+// must be harness-neutral — no claude/codex-specific verbs — so it reads correctly everywhere.
+test("generic dialect is harness-neutral and degrades agent-team to parallel worker sessions", () => {
+  const text = executionDirectiveLines({ touches: ["a/x", "b/y"], execution: teamExec }, { harness: "generic" }).join("\n");
+  ok(/parallel worker sessions/.test(text) && /integrator/.test(text), "neutral parallel-sessions wording");
+  ok(!/Agent Teams/.test(text) && !/codex/.test(text) && !/CLAUDE\.md/.test(text), "no harness-specific verbs");
+});
+
+// WHY: a profile's metadata drives later stages (launch command, handoff doc, degrade warnings); the
+// registry + capability lookups must be correct or those stages mis-staff.
+test("harness registry: known ids, handoff doc, and native-mode capability", () => {
+  ok(isKnownHarness("claude") && isKnownHarness("codex") && isKnownHarness("generic"), "the three seed profiles exist");
+  ok(!isKnownHarness("nope"), "unknown id is not known");
+  eq(getHarness("codex").handoffDoc, "AGENTS.md", "codex reads AGENTS.md");
+  eq(getHarness("claude").handoffDoc, "CLAUDE.md", "claude reads CLAUDE.md");
+  ok(supportsModeNatively("claude", "agent-team"), "claude runs agent-team natively");
+  ok(!supportsModeNatively("codex", "agent-team"), "codex degrades agent-team");
+  ok(supportsModeNatively("codex", "subagents") && supportsModeNatively("generic", "solo"), "common modes are native everywhere");
+});
+
+// WHY: an unknown harness id is a typo, not a crash — it must warn (and fall back), and a non-native
+// mode must surface a degrade notice so the author isn't surprised by reworded output.
+test("validateGraph warns on an unknown harness and on a non-native mode (never errors)", () => {
+  const mk = (meta, execution) => ({ meta: { schema_version: 1, program: "T", ...meta },
+    pis: [{ id: "a", title: "A", status: "active", sprints: [sp("s1", { status: "active", est_sessions: 1, execution })] }] });
+  const unknown = validateGraph(mk({ harness: "bogus" }, { mode: "subagents", concurrency: 2 }));
+  eq(unknown.errors.length, 0, "unknown harness is not fatal");
+  ok(unknown.warnings.some((w) => /harness "bogus" is not a known profile/.test(w)), "warns on unknown harness");
+  const degrade = validateGraph(mk({ harness: "codex" }, { mode: "agent-team", concurrency: 2 }));
+  eq(degrade.errors.length, 0, "non-native mode is not fatal");
+  ok(degrade.warnings.some((w) => /not native to harness "codex"; the directive degrades/.test(w)), "warns on degrade");
+  // claude (native) → no degrade warning
+  ok(!validateGraph(mk({ harness: "claude" }, { mode: "agent-team", concurrency: 2 })).warnings.some((w) => /degrades/.test(w)), "native mode → no degrade warning");
+});
+
+// WHY: renderMarkdown must honor meta.harness AND an explicit opts.harness override, so a repo can
+// pin its dialect and a one-off render can switch it — without either touching a no-execution slice.
+test("renderMarkdown honors meta.harness and the opts.harness override", () => {
+  const g = (meta) => ({ meta: { schema_version: 1, program: "T", ...meta }, pis: [{ id: "a", title: "A", status: "active",
+    sprints: [{ id: "s1", title: "Fan", status: "active", invoke: "fan-slice", what: "do it", est_sessions: 1,
+      touches: ["a/x", "b/y"], execution: teamExec }] }] });
+  ok(renderMarkdown(g({ harness: "codex" })).includes("codex exec"), "meta.harness=codex → codex wording");
+  ok(renderMarkdown(g({}), { harness: "codex" }).includes("codex exec"), "opts.harness override → codex wording");
+  ok(renderMarkdown(g({})).includes("Invoke Agent Teams now"), "default → claude wording");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
