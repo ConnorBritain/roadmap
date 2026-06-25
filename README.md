@@ -1,6 +1,8 @@
-# Roadmap: scope, manage, and orchestrate Claude Code sessions in any repo
+# Roadmap: scope, manage, and orchestrate AI coding sessions in any repo
 
-`roadmap` is a CLI and a Claude Code plugin. It turns one YAML file into your repo's plan of record (a **hierarchical, dependency-aware graph**), then **fans that plan out into parallel Claude Code sessions**, each scoped to a single unit of work in its own git worktree.
+`roadmap` is a CLI, MCP server, and Claude Code plugin. It turns one YAML file into your repo's plan of record (a **hierarchical, dependency-aware graph**), then **fans that plan out into parallel coding sessions**, each scoped to a single unit of work in its own git worktree.
+
+In this Codex environment, the primary surfaces are the CLI, the MCP server, and the repo-level [`AGENTS.md`](C:\Users\connor.england\.codex\worktrees\66df\slice-roadmap\AGENTS.md). The Claude plugin assets are still included for teams already using them.
 
 - **One source of truth.** `docs/roadmap/roadmap.yaml` holds the PIs, sprints, deps, file-ownership, session estimates, gates, and kickoff briefs.
 - **Generated view.** `docs/SLICES.md` is *rendered* from the YAML; never hand-edit it.
@@ -46,6 +48,13 @@ roadmap fan -w 1   # spin up wave 1 (lead + slice sessions); add -d to preview f
 ```
 
 That's the whole loop: `cd` into a repo, type `roadmap ...`, it finds the roadmap and fires.
+
+### Using it in Codex
+
+- Codex reads [`AGENTS.md`](C:\Users\connor.england\.codex\worktrees\66df\slice-roadmap\AGENTS.md) from this repo automatically, so repo conventions live there now.
+- You can drive everything from the shared terminal with `npm run plan`, `npm run validate`, `npm run render`, or `node scripts/cli.mjs ...`.
+- `npm run mcp` starts the same MCP server the Claude plugin uses.
+- The fanout launcher still opens `claude` worker sessions today; the rest of the repo is usable from Codex directly.
 
 ---
 
@@ -235,6 +244,18 @@ cd roadmap && npm install && npm link
 ```
 
 `npm link` puts `roadmap` on your PATH in every shell. On Windows it writes `roadmap.cmd`/`roadmap.ps1` shims (PowerShell and cmd) plus a unix bin (WSL/bash; run `npm link` once in each Node environment you use). `npm unlink -g slice-roadmap` removes it.
+
+### In Codex
+
+No plugin install is required. Open the repo in Codex, use the commands above, and rely on [`AGENTS.md`](C:\Users\connor.england\.codex\worktrees\66df\slice-roadmap\AGENTS.md) for repo-local guidance.
+
+For MCP usage in agent environments, run:
+
+```bash
+npm run mcp
+```
+
+The checked-in [`.mcp.json`](C:\Users\connor.england\.codex\worktrees\66df\slice-roadmap\.mcp.json) remains the Claude-plugin entrypoint.
 
 **Alias fallback (no npm):** drop a shim in your shell profile instead.
 

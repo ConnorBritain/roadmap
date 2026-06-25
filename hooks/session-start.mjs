@@ -25,7 +25,7 @@ function emit(ctx) {
 
 let input = {};
 try { input = JSON.parse(readFileSync(0, "utf8") || "{}"); } catch { /* no stdin */ }
-const start = resolve(input.cwd || process.cwd());
+const start = resolve(input.cwd || process.env.CODEX_PROJECT_DIR || process.env.CLAUDE_PROJECT_DIR || process.cwd());
 
 // Walk up to the repo's roadmap.
 let root = null;

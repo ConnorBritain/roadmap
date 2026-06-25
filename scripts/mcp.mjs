@@ -20,7 +20,7 @@ const PROTOCOL_VERSION = "2024-11-05";
 const SERVER_INFO = { name: "roadmap", version: "0.1.0" };
 
 function paths() {
-  const root = findRepoRoot(process.env.CLAUDE_PROJECT_DIR || process.cwd());
+  const root = findRepoRoot(process.env.CODEX_PROJECT_DIR || process.env.CLAUDE_PROJECT_DIR || process.cwd());
   if (!root) throw new Error(`no ${REL.join("/")} found at or above the project directory`);
   return { yaml: join(root, ...REL), slices: join(root, "docs", "SLICES.md") };
 }

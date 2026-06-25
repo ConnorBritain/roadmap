@@ -1,7 +1,7 @@
 {
   "name": "slice-roadmap",
   "version": "0.1.0",
-  "description": "Hierarchical roadmap graph + multi-session fanout for Claude Code. YAML canonical, SLICES.md generated.",
+  "description": "Hierarchical roadmap graph + multi-session fanout for Codex and Claude-style coding workflows. YAML canonical, SLICES.md generated.",
   "type": "module",
   "private": true,
   "author": "Connor England",
@@ -13,8 +13,15 @@
     "roadmap": "scripts/cli.mjs"
   },
   "scripts": {
+    "cli": "node scripts/cli.mjs",
+    "plan": "node scripts/cli.mjs plan",
+    "show": "node scripts/cli.mjs show",
+    "fan": "node scripts/cli.mjs fan",
+    "cleanup": "node scripts/cli.mjs cleanup",
     "validate": "node scripts/validate.mjs",
     "render": "node scripts/render.mjs",
+    "mcp": "node scripts/mcp.mjs",
+    "watch": "node scripts/watch-prs.mjs",
     "test": "node scripts/test/run.mjs"
   },
   "dependencies": {

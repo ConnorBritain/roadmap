@@ -18,7 +18,7 @@ const POLL_MS = Number(process.env.ROADMAP_WATCH_INTERVAL_MS || 30000);
 const log = (m) => process.stdout.write(m + "\n");
 
 function loadRoadmap() {
-  const root = findRepoRoot(process.env.CLAUDE_PROJECT_DIR || process.cwd());
+  const root = findRepoRoot(process.env.CODEX_PROJECT_DIR || process.env.CLAUDE_PROJECT_DIR || process.cwd());
   if (!root) return null;
   try {
     return { root, graph: loadGraph(join(root, ...REL)) };
