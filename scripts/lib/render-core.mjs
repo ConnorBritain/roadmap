@@ -8,6 +8,7 @@ import {
   statusDisplay, emojiFor, isDone,
 } from "./graph.mjs";
 import { executionDirectiveLines } from "./execution.mjs";
+import { tierBadge } from "./priority.mjs";
 
 // renderMarkdown(graph, { cap }) -> string. cap defaults to meta.default_concurrency (or 3).
 export function renderMarkdown(graph, opts = {}) {
@@ -53,7 +54,8 @@ export function renderMarkdown(graph, opts = {}) {
       for (const n of wave) {
         const files = [...n.touches, ...n.owns];
         const fileNote = files.length ? ` · touches ${files.map((f) => B + short(f) + B).join(", ")}` : "";
-        w(`- ${B}/slice ${n.invoke}${B} — ${n.what}${fileNote}`);
+        const badge = tierBadge(n.priority);
+        w(`- ${badge ? `**[${badge}]** ` : ""}${B}/slice ${n.invoke}${B} — ${n.what}${fileNote}`);
       }
       w("");
     });
@@ -91,7 +93,8 @@ export function renderMarkdown(graph, opts = {}) {
       const sess = isDone(sp.status) ? "—" : (typeof sp.est_sessions === "number" ? `~${fmt(sp.est_sessions)}` : "?");
       const deps = depCell(node);
       const prs = (sp.prs && sp.prs.length) ? ` · ${sp.prs.join(" ")}` : "";
-      w(`| ${sp.id.toUpperCase()} | ${B}/slice ${sp.invoke}${B} | ${statusDisplay(sp.status, sp.status_label)} | ${sess} | ${deps} | ${sp.what || sp.title}${prs} |`);
+      const badge = tierBadge(sp.priority);
+      w(`| ${sp.id.toUpperCase()} | ${B}/slice ${sp.invoke}${B} | ${statusDisplay(sp.status, sp.status_label)}${badge ? ` · **${badge}**` : ""} | ${sess} | ${deps} | ${sp.what || sp.title}${prs} |`);
     }
     w("");
   }
@@ -140,6 +143,10 @@ export function renderMarkdown(graph, opts = {}) {
       }
       w(`- **What:** ${sp.what || sp.title}`);
       w(`- **Status:** ${statusDisplay(sp.status, sp.status_label)} (${pi.program_label || pi.id.toUpperCase()}${pi.id ? ` · ${sp.id.toUpperCase()}` : ""})`);
+      if (sp.priority && (tierBadge(sp.priority) || sp.priority.weight != null || sp.priority.reason)) {
+        const parts = [tierBadge(sp.priority), sp.priority.weight != null ? `weight ${sp.priority.weight}` : null].filter(Boolean).join(" · ");
+        w(`- **Priority:** ${parts || "(set)"}${sp.priority.reason ? ` — ${oneLine(sp.priority.reason)}` : ""}`);
+      }
       if (node && (node.deps.length || node.piDeps.length)) {
         w(`- **Deps:** ${depCell(node)}`);
       }

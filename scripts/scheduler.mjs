@@ -14,6 +14,7 @@
 import { loadGraph } from "./lib/graph.mjs";
 import { buildPlan } from "./lib/plan.mjs";
 import { baseRefOf, remoteOf } from "./lib/brief.mjs";
+import { tierBadge } from "./lib/priority.mjs";
 
 const args = process.argv.slice(2);
 const val = (name, def) => {
@@ -57,7 +58,7 @@ if (!plan.waves.length) console.log("No agent-runnable slices right now.");
 plan.waves.forEach((w, i) => {
   const marker = i + 1 === detailWave ? " ◀ detail" : "";
   console.log(`Wave ${i + 1}${marker} — ${w.length} concurrent:`);
-  for (const n of w) console.log(`  • ${n.invoke}  (${n.weight}, ~${n.est_sessions ?? "?"} sess)  — ${n.what}`);
+  for (const n of w) console.log(`  • ${tierBadge(n.priority) ? `[${tierBadge(n.priority)}] ` : ""}${n.invoke}  (${n.weight}, ~${n.est_sessions ?? "?"} sess)  — ${n.what}`);
 });
 if (plan.held.onHuman.length) {
   console.log(`\nHeld on a human:`);

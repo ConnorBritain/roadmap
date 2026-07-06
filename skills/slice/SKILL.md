@@ -10,7 +10,7 @@ You are orienting on a named slice. **Read-only** — do not edit, commit, or st
 1. **Load the slice.** Run `roadmap show $ARGUMENTS`. (If `roadmap` isn't on PATH, run `node "${CLAUDE_PLUGIN_ROOT}/scripts/cli.mjs" show $ARGUMENTS`.) If it reports "no slice", show the available list it printed and ask which one. Stop.
 2. **Follow the read-order.** Read each doc the slice lists, in order, to get current. If one is missing, note it (the slice may be in a scaffolding phase) — don't fabricate.
 3. **Check branch state.** `git rev-parse --abbrev-ref HEAD` + `git fetch origin --quiet` + `git status -s`. Compare against the slice's expected branch; note drift or dirty files.
-4. **Print a short orientation** (Slice/Status · What · Read-order: N read · Branch: sync/drift/dirty · Next · Gate). Then **STOP** and wait.
+4. **Print a short orientation** (Slice/Status · What · Priority if set · Read-order: N read · Branch: sync/drift/dirty · Next · Gate). If the slice carries a `Prompt:` block (author-stashed instructions), relay it **verbatim** — it is the pickup brief. Then **STOP** and wait.
 
 If the slice prints a `▶ EXECUTION:` directive, **honor it**: staff the work at the declared topology and worker count (e.g. invoke Agent Teams for `agent-team`, spawn N background subagents for `subagents`, stay solo for `solo`) rather than defaulting to a lone agent. Relay the directive in your orientation.
 

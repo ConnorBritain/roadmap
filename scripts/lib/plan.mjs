@@ -40,6 +40,7 @@ export function buildPlan(graph, opts = {}) {
         prompt: launchPrompt(n),
         what: n.what,
         track: n.track,
+        priority: n.priority,
         execution: normalizeExecution(n.execution),
         suggestedConcurrency: suggestedConcurrency(n),
       }))

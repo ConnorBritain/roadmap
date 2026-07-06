@@ -57,6 +57,15 @@ ${execLines.join("\n")}
 `
     : "";
 
+  // Author-stashed pickup instructions, carried VERBATIM (only when the slice declares one —
+  // a slice without a prompt gets a byte-identical brief).
+  const promptSection = node.prompt
+    ? `## 0.5 Author instructions (verbatim)
+${String(node.prompt).trimEnd()}
+
+`
+    : "";
+
   return `# Kickoff — ${node.invoke}  (${node.programLabel} · ${node.id.toUpperCase()})
 
 > Uncommitted brief for this fanout session. You own the atomic sequence
@@ -65,7 +74,7 @@ ${execLines.join("\n")}
 **Slice:** \`${node.invoke}\`  ·  **Branch:** \`${branch}\`
 **What:** ${node.what || node.title}
 
-${execSection}## 1. Scope / target
+${execSection}${promptSection}## 1. Scope / target
 ${owns.length ? owns.map((f) => `- \`${f}\``).join("\n") : "- (scope to this slice only; see read-order)"}
 
 ## 2. Read-order (orient first — paths are relative to \`docs/\`; you're at the repo root, so e.g. \`sprints/...\` = \`docs/sprints/...\`, and \`../STATUS.md\` = \`STATUS.md\`)

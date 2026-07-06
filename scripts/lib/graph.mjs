@@ -6,6 +6,7 @@
 
 import { readFileSync } from "node:fs";
 import YAML from "yaml";
+import { comparePriority } from "./priority.mjs";
 
 export const STATUS = {
   active:      { emoji: "🟢", label: "Active",      done: false, rank: 0 },
@@ -74,6 +75,8 @@ export function flatten(graph) {
         optional: !!sp.optional,
         execution: sp.execution || null,   // optional staffing-strategy hint (see lib/execution.mjs)
         track: sp.track || null,            // optional lane label for the three-track partition (--track)
+        priority: sp.priority || null,      // optional { tier, weight, reason } (see lib/priority.mjs)
+        prompt: sp.prompt || null,          // optional author-stashed pickup instructions
         readOrder: sp.read_order || [],
         resumeAction: sp.resume_action || "",
         kickoffBrief: sp.kickoff_brief || "brief",
@@ -268,6 +271,8 @@ export function computeWaves(model, N = 3) {
     if (!ready.length) break;
 
     ready.sort((a, b) => {
+      const pc = comparePriority(a.priority, b.priority);  // declared priority wins the cap slot
+      if (pc) return pc;                                    // both absent → 0 → existing order below
       const ra = (STATUS[a.status] || {}).rank ?? 7;
       const rb = (STATUS[b.status] || {}).rank ?? 7;
       if (ra !== rb) return ra - rb;

@@ -28,6 +28,10 @@ const out = [];
 out.push(`Slice: ${node.invoke}  [${statusDisplay(node.status, node.statusLabel)}]`);
 out.push(`PI:    ${node.programLabel} · ${node.id.toUpperCase()}${node.estSessions != null ? `  (~${node.estSessions} sessions)` : ""}`);
 out.push(`What:  ${node.what}`);
+if (node.priority) {
+  const parts = [node.priority.tier, node.priority.weight != null ? `weight ${node.priority.weight}` : null].filter(Boolean).join(" · ");
+  out.push(`Priority: ${parts || "(set)"}${node.priority.reason ? ` — ${node.priority.reason}` : ""}`);
+}
 // Execution directive at the top of the read-out (only when the slice declares one).
 const execLines = executionDirectiveLines(node);
 if (execLines) { out.push(""); execLines.forEach((l) => out.push(l)); }
@@ -40,5 +44,10 @@ out.push("Read-order:");
 (node.readOrder.length ? node.readOrder : ["(none listed — see the PI's detail dir)"]).forEach((r, i) => out.push(`  ${i + 1}. ${r}`));
 out.push("");
 out.push(`Next: ${node.resumeAction ? node.resumeAction.trim() : "(see read-order)"}`);
+if (node.prompt) {
+  out.push("");
+  out.push("Prompt (author instructions, verbatim):");
+  node.prompt.trimEnd().split("\n").forEach((l) => out.push(`  ${l}`));
+}
 out.push(`Gate: ${gate}`);
 console.log(out.join("\n"));

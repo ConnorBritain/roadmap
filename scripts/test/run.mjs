@@ -20,6 +20,7 @@ import {
   teamSize, filterByTrack, dirClusters, EXEC_MODES, EXEC_ROLES,
 } from "../lib/execution.mjs";
 import { renderMarkdown } from "../lib/render-core.mjs";
+import { comparePriority, validatePriority, tierBadge, TIERS } from "../lib/priority.mjs";
 import { validateGraph } from "../lib/validate-core.mjs";
 import { parseDocument } from "yaml";
 import { join, resolve } from "node:path";
@@ -836,6 +837,91 @@ test("underParallelizedWarnings flags a disjoint slice that ran below its floor,
   eq(warns.length, 1, "only the genuinely under-parallelized slice warns");
   ok(/slice wide ran 2 workers; min_concurrency 4 — under-parallelized/.test(warns[0]), "warning names the slice, the count, and the floor");
   eq(underParallelizedWarnings(g, []), [], "no telemetry → no warnings");
+});
+
+// ── priority: comparator + validation ────────────────────────────────────────
+// WHY: comparePriority returning non-zero for two absent priorities would reorder every
+// existing roadmap's waves — 0-when-both-absent IS the backward-compat guarantee.
+test("comparePriority orders tier before weight and returns 0 when both absent", () => {
+  eq(comparePriority(null, null), 0, "both absent → 0 (falls through to existing order)");
+  eq(comparePriority(undefined, null), 0, "undefined/null equivalent");
+  ok(comparePriority({ tier: "P0" }, { tier: "P1", weight: 100 }) < 0, "tier beats weight");
+  ok(comparePriority({ tier: "P1", weight: 80 }, { tier: "P1", weight: 20 }) < 0, "same tier: higher weight first");
+  ok(comparePriority({ tier: "P3" }, { weight: 100 }) < 0, "any tier beats tierless (absent tier ranks after P3)");
+  ok(comparePriority({ weight: 10 }, null) < 0, "weight-only still outranks nothing");
+  eq(tierBadge({ tier: "P2", weight: 5 }), "P2", "badge is the tier");
+  eq(tierBadge({ weight: 5 }), null, "no tier → no badge");
+  eq(TIERS.length, 4, "P0..P3");
+});
+
+// WHY: a typo'd tier or a weight of 500 must be a validation error, not a silently
+// mis-sorted roadmap; and an absent block must validate clean or every old roadmap breaks.
+test("validatePriority rejects bad tier / out-of-range weight; absent is clean", () => {
+  eq(validatePriority(null, "x").errors, [], "absent → clean");
+  eq(validatePriority({ tier: "P1", weight: 60, reason: "why" }, "x").errors, [], "full valid block");
+  ok(validatePriority({ tier: "p1" }, "x").errors[0].includes("tier"), "lowercase tier rejected");
+  ok(validatePriority({ weight: 500 }, "x").errors[0].includes("weight"), "weight > 100 rejected");
+  ok(validatePriority({ weight: -1 }, "x").errors[0].includes("weight"), "negative weight rejected");
+  ok(validatePriority("P0", "x").errors[0].includes("mapping"), "scalar rejected");
+});
+
+// WHY: priority exists to decide who gets a scarce cap slot. A P0 losing its slot to an
+// alphabetically-earlier P2 means the urgent work waits a wave; and an unprioritized graph
+// must produce today's identical waves or every existing roadmap reshuffles.
+test("computeWaves packs higher-priority slices first under the cap, unchanged when none set", () => {
+  const g = (withPriority) => ({ pis: [{ id: "a", title: "A", status: "active", sprints: [
+    sp("s1", { invoke: "aardvark", touches: ["f1"] }),
+    sp("s2", { invoke: "urgent", touches: ["f2"], ...(withPriority ? { priority: { tier: "P0" } } : {}) }),
+    sp("s3", { invoke: "middling", touches: ["f3"] }),
+  ]}]});
+  const withP = computeWaves(flatten(g(true)), 1);
+  eq(withP.waves[0].map((n) => n.invoke), ["urgent"], "P0 takes the single cap slot");
+  const withoutP = computeWaves(flatten(g(false)), 1);
+  eq(withoutP.waves[0].map((n) => n.invoke), ["aardvark"], "no priorities → existing (status/est/alpha) order");
+});
+
+// WHY: the tier badge is how a human scanning SLICES.md spots the urgent slice; and a
+// priority-free graph must render byte-identically or every existing SLICES.md churns.
+test("renderMarkdown shows tier badges only when priority is present", () => {
+  const g = (priority) => ({
+    meta: { schema_version: 1, program: "T" },
+    pis: [{ id: "a", title: "A", status: "active", sprints: [
+      { id: "s1", title: "Fan", status: "active", invoke: "fan-slice", what: "do it", est_sessions: 1,
+        ...(priority ? { priority } : {}) },
+    ] }],
+  });
+  const md = renderMarkdown(g({ tier: "P0", weight: 80, reason: "prod is down" }));
+  ok(md.includes("**[P0]** `/slice fan-slice`"), "wave-map badge");
+  ok(md.includes("· **P0** |"), "status-cell badge");
+  ok(md.includes("- **Priority:** P0 · weight 80 — prod is down"), "detail line with reason");
+  const plain = renderMarkdown(g(null));
+  ok(!plain.includes("P0") && !plain.includes("**Priority:**"), "no priority → no badge or line anywhere");
+});
+
+// WHY: the stashed prompt is the whole point of prompt-in-slice pickup — the launched session
+// must see the author's words unedited; and a prompt-free slice must produce a byte-identical
+// brief or every existing .kickoff.md changes under diff review.
+test("synthesizeBrief embeds prompt verbatim and is unchanged without it", () => {
+  const g = (prompt) => ({ meta: { schema_version: 1, program: "T", default_gate: "npm test" },
+    pis: [{ id: "a", title: "A", status: "active", sprints: [sp("s1", { status: "active", invoke: "x", ...(prompt ? { prompt } : {}) })] }] });
+  const withPrompt = synthesizeBrief(flatten(g("Fix the wtSafe escaping.\nAdd a run.mjs case.")).nodes[0], g("x"));
+  ok(/## 0\.5 Author instructions \(verbatim\)\nFix the wtSafe escaping\.\nAdd a run\.mjs case\./.test(withPrompt), "prompt carried verbatim in its own section");
+  ok(withPrompt.indexOf("## 0.5") < withPrompt.indexOf("## 1. Scope"), "prompt section precedes Scope");
+  const bare = synthesizeBrief(flatten(g(null)).nodes[0], g(null));
+  ok(!bare.includes("## 0.5"), "no prompt → no section (brief unchanged)");
+});
+
+// WHY: prompt/kickoff_brief/priority must be updatable through the same allow-listed mutation
+// path as every other field — that's the "update the init prompt as new info comes in" feature;
+// and a corrupt priority must be caught by the pre-write gate, not written to disk.
+test("setFields accepts prompt/kickoff_brief/priority and the pre-write gate rejects a bad priority", () => {
+  const y = `meta:\n  schema_version: 1\n  program: T\npis:\n  - id: a\n    title: A\n    status: active\n    sprints:\n      - id: s1\n        title: S\n        status: active\n        invoke: x\n`;
+  const doc = parseDocument(y);
+  const r = setFields(doc, { invoke: "x", fields: { prompt: "do the thing", kickoff_brief: "custom brief", priority: { tier: "P1", weight: 40 } } });
+  eq(r.fields, ["prompt", "kickoff_brief", "priority"], "all three fields settable");
+  validateDocOrThrow(doc); // must not throw
+  setFields(doc, { invoke: "x", fields: { priority: { tier: "NOPE" } } });
+  throws(() => validateDocOrThrow(doc), "priority.tier", "bad tier caught before write");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

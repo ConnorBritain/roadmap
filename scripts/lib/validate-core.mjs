@@ -4,6 +4,7 @@
 
 import { flatten, detectCycle, STATUS } from "./graph.mjs";
 import { validateExecution } from "./execution.mjs";
+import { validatePriority } from "./priority.mjs";
 
 const isDone = (s) => !!(STATUS[s] && STATUS[s].done);
 
@@ -44,6 +45,8 @@ export function validateGraph(graph) {
       const exec = validateExecution(sp.execution, where);
       for (const e of exec.errors) err(e);
       for (const w of exec.warnings) warn(w);
+      // Optional priority block. Absent → no-op.
+      for (const e of validatePriority(sp.priority, where).errors) err(e);
     }
   }
 

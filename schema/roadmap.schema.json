@@ -118,7 +118,19 @@
         "prs": { "type": "array", "items": { "type": "string" }, "description": "Merged PR refs, e.g. ['#359']" },
         "completed_on": { "type": "string", "description": "ISO date a sprint flipped to complete (drives the Recently-completed window)" },
         "track": { "type": "string", "description": "Optional lane label for the three-track partition (e.g. A | B | C). --track filters a fanout to one lane. Omit for an untracked slice." },
-        "execution": { "$ref": "#/$defs/execution" }
+        "execution": { "$ref": "#/$defs/execution" },
+        "priority": { "$ref": "#/$defs/priority" },
+        "prompt": { "type": "string", "description": "Author-stashed pickup instructions, embedded VERBATIM in the synthesized kickoff brief and shown by /slice and roadmap show. Update as new info comes in (set_fields / roadmap set)." }
+      }
+    },
+    "priority": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Optional prioritization: tier for coarse triage buckets, weight for fine ordering within a tier, reason so agents and humans know why. Sort order is derived (tier asc, weight desc), never stored. Shared by roadmap sprints and backlog items.",
+      "properties": {
+        "tier": { "enum": ["P0", "P1", "P2", "P3"] },
+        "weight": { "type": "number", "minimum": 0, "maximum": 100 },
+        "reason": { "type": "string" }
       }
     },
     "execution": {
