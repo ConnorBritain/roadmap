@@ -5,6 +5,7 @@
 
 import { flatten, readyNodes } from "./graph.mjs";
 import { comparePriority, tierBadge, validatePriority, TIERS } from "./priority.mjs";
+import { addSprint } from "./mcp-core.mjs";
 
 export const KINDS = ["bug", "chore", "followup", "urgent", "idea"];
 export const ITEM_STATUSES = ["open", "in_progress", "promoted", "done", "dropped"];
@@ -240,6 +241,36 @@ export function pickNext(graph, backlog) {
     : { type: "slice", node: topSlice };
 }
 
+// ── promote: backlog item → roadmap sprint (both Documents, caller writes) ───
+// The item's id becomes the sprint's invoke key (a collision with an existing invoke is
+// rejected by the roadmap's pre-write gate). The caller (store.mutateBoth) validates BOTH
+// documents before writing either.
+export function performPromotion(rDoc, bDoc, { id, pi, sprint_id } = {}) {
+  if (!id || !pi) throw new Error("promote requires a backlog id and a --pi target");
+  const item = ((bDoc.toJS().items) || []).find((it) => it.id === id);
+  if (!item) throw new Error(`no backlog item "${id}"`);
+  if (item.status !== "open" && item.status !== "in_progress") {
+    throw new Error(`backlog item "${id}" is ${item.status} — only open/in_progress items promote`);
+  }
+  const piObj = ((rDoc.toJS().pis) || []).find((p) => p.id === pi);
+  if (!piObj) throw new Error(`no PI "${pi}"`);
+  let sid = sprint_id;
+  if (!sid) {
+    let max = 0;
+    for (const s of piObj.sprints || []) {
+      const m = /^s(\d+)$/.exec(String(s.id));
+      if (m) max = Math.max(max, Number(m[1]));
+    }
+    sid = `s${max + 1}`;
+  }
+  const args = { pi, id: sid, title: item.title, invoke: item.id, status: "scheduled", what: item.title };
+  for (const k of ["est_sessions", "gate", "prompt", "priority"]) if (item[k] != null) args[k] = item[k];
+  if (Array.isArray(item.touches) && item.touches.length) args.touches = item.touches;
+  addSprint(rDoc, args);
+  setItemFields(bDoc, { id, fields: { status: "promoted", promoted_to: `${pi}/${sid}` } });
+  return { promoted: id, to: `${pi}/${sid}` };
+}
+
 // ── MCP tool registry (spread into TOOLS by mcp.mjs) ─────────────────────────
 const PRIORITY_SCHEMA = { type: "object", properties: {
   tier: { enum: ["P0", "P1", "P2", "P3"] }, weight: { type: "number", minimum: 0, maximum: 100 }, reason: { type: "string" } } };
@@ -257,6 +288,9 @@ export const BACKLOG_TOOLS = [
   { name: "backlog_set", description: "Set allowed fields on a backlog item (by id). null value deletes a field. Re-renders BACKLOG.md.",
     inputSchema: { type: "object", required: ["id", "fields"], properties: {
       id: { type: "string" }, fields: { type: "object" } } } },
+  { name: "backlog_promote", description: "Promote a backlog item into a roadmap sprint (item id becomes the invoke key; carries title/est/gate/touches/prompt/priority; back-links promoted_to). Both YAMLs validated before either is written; re-renders both generated views.",
+    inputSchema: { type: "object", required: ["id", "pi"], properties: {
+      id: { type: "string" }, pi: { type: "string" }, sprint_id: { type: "string" } } } },
 ];
 
 export function readBacklogList(backlog, args = {}) {

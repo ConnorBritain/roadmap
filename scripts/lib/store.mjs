@@ -48,6 +48,26 @@ export function mutateRoadmap(root, fn) {
   return { ...summary, rerendered: "docs/SLICES.md" };
 }
 
+// Two-file mutation (promote): fn(roadmapDoc, backlogDoc) edits both; BOTH are validated
+// before EITHER is written, so the only remaining failure window is an fs error between the
+// two writes. ponytail: not truly atomic; temp-file+rename choreography across two files
+// isn't worth it for a local dev tool.
+export function mutateBoth(root, fn) {
+  const rp = roadmapPaths(root);
+  const bp = backlogPaths(root);
+  if (!existsSync(bp.yaml)) throw new Error(`no ${BACKLOG_REL.join("/")} — nothing to promote from`);
+  const rDoc = YAML.parseDocument(readFileSync(rp.yaml, "utf8"));
+  const bDoc = YAML.parseDocument(readFileSync(bp.yaml, "utf8"));
+  const summary = fn(rDoc, bDoc);
+  const graph = validateDocOrThrow(rDoc);
+  const backlog = validateBacklogDocOrThrow(bDoc);
+  writeFileSync(rp.yaml, serialize(rDoc), "utf8");
+  writeFileSync(bp.yaml, serialize(bDoc), "utf8");
+  writeFileSync(rp.slices, renderMarkdown(graph, { backlog: { open: openCount(backlog) } }), "utf8");
+  writeFileSync(bp.md, renderBacklogMarkdown(backlog), "utf8");
+  return { ...summary, rerendered: "docs/SLICES.md + docs/BACKLOG.md" };
+}
+
 // Same sequence for backlog.yaml → BACKLOG.md, plus a SLICES.md refresh (open-count pointer).
 // createIfMissing: backlog_add bootstraps the file on first capture.
 export function mutateBacklog(root, fn, { createIfMissing = false } = {}) {

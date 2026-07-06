@@ -25,6 +25,7 @@ import { comparePriority, validatePriority, tierBadge, TIERS } from "../lib/prio
 import {
   validateBacklog, addItem, setItemFields, validateBacklogDocOrThrow, sortByPriority,
   openCount, renderBacklogMarkdown, backlogItemToNode, pickNext, BACKLOG_TOOLS, readBacklogList,
+  performPromotion,
 } from "../lib/backlog-core.mjs";
 import { validateGraph } from "../lib/validate-core.mjs";
 import { parseDocument } from "yaml";
@@ -1070,6 +1071,53 @@ test("renderMarkdown emits the backlog pointer only when opts.backlog is given",
     { id: "s1", title: "S", status: "active", invoke: "x", what: "w" }] }] };
   ok(renderMarkdown(g, { backlog: { open: 4 } }).includes("**Backlog:** 4 open item(s)"), "pointer with count");
   ok(!renderMarkdown(g).includes("**Backlog:**"), "no opts → no pointer line");
+});
+
+// ── promote: backlog item → roadmap sprint ────────────────────────────────────
+// WHY: promote spans two files — a promoted sprint that drops the prompt/priority loses the
+// author's context, and a missing back-link orphans the item's history. Both must carry.
+test("performPromotion creates a scheduled sprint carrying prompt/priority/touches and back-links promoted_to", () => {
+  const rDoc = parseDocument(`meta:\n  schema_version: 1\n  program: T\npis:\n  - id: auth\n    title: Auth\n    status: active\n    sprints:\n      - { id: s2, title: Old, status: complete, invoke: old }\n`);
+  const bDoc = parseDocument(`meta:\n  schema_version: 1\nitems:\n  - id: fix-x\n    title: Fix X\n    kind: bug\n    status: open\n    priority: { tier: P1, weight: 70 }\n    touches: [src/x.ts]\n    est_sessions: 0.5\n    prompt: repro then fix\n`);
+  const r = performPromotion(rDoc, bDoc, { id: "fix-x", pi: "auth" });
+  eq(r, { promoted: "fix-x", to: "auth/s3" }, "auto sprint id = next free sN");
+  validateDocOrThrow(rDoc);
+  validateBacklogDocOrThrow(bDoc);
+  const sp3 = rDoc.toJS().pis[0].sprints[1];
+  eq(sp3.invoke, "fix-x", "item id becomes the invoke key");
+  eq(sp3.status, "scheduled", "lands scheduled, not active");
+  eq(sp3.prompt, "repro then fix", "prompt carries");
+  eq(sp3.priority.tier, "P1", "priority carries");
+  eq(sp3.touches, ["src/x.ts"], "touches carry");
+  const item = bDoc.toJS().items[0];
+  eq(item.status, "promoted", "item marked promoted");
+  eq(item.promoted_to, "auth/s3", "back-link recorded");
+});
+
+// WHY: the item id becomes the invoke key — a collision with an existing slice would make
+// /slice ambiguous; the pre-write gate must reject it so neither file is written.
+test("performPromotion is rejected by the pre-write gate when the item id collides with an existing invoke", () => {
+  const rDoc = parseDocument(`meta:\n  schema_version: 1\n  program: T\npis:\n  - id: auth\n    title: Auth\n    status: active\n    sprints:\n      - { id: s1, title: A, status: active, invoke: fix-x }\n`);
+  const bDoc = parseDocument(`meta:\n  schema_version: 1\nitems:\n  - { id: fix-x, title: Fix X, kind: bug, status: open }\n`);
+  performPromotion(rDoc, bDoc, { id: "fix-x", pi: "auth" });
+  throws(() => validateDocOrThrow(rDoc), "duplicate invoke", "gate rejects the collision (mutateBoth writes nothing)");
+  throws(() => performPromotion(parseDocument("meta:\n  schema_version: 1\nitems: []"), bDoc, { id: "nope", pi: "auth" }),
+    "no backlog item", "unknown item rejected");
+  const doneB = parseDocument(`meta:\n  schema_version: 1\nitems:\n  - { id: d1, title: D, kind: bug, status: done }\n`);
+  throws(() => performPromotion(rDoc, doneB, { id: "d1", pi: "auth" }), "only open/in_progress", "closed items don't promote");
+});
+
+// WHY: the MCP registry is the agent-facing contract — every backlog tool must be listed
+// with a schema or agents can't call it, and the combined registry must stay well-formed.
+test("BACKLOG_TOOLS registry is well-formed and covers list/add/set/promote", () => {
+  const names = BACKLOG_TOOLS.map((t) => t.name);
+  eq(names, ["backlog_list", "backlog_add", "backlog_set", "backlog_promote"], "all four tools");
+  for (const t of BACKLOG_TOOLS) {
+    ok(t.description && t.inputSchema && t.inputSchema.type === "object", `${t.name} has description + object schema`);
+  }
+  const combined = [...TOOLS.map((t) => t.name), ...names];
+  eq(new Set(combined).size, combined.length, "no name collisions with the roadmap tools");
+  ok(combined.length >= 14, "14+ tools after the expansion");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

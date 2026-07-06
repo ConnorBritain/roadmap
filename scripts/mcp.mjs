@@ -10,9 +10,9 @@
 import { createInterface } from "node:readline";
 import { findRepoRoot, REL } from "./lib/cli-core.mjs";
 import { loadGraph } from "./lib/graph.mjs";
-import { mutateRoadmap, mutateBacklog, loadBacklog, roadmapPaths } from "./lib/store.mjs";
+import { mutateRoadmap, mutateBacklog, mutateBoth, loadBacklog, roadmapPaths } from "./lib/store.mjs";
 import { TOOLS, READ_HANDLERS, MUTATION_HANDLERS } from "./lib/mcp-core.mjs";
-import { BACKLOG_TOOLS, BACKLOG_READ_HANDLERS, BACKLOG_MUTATION_HANDLERS } from "./lib/backlog-core.mjs";
+import { BACKLOG_TOOLS, BACKLOG_READ_HANDLERS, BACKLOG_MUTATION_HANDLERS, performPromotion } from "./lib/backlog-core.mjs";
 
 const PROTOCOL_VERSION = "2024-11-05";
 const SERVER_INFO = { name: "graph", version: "0.2.0" };
@@ -38,6 +38,10 @@ function callTool(name, args) {
   if (BACKLOG_MUTATION_HANDLERS[name]) {
     return mutateBacklog(repoRoot(), (doc) => BACKLOG_MUTATION_HANDLERS[name](doc, args || {}),
       { createIfMissing: name === "backlog_add" });
+  }
+  if (name === "backlog_promote") {
+    // Spans both YAMLs: both validated before either is written.
+    return mutateBoth(repoRoot(), (rDoc, bDoc) => performPromotion(rDoc, bDoc, args || {}));
   }
   throw new Error(`unknown tool "${name}"`);
 }
