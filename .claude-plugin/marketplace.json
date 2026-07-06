@@ -5,7 +5,7 @@
     {
       "name": "roadmap",
       "source": "./",
-      "description": "Hierarchical roadmap graph + multi-session fanout. Skills (/slice, /sync, /init, /fanout), four agents, a SessionStart hook (ready-wave + unrecorded-merge reconcile nudge), a PR-watch monitor, and an MCP server (read + comment-preserving mutate)."
+      "description": "Roadmap + backlog graph with prioritized, feasibility-checked multi-session fanout. Skills (/slice, /backlog, /sync, /init, /fanout), four agents, a SessionStart hook (ready-wave + backlog count + reconcile nudge), a PR-watch monitor, and an MCP server 'graph' (read + comment-preserving mutate, roadmap + backlog tools)."
     }
   ]
 }
