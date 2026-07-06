@@ -81,6 +81,14 @@ export function linearState({ meta, env = {}, cursor = null } = {}) {
   };
 }
 
+// The ONE canonical status sentence — every surface (CLI status, MCP, the session-start
+// hook, runSync's errors) prints this, so the wording can't drift across four files.
+export function linearStatusLine(state) {
+  if (!state.configured) return "Linear: not configured — add meta.linear or run 'roadmap linear setup --team <KEY>'.";
+  if (!state.authed) return `Linear: configured (team ${state.cfg.team}) but unauthed — set LINEAR_API_KEY ('roadmap linear auth' explains).`;
+  return `Linear: wired (team ${state.cfg.team} · granularity ${state.cfg.granularity} · pull ${state.cfg.pull} · last sync ${state.lastSync || "never"}).`;
+}
+
 // ── PI-override ack (mirrors the --yes-spawn-autonomous double-ack) ───────────
 export function checkPiOverrideAck(globalLinear, piLinear, acked, piId) {
   if (!globalLinear || !piLinear || piLinear.granularity == null) return;

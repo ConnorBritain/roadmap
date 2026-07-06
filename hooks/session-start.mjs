@@ -70,11 +70,7 @@ try {
   try {
     const lc = await import(new URL("../scripts/lib/linear-core.mjs", import.meta.url));
     const st = lc.linearState({ meta: g.meta, env: process.env });
-    if (st.configured) {
-      linearNote = st.authed
-        ? ` Linear: wired (team ${st.cfg.team} · pull ${st.cfg.pull}).`
-        : ` Linear: configured but unauthed — set LINEAR_API_KEY ('roadmap linear auth' explains).`;
-    }
+    if (st.configured) linearNote = ` ${lc.linearStatusLine(st)}`;
   } catch { /* skip */ }
 
   if (!ready.length && !onHuman.length && !nudge && !backlogNote && !linearNote) emit("");

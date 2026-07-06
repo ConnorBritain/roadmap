@@ -13,7 +13,7 @@ import { loadGraph } from "./lib/graph.mjs";
 import { mutateRoadmap, mutateBacklog, mutateBoth, loadBacklog, roadmapPaths } from "./lib/store.mjs";
 import { TOOLS, READ_HANDLERS, MUTATION_HANDLERS } from "./lib/mcp-core.mjs";
 import { BACKLOG_TOOLS, BACKLOG_READ_HANDLERS, BACKLOG_MUTATION_HANDLERS, performPromotion } from "./lib/backlog-core.mjs";
-import { linearState } from "./lib/linear-core.mjs";
+import { linearState, linearStatusLine } from "./lib/linear-core.mjs";
 import { runSync } from "./linear.mjs";
 
 // Always registered; politely erroring when unconfigured beats config-gated registration
@@ -60,7 +60,7 @@ function callTool(name, args) {
     const st = linearState({ meta: graph.meta, env: process.env });
     return { configured: st.configured, authed: st.authed,
       ...(st.cfg ? { team: st.cfg.team, granularity: st.cfg.granularity, pull: st.cfg.pull } : {}),
-      ...(st.configured ? {} : { note: "not configured — add meta.linear or run 'roadmap linear setup --team <KEY>'" }) };
+      status: linearStatusLine(st) };
   }
   if (name === "linear_sync") {
     // async; the tools/call path awaits. runSync itself throws the setup-guidance errors.
