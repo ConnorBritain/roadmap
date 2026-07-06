@@ -25,6 +25,8 @@ COMMANDS
   set <name> f=v  edit a slice's fields (f=@file for multiline, f=null deletes)
   render          regenerate docs/SLICES.md (+ docs/BACKLOG.md when a backlog exists)
   fan             launch a wave — a lead + one pane/tab per slice, each in its own worktree
+                  (--cloud dispatches the wave to CLOUD agents via Linear instead — no worktrees)
+  dispatch <key>  send one slice/backlog item to a cloud agent via its Linear issue [--to claude|codex|oz]
   backlog         erratic-work tracker: list | add "title" [-k kind --tier PN] | set <id> f=v
   grab <id>       launch ONE backlog item in its own worktree + session
   promote <id>    promote a backlog item into a roadmap sprint (--pi <pi> [--id sN])
@@ -32,6 +34,8 @@ COMMANDS
   validate        structural + dependency + cycle checks
   mcp             run the MCP server (stdio); read + mutate tools over JSON-RPC
   watch           watch fanout PRs and print a line as each lands (lead notifications)
+  review          date-anchored review digest: what shipped vs what grew since meta.last_review
+  linear          optional Linear sync: status [--probe] | auth | setup --team KEY | provision | sync [--dry] | post-update
   sync | init     (plugin skills) reconcile+re-render / PM-interview bootstrap
   help            this help
 

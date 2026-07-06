@@ -33,13 +33,23 @@
         "priority": { "$ref": "roadmap.schema.json#/$defs/priority" },
         "source": {
           "type": "object", "additionalProperties": false,
-          "description": "Where this surfaced: the slice that spawned it, when, and a note",
+          "description": "Where this surfaced: the slice that spawned it, an inbound Linear issue, when, and a note",
           "properties": {
             "slice": { "type": "string", "description": "Invoke key of the slice this fell out of" },
             "date": { "type": "string", "description": "ISO date captured" },
-            "note": { "type": "string" }
+            "note": { "type": "string" },
+            "linear": {
+              "type": "object", "additionalProperties": false,
+              "description": "Origin demarcation for items captured from a watched Linear source — lets /prioritize weight by where work comes from",
+              "properties": {
+                "team": { "type": "string" },
+                "project": { "type": "string" },
+                "issue": { "type": "string" }
+              }
+            }
           }
         },
+        "linear": { "type": "string", "description": "Linear issue identifier this item maps to (set on push or on pull-capture)" },
         "refs": { "type": "array", "items": { "type": "string" }, "description": "Related roadmap slice invoke keys" },
         "touches": { "type": "array", "items": { "type": "string" }, "description": "Files this item writes (grab uses it for the brief scope)" },
         "est_sessions": { "type": "number", "minimum": 0 },

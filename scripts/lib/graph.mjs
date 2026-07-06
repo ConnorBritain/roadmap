@@ -77,6 +77,7 @@ export function flatten(graph) {
         track: sp.track || null,            // optional lane label for the three-track partition (--track)
         priority: sp.priority || null,      // optional { tier, weight, reason } (see lib/priority.mjs)
         prompt: sp.prompt || null,          // optional author-stashed pickup instructions
+        linear: sp.linear || null,          // optional Linear issue identifier (see lib/linear-core.mjs)
         readOrder: sp.read_order || [],
         resumeAction: sp.resume_action || "",
         kickoffBrief: sp.kickoff_brief || "brief",
@@ -239,9 +240,18 @@ export function execPlan(pi) {
   }
 }
 
+// Wave-packing coherence knob: prefer finishing STARTED PIs over opening fresh ones, so a
+// capped wave doesn't leave every PI half-open. Strictly subordinate to declared priority.
+// meta.discipline.coherence: false restores pure priority/status/est ordering.
+export function coherenceEnabled(meta) {
+  return !(meta && meta.discipline && meta.discipline.coherence === false);
+}
+
 // Compute execution waves under a concurrency cap N.
 // Returns { waves: [[node,...],...], held: { onHuman:[node], blocked:[node] } }.
-export function computeWaves(model, N = 3) {
+// opts.coherence (default true): PI-coherence tiebreak in the ready sort — see coherenceEnabled.
+export function computeWaves(model, N = 3, opts = {}) {
+  const coherence = opts.coherence !== false;
   const { nodes, sprintIndex } = model;
   const cyc = detectCycle(model);
   if (cyc) {
@@ -270,9 +280,28 @@ export function computeWaves(model, N = 3) {
     );
     if (!ready.length) break;
 
+    // Per-iteration PI coherence stats over the OPTIMISTIC statuses: a PI counts as started
+    // once any sprint is done/active (incl. waves already packed this run); `remaining` drives
+    // "closest to done first". Siblings share a rank, so the cap fills contiguously.
+    const coh = new Map();
+    if (coherence) {
+      for (const n of nodes) {
+        const s = coh.get(n.piId) || { started: false, remaining: 0 };
+        const st = status.get(n.nodeKey);
+        if (isDone(st) || st === "active") s.started = true;
+        if (!isDone(st)) s.remaining += 1;
+        coh.set(n.piId, s);
+      }
+    }
+
     ready.sort((a, b) => {
       const pc = comparePriority(a.priority, b.priority);  // declared priority wins the cap slot
-      if (pc) return pc;                                    // both absent → 0 → existing order below
+      if (pc) return pc;                                    // both absent → 0 → coherence, then existing order
+      if (coherence && a.piId !== b.piId) {
+        const ca = coh.get(a.piId), cb = coh.get(b.piId);
+        if (ca.started !== cb.started) return ca.started ? -1 : 1;   // finish started PIs first
+        if (ca.remaining !== cb.remaining) return ca.remaining - cb.remaining;  // closest-to-done first
+      }
       const ra = (STATUS[a.status] || {}).rank ?? 7;
       const rb = (STATUS[b.status] || {}).rank ?? 7;
       if (ra !== rb) return ra - rb;

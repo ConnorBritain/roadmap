@@ -23,6 +23,7 @@
         "terminal": { "enum": ["warp", "wt", "tmux", "iterm", "background", "print"], "default": "print", "description": "Default terminal adapter for /fanout launches" },
         "default_concurrency": { "type": "integer", "minimum": 1, "default": 3 },
         "worker_mode": { "enum": ["plan", "auto", "acceptEdits", "bypassPermissions"], "default": "plan", "description": "Default --permission-mode for launched worker + lead sessions; --worker-mode overrides. 'auto' = auto-approve tool/bash/MCP with safety checks (NOT a bypass); 'plan' = read-only research that gates edits behind plan approval." },
+        "agent_cmd": { "type": "string", "description": "Launch-command template for INTERACTIVE worker/lead sessions — swap the agent (e.g. a codex invocation). Tokens: {mode} = permission mode, {prompt} = the quoted kickoff prompt. Default: 'claude --permission-mode {mode} {prompt}'. Autonomous headless launches stay claude." },
         "completed_window_days": { "type": "integer", "minimum": 1, "default": 14, "description": "How recently a sprint must have completed to appear in the Recently-completed table" },
         "base_branch": { "type": "string", "default": "main", "description": "Branch worktrees are cut from + PR base" },
         "remote": { "type": "string", "default": "origin", "description": "Git remote name for fetch + worktree base ref" },
@@ -42,6 +43,50 @@
             "heavy": { "$ref": "#/$defs/cost" },
             "medium": { "$ref": "#/$defs/cost" },
             "light": { "$ref": "#/$defs/cost" }
+          }
+        },
+        "linear": {
+          "type": "object", "additionalProperties": false,
+          "required": ["team"],
+          "description": "Optional Linear integration. Absent → all Linear behavior off (byte-identical). Linear is a PROJECTION of this file plus a proposal inbox — the YAML stays canonical. Auth is the LINEAR_API_KEY env var, never stored here.",
+          "properties": {
+            "team": { "type": "string", "description": "Push-target team key (e.g. ENG)" },
+            "granularity": { "enum": ["pis", "slices", "slices+backlog"], "default": "slices", "description": "What projects to Linear: PIs as Projects only, +slices as Issues, +backlog items too. Per-PI override via pi.linear.granularity (ack-gated on conflict)." },
+            "verbosity": { "enum": ["title", "brief", "full"], "default": "brief", "description": "Issue-description detail. Never copies read-order/prompt; always ends with the machine footer + docs link." },
+            "pull": { "enum": ["off", "propose", "auto"], "default": "off", "description": "Inbound handling: propose = /sync walks the inbox with you; auto = applied directly." },
+            "push_on": { "enum": ["sync", "manual"], "default": "sync", "description": "sync = /sync runs the Linear phase when authed; manual = only 'roadmap linear sync'." },
+            "status_map": { "type": "object", "additionalProperties": { "type": "string" }, "description": "roadmap status → exact Linear workflow-state NAME overrides; unmapped statuses use the state-TYPE defaults (scheduled→backlog, next→unstarted, active/blocked/paused/gated→started, complete→completed)." },
+            "watch": {
+              "type": "array",
+              "description": "Inbound sources (multiple teams/projects, e.g. a public 'Submit an issue' team). New issues become proposed backlog items carrying source.linear demarcation.",
+              "items": {
+                "type": "object", "additionalProperties": false, "required": ["team"],
+                "properties": {
+                  "team": { "type": "string" },
+                  "project": { "type": "string", "description": "Omit to watch the whole team" },
+                  "capture": { "enum": ["backlog"], "default": "backlog" },
+                  "kind": { "enum": ["bug", "chore", "followup", "urgent", "idea"], "default": "idea" },
+                  "priority": { "$ref": "#/$defs/priority", "description": "Default priority for inbound items = implicit source weighting (the issue's own Linear priority wins when set)" }
+                }
+              }
+            }
+          }
+        },
+        "discipline": {
+          "type": "object", "additionalProperties": false,
+          "description": "Scope-discipline knobs read by the /sync and /debrief guardrails and the wave scheduler",
+          "properties": {
+            "capture_ratio": { "type": "number", "exclusiveMinimum": 0, "default": 2, "description": "Max (captured backlog items + added sprints) per completed slice per review window before the sprawl warning fires" },
+            "coherence": { "type": "boolean", "default": true, "description": "Wave-packing coherence: prefer finishing started PIs over opening fresh ones (strictly below declared priority). false restores pure priority/status/est ordering." }
+          }
+        },
+        "last_review": {
+          "type": "object", "additionalProperties": false,
+          "required": ["date", "commit"],
+          "description": "The /debrief / /retro anchor: when the human last reviewed, and the roadmap.yaml git rev AT that review (captured before the review's own edits). Written by the skills via Edit+validate.",
+          "properties": {
+            "date": { "type": "string", "description": "ISO date the review closed" },
+            "commit": { "type": "string", "description": "git rev of the previous review's roadmap.yaml state" }
           }
         },
         "links": {
@@ -91,6 +136,14 @@
         "exit_criteria": { "type": "string" },
         "detail": { "type": "string", "description": "Pointer to the sprint dir / detail doc" },
         "exec_hint": { "type": ["string", "null"], "description": "Optional human override of the derived exec-plan line; rendered alongside the derived line" },
+        "linear": {
+          "type": "object", "additionalProperties": false,
+          "description": "Per-PI Linear override + the pushed-back project id. A granularity conflicting with the global requires the yes_linear_override ack at creation; validate warns on stored mismatches.",
+          "properties": {
+            "granularity": { "enum": ["pis", "slices", "slices+backlog"] },
+            "project": { "type": "string", "description": "Linear project id — written back by the first push; don't hand-author" }
+          }
+        },
         "sprints": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/sprint" } }
       }
     },
@@ -121,7 +174,8 @@
         "track": { "type": "string", "description": "Optional lane label for the three-track partition (e.g. A | B | C). --track filters a fanout to one lane. Omit for an untracked slice." },
         "execution": { "$ref": "#/$defs/execution" },
         "priority": { "$ref": "#/$defs/priority" },
-        "prompt": { "type": "string", "description": "Author-stashed pickup instructions, embedded VERBATIM in the synthesized kickoff brief and shown by /slice and roadmap show. Update as new info comes in (set_fields / roadmap set)." }
+        "prompt": { "type": "string", "description": "Author-stashed pickup instructions, embedded VERBATIM in the synthesized kickoff brief and shown by /slice and roadmap show. Update as new info comes in (set_fields / roadmap set)." },
+        "linear": { "type": "string", "description": "Linear issue identifier (e.g. ABC-123) this slice maps to — written back by the first push. The {linear} branch_convention token uses it so Linear auto-links the PR." }
       }
     },
     "priority": {

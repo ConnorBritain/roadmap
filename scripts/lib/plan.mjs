@@ -4,7 +4,7 @@
 // the MCP read tools (plan / ready_wave) return it as JSON. computeWaves may throw on a
 // dependency cycle; callers catch.
 
-import { flatten, computeWaves, readyNodes } from "./graph.mjs";
+import { flatten, computeWaves, readyNodes, coherenceEnabled, isDone } from "./graph.mjs";
 import { recommendConcurrency, nodeWeight, probeDisk } from "./recommend.mjs";
 import { branchFor, worktreeFor, launchPrompt } from "./brief.mjs";
 import { normalizeExecution, suggestedConcurrency } from "./execution.mjs";
@@ -22,7 +22,16 @@ export function buildPlan(graph, opts = {}) {
     disk: opts.disk !== undefined ? opts.disk : probeDisk(graph),
   });
   const cap = opts.cap != null ? Number(opts.cap) : rec.recommended;
-  const { waves, held } = computeWaves(model, cap);
+  const { waves, held } = computeWaves(model, cap, { coherence: coherenceEnabled(graph.meta) });
+
+  // Which PIs each wave CLOSES (all sprints done once the wave lands, counting earlier waves
+  // optimistically) — the coherence read-out: "this wave finishes auth".
+  const doneKeys = new Set(model.nodes.filter((n) => isDone(n.status)).map((n) => n.nodeKey));
+  const waveCloses = waves.map((w) => {
+    w.forEach((n) => doneKeys.add(n.nodeKey));
+    return [...new Set(w.map((n) => n.piId))].filter((pi) =>
+      model.nodes.filter((m) => m.piId === pi).every((m) => doneKeys.has(m.nodeKey)));
+  });
 
   return {
     cap,
@@ -31,6 +40,7 @@ export function buildPlan(graph, opts = {}) {
     sys: { cores: rec.sys.cores, totalGb: round(rec.sys.totalGb), freeGb: round(rec.sys.freeGb), platform: rec.sys.platform },
     disk: rec.disk ? { perWorktreeGb: round(rec.disk.perWorktreeGb), freeGb: round(rec.disk.freeGb), cap: rec.disk.cap } : null,
     candidates: rec.candidates,
+    waveCloses,
     waves: waves.map((w) =>
       w.map((n) => ({
         invoke: n.invoke,

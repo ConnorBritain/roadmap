@@ -5,7 +5,7 @@
 
 import {
   flatten, computeWaves, execPlan, sessionsRemaining,
-  statusDisplay, emojiFor, isDone,
+  statusDisplay, emojiFor, isDone, coherenceEnabled,
 } from "./graph.mjs";
 import { executionDirectiveLines } from "./execution.mjs";
 import { tierBadge } from "./priority.mjs";
@@ -47,7 +47,7 @@ export function renderMarkdown(graph, opts = {}) {
   w("");
   let waveResult;
   try {
-    waveResult = computeWaves(model, cap);
+    waveResult = computeWaves(model, cap, { coherence: coherenceEnabled(graph.meta) });
   } catch (e) {
     w(`> ⚠ ${e.message}`);
     waveResult = { waves: [], held: { onHuman: [], blocked: [] } };

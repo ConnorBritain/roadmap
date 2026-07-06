@@ -16,10 +16,11 @@
 import { writeFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import os from "node:os";
-import { join } from "node:path";
-import { loadGraph, flatten, computeWaves, readyNodes } from "./lib/graph.mjs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { loadGraph, flatten, computeWaves, readyNodes, coherenceEnabled } from "./lib/graph.mjs";
 import { recommendConcurrency, probeDisk } from "./lib/recommend.mjs";
-import { synthesizeBrief, branchFor, worktreeFor, launchPrompt, baseRefOf, remoteOf } from "./lib/brief.mjs";
+import { synthesizeBrief, branchFor, worktreeFor, launchPrompt, baseRefOf, remoteOf, agentCmdFor } from "./lib/brief.mjs";
 import { launchDecision, bashWorktreeLines, pwshWorktreeLines, diskBlockLines } from "./lib/fanout-core.mjs";
 import { terminalChoices } from "./lib/wizard-core.mjs";
 import { filterByTrack } from "./lib/execution.mjs";
@@ -51,6 +52,26 @@ const term = val("--term", (graph.meta && graph.meta.terminal) || terminalChoice
 // Worker permission mode: flag > meta.worker_mode > 'plan'. The lead session uses the same mode.
 const workerMode = val("--worker-mode", (graph.meta && graph.meta.worker_mode) || "plan");
 
+// ── cloud fanout: dispatch the wave to CLOUD agents via Linear instead of local worktrees.
+// Placed BEFORE all worktree/disk/terminal logic on purpose — no disk ceiling, no checkout:
+// the bottleneck moves from this machine to the agent plan's limits. (v0.5 seam — dispatch
+// itself is pending live verification; see scripts/dispatch.mjs.)
+if (has("--cloud")) {
+  // Machine ceilings vanish; the REVIEW ceiling doesn't — a human still merges the PRs.
+  const cloudCap = has("--cap") ? Number(val("--cap", 5)) : Number(val("--review-ceiling", 5));
+  const { waves: cloudWaves } = computeWaves(model, cloudCap, { coherence: coherenceEnabled(graph.meta) });
+  const wave = filterByTrack(cloudWaves[waveIdx - 1] || [], track);
+  if (!wave.length) { console.error(`No runnable slices in wave ${waveIdx} (cap ${cloudCap}).`); process.exit(0); }
+  console.error(`cloud fanout: wave ${waveIdx}, ${wave.length} slice(s) → roadmap dispatch (no worktrees, no disk ceiling; cap = review ceiling ${cloudCap})`);
+  const scriptsDir = dirname(fileURLToPath(import.meta.url));
+  let failed = 0;
+  for (const n of wave) {
+    const r = spawnSync("node", [join(scriptsDir, "dispatch.mjs"), n.invoke, ...(val("--to") ? ["--to", val("--to")] : [])], { stdio: "inherit" });
+    if ((r.status ?? 1) !== 0) failed += 1;
+  }
+  process.exit(failed ? 1 : 0);
+}
+
 const ready = readyNodes(model);
 const rec = recommendConcurrency(ready, graph, { reviewCeiling: Number(val("--review-ceiling", 5)), disk: probeDisk(graph) });
 // Disk hard-block: auto-dialing handles the soft path (recommended >= 1), but when even ONE
@@ -62,7 +83,7 @@ if (rec.disk && rec.disk.cap < 1) {
 const cap = has("--cap") ? Number(val("--cap", rec.recommended)) : rec.recommended;
 
 let waves;
-try { ({ waves } = computeWaves(model, cap)); }
+try { ({ waves } = computeWaves(model, cap, { coherence: coherenceEnabled(graph.meta) })); }
 catch (e) { console.error(`✗ ${e.message}`); process.exit(1); }
 
 const fullWave = waves[waveIdx - 1] || [];
@@ -79,8 +100,8 @@ if (!wave.length) {
 function claudeCmd(node) {
   const prompt = launchPrompt(node);
   const base = autonomous
-    ? `claude -p "${prompt}" --permission-mode acceptEdits`   // NOTE: confirm flag at build/test time
-    : `claude --permission-mode ${workerMode} "${prompt}"`;
+    ? `claude -p "${prompt}" --permission-mode acceptEdits`   // ponytail: headless stays claude; meta.agent_cmd covers interactive only
+    : agentCmdFor(graph, { prompt, mode: workerMode });
   const withLane = lane === "api"
     ? `ANTHROPIC_API_KEY="$ROADMAP_API_KEY" ${base}`     // api overflow lane (rarely used)
     : base;                                                    // max: inherit the logged-in subscription
@@ -109,7 +130,7 @@ function tmuxScript() {
   L.push(`tmux set -g pane-border-status top 2>/dev/null || true`);
   L.push(`tmux select-pane -t ${session} -T "LEAD — review + merge PRs (workers never merge)"`);
   L.push(leadClaude
-    ? `tmux send-keys -t ${session} 'claude --permission-mode ${workerMode} "${LEAD_PROMPT}"' C-m`
+    ? `tmux send-keys -t ${session} '${agentCmdFor(graph, { prompt: LEAD_PROMPT, mode: workerMode })}' C-m`
     : `tmux send-keys -t ${session} 'echo "LEAD pane - review + merge each slice PR as it lands. Workers do NOT merge."' C-m`);
   for (const n of wave) {
     const wt = worktreeFor(n, graph);
@@ -151,7 +172,7 @@ function basicTerminalScript(kind) {
 // Interactive workers start in PLAN MODE; autonomous run headless.
 function claudeCmdPwsh(node) {
   const prompt = launchPrompt(node);
-  return autonomous ? `claude -p '${prompt}' --permission-mode acceptEdits` : `claude --permission-mode ${workerMode} '${prompt}'`;
+  return autonomous ? `claude -p '${prompt}' --permission-mode acceptEdits` : agentCmdFor(graph, { prompt, mode: workerMode, quote: "'" });
 }
 
 // Windows Terminal adapter: a self-contained PowerShell script — worktree + brief per slice,
@@ -173,7 +194,7 @@ function wtScript() {
   // inside a tab command (a ';' in a prompt would spawn bogus tabs). Replace with a comma.
   const wtSafe = (s) => s.replace(/;/g, ",");
   const lead = leadClaude
-    ? `claude --permission-mode ${workerMode} '${LEAD_PROMPT}'`
+    ? agentCmdFor(graph, { prompt: LEAD_PROMPT, mode: workerMode, quote: "'" })
     : `Write-Host 'LEAD tab - review + merge each slice PR as it lands. Workers do NOT merge.'`;
   const parts = [`new-tab --title "LEAD" -d "${repoRoot}" powershell -NoExit -Command "${wtSafe(lead)}"`];
   for (const n of wave) {
@@ -209,7 +230,7 @@ function warpTabConfigToml() {
   const L = [`name = "roadmap-wave${waveIdx}"`, `color = "blue"`, ``];
   // lead on the left; slices stacked on the right (one pane each)
   L.push(tomlSplit("root", "horizontal", wave.length === 1 ? ["lead", "s0"] : ["lead", "slices"]));
-  const leadCmd = leadClaude ? `claude --permission-mode ${workerMode} '${LEAD_PROMPT}'` : `echo 'LEAD - review + merge each slice PR; workers do NOT merge'`;
+  const leadCmd = leadClaude ? agentCmdFor(graph, { prompt: LEAD_PROMPT, mode: workerMode, quote: "'" }) : `echo 'LEAD - review + merge each slice PR; workers do NOT merge'`;
   L.push(tomlLeaf("lead", repoRoot, leadCmd, true));
   if (wave.length > 1) L.push(tomlSplit("slices", "vertical", ids));
   wave.forEach((n, i) => L.push(tomlLeaf(`s${i}`, worktreeFor(n, graph), claudeCmdPwsh(n), false)));

@@ -13,6 +13,17 @@ import { loadGraph } from "./lib/graph.mjs";
 import { mutateRoadmap, mutateBacklog, mutateBoth, loadBacklog, roadmapPaths } from "./lib/store.mjs";
 import { TOOLS, READ_HANDLERS, MUTATION_HANDLERS } from "./lib/mcp-core.mjs";
 import { BACKLOG_TOOLS, BACKLOG_READ_HANDLERS, BACKLOG_MUTATION_HANDLERS, performPromotion } from "./lib/backlog-core.mjs";
+import { linearState, linearStatusLine } from "./lib/linear-core.mjs";
+import { runSync } from "./linear.mjs";
+
+// Always registered; politely erroring when unconfigured beats config-gated registration
+// (tools/list would need IO). linear_sync reuses linear.mjs's runSync — one sync implementation.
+const LINEAR_TOOLS = [
+  { name: "linear_status", description: "Linear integration state for this roadmap (configured / authed / last sync). Zero network. Read-only.",
+    inputSchema: { type: "object", properties: {} } },
+  { name: "linear_sync", description: "Run the Linear sync: push the roadmap/backlog projection, fetch the pull inbox. dry=true plans without writing. With meta.linear.pull=propose the inbox is returned as proposals for you to apply via backlog_add/set_status/backlog_set.",
+    inputSchema: { type: "object", properties: { dry: { type: "boolean" }, push: { type: "boolean" }, pull: { type: "boolean" } } } },
+];
 
 const PROTOCOL_VERSION = "2024-11-05";
 const SERVER_INFO = { name: "graph", version: "0.2.0" };
@@ -43,6 +54,18 @@ function callTool(name, args) {
     // Spans both YAMLs: both validated before either is written.
     return mutateBoth(repoRoot(), (rDoc, bDoc) => performPromotion(rDoc, bDoc, args || {}));
   }
+  if (name === "linear_status") {
+    const root = repoRoot();
+    const graph = loadGraph(roadmapPaths(root).yaml);
+    const st = linearState({ meta: graph.meta, env: process.env });
+    return { configured: st.configured, authed: st.authed,
+      ...(st.cfg ? { team: st.cfg.team, granularity: st.cfg.granularity, pull: st.cfg.pull } : {}),
+      status: linearStatusLine(st) };
+  }
+  if (name === "linear_sync") {
+    // async; the tools/call path awaits. runSync itself throws the setup-guidance errors.
+    return runSync(repoRoot(), { dry: !!args.dry, pushOnly: args.pull === false, pullOnly: args.push === false });
+  }
   throw new Error(`unknown tool "${name}"`);
 }
 
@@ -56,18 +79,17 @@ function handle(msg) {
   if (method === "notifications/initialized" || method === "initialized") return; // notification: no reply
   if (method === "ping") return out({ jsonrpc: "2.0", id, result: {} });
   if (method === "tools/list") {
-    return out({ jsonrpc: "2.0", id, result: { tools: [...TOOLS, ...BACKLOG_TOOLS] } });
+    return out({ jsonrpc: "2.0", id, result: { tools: [...TOOLS, ...BACKLOG_TOOLS, ...LINEAR_TOOLS] } });
   }
   if (method === "tools/call") {
     const name = params && params.name;
     const args = (params && params.arguments) || {};
-    try {
-      const result = callTool(name, args);
-      return out({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] } });
-    } catch (e) {
+    // Promise-wrapped so async tools (linear_sync) work; sync tools resolve immediately.
+    return Promise.resolve().then(() => callTool(name, args)).then(
+      (result) => out({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] } }),
       // MCP convention: tool failures come back as a result with isError, so the model sees why.
-      return out({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true } });
-    }
+      (e) => out({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true } }),
+    );
   }
   if (id !== undefined && id !== null) {
     return out({ jsonrpc: "2.0", id, error: { code: -32601, message: `method not found: ${method}` } });

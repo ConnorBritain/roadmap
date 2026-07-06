@@ -29,7 +29,19 @@ The repo still contains Claude-oriented plugin assets under `.claude-plugin/`, `
 - `npm run plan`
 - `npm run mcp`
 - `node scripts/cli.mjs show <slice>`
-- `node scripts/cli.mjs next` · `backlog` · `set <slice> f=v` · `grab <id>` · `promote <id> --pi <pi>`
+- `node scripts/cli.mjs next` · `backlog` · `set <slice> f=v` · `grab <id>` · `promote <id> --pi <pi>` · `linear status|provision|sync` · `review [--json]` · `dispatch <key>`
+
+## Scope discipline
+
+Worker sessions file leftovers to the **backlog only** — never add sprints or PIs (scope decisions belong to the human; the kickoff brief and tool descriptions say so). `/sync` and `roadmap review` surface sprawl warnings when captures outrun completions (`meta.discipline.capture_ratio`). Wave packing prefers finishing started PIs (`meta.discipline.coherence`, default on, strictly below declared priority).
+
+## Deployment
+
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) is the authoritative guide: surfaces (CLI / plugin / standalone MCP / Claude Desktop / CI), and the one rule — committed YAML carries configuration, the environment carries secrets (`LINEAR_API_KEY`), nothing else exists. Never write a credential into any repo file.
+
+## Linear (optional)
+
+When `meta.linear` exists, the YAML projects to Linear (push) and inbound issues arrive as proposals (pull) — see README → Linear. The pure brain is `scripts/lib/linear-core.mjs`; ALL network IO lives in `scripts/linear.mjs` (injectable transport — tests use a fake, never the API). No `meta.linear` → all Linear behavior is off; keep it that way (backward compat is asserted by tests).
 
 ## Codex-Specific Notes
 

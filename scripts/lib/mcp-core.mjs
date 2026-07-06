@@ -8,6 +8,7 @@ import { buildPlan } from "./plan.mjs";
 import { validateGraph } from "./validate-core.mjs";
 import { normalizeExecution, suggestedConcurrency, validateExecution } from "./execution.mjs";
 import { validatePriority } from "./priority.mjs";
+import { checkPiOverrideAck, normalizeLinearConfig } from "./linear-core.mjs";
 
 const STATUSES = Object.keys(STATUS);
 const VALID_STATUS = new Set(STATUSES);
@@ -18,7 +19,7 @@ const DONE = new Set(STATUSES.filter((s) => STATUS[s].done));
 const SETTABLE = new Set([
   "title", "what", "status", "status_label", "est_sessions", "weight",
   "deps", "touches", "owns", "gate", "gated_on", "read_order", "resume_action",
-  "prs", "completed_on", "optional", "execution", "track", "priority", "prompt", "kickoff_brief",
+  "prs", "completed_on", "optional", "execution", "track", "priority", "prompt", "kickoff_brief", "linear",
 ]);
 
 // ── tool registry ─────────────────────────────────────────────────────────────
@@ -31,12 +32,14 @@ export const TOOLS = [
     inputSchema: { type: "object", required: ["invoke"], properties: { invoke: { type: "string" } } } },
   { name: "validate", description: "Structural + dependency + cycle checks. Returns { ok, errors, warnings }. Read-only.",
     inputSchema: { type: "object", properties: {} } },
-  { name: "add_pi", description: "Append a new PI (program increment). Validates and re-renders SLICES.md.",
+  { name: "add_pi", description: "Append a new PI (program increment). Validates and re-renders SLICES.md. A linear.granularity that conflicts with the global meta.linear.granularity requires yes_linear_override: true. Scope discipline: a PI is strategic scope — add one only when the user explicitly asked for it; follow-up work goes to backlog_add.",
     inputSchema: { type: "object", required: ["id", "title"], properties: {
       id: { type: "string" }, title: { type: "string" }, status: { enum: STATUSES },
       theme: { type: "string" }, program_label: { type: "string" }, estimate_weeks: { type: "string" },
-      exit_criteria: { type: "string" }, deps: { type: "array", items: { type: "string" } } } } },
-  { name: "add_sprint", description: "Append a sprint to an existing PI. Validates and re-renders SLICES.md.",
+      exit_criteria: { type: "string" }, deps: { type: "array", items: { type: "string" } },
+      linear: { type: "object", properties: { granularity: { enum: ["pis", "slices", "slices+backlog"] }, project: { type: "string" } } },
+      yes_linear_override: { type: "boolean" } } } },
+  { name: "add_sprint", description: "Append a sprint to an existing PI. Validates and re-renders SLICES.md. Scope discipline: scope decisions belong to the human — prefer backlog_add for follow-up work discovered mid-session; add sprints only when the user asked for them.",
     inputSchema: { type: "object", required: ["pi", "id", "title", "invoke"], properties: {
       pi: { type: "string" }, id: { type: "string" }, title: { type: "string" }, invoke: { type: "string" },
       status: { enum: STATUSES }, what: { type: "string" }, est_sessions: { type: "number" },
@@ -81,7 +84,7 @@ export function readShow(graph, args) {
     gatedOn: n.gatedOn, readOrder: n.readOrder, resumeAction: n.resumeAction,
     estSessions: n.estSessions, prs: n.prs,
     track: n.track, execution: normalizeExecution(n.execution), suggestedConcurrency: suggestedConcurrency(n),
-    priority: n.priority, prompt: n.prompt,
+    priority: n.priority, prompt: n.prompt, linear: n.linear,
   };
 }
 export function readValidate(graph) {
@@ -118,8 +121,11 @@ function sprintLocByInvoke(doc, invoke) {
 export function addPi(doc, args) {
   if (!args || !args.id || !args.title) throw new Error("add_pi requires id + title");
   if (piIndexById(doc, args.id) >= 0) throw new Error(`PI "${args.id}" already exists`);
+  // A per-PI Linear granularity that conflicts with the global must be explicitly acked
+  // (mirrors --yes-spawn-autonomous); the throw happens before any Document mutation.
+  if (args.linear) checkPiOverrideAck(normalizeLinearConfig(doc.toJS().meta || {}), args.linear, args.yes_linear_override, args.id);
   const node = { id: args.id, title: args.title, status: args.status || "scheduled" };
-  for (const k of ["theme", "program_label", "estimate_weeks", "exit_criteria"]) if (args[k] != null) node[k] = args[k];
+  for (const k of ["theme", "program_label", "estimate_weeks", "exit_criteria", "linear"]) if (args[k] != null) node[k] = args[k];
   if (Array.isArray(args.deps)) node.deps = args.deps;
   node.sprints = [];
   // createNode: addIn stores a plain object un-wrapped, which breaks later AST reads (.get)

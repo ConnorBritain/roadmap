@@ -57,7 +57,8 @@ console.log("");
 if (!plan.waves.length) console.log("No agent-runnable slices right now.");
 plan.waves.forEach((w, i) => {
   const marker = i + 1 === detailWave ? " ◀ detail" : "";
-  console.log(`Wave ${i + 1}${marker} — ${w.length} concurrent:`);
+  const closes = (plan.waveCloses && plan.waveCloses[i]) || [];
+  console.log(`Wave ${i + 1}${marker} — ${w.length} concurrent${closes.length ? ` (closes ${closes.join(", ")})` : ""}:`);
   for (const n of w) console.log(`  • ${tierBadge(n.priority) ? `[${tierBadge(n.priority)}] ` : ""}${n.invoke}  (${n.weight}, ~${n.est_sessions ?? "?"} sess)  — ${n.what}`);
 });
 if (plan.held.onHuman.length) {

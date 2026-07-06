@@ -42,7 +42,7 @@ try {
   const g = graph.loadGraph(join(root, "docs", "roadmap", "roadmap.yaml"));
   const model = graph.flatten(g);
   const cap = (g.meta && g.meta.default_concurrency) || 3;
-  const { waves, held } = graph.computeWaves(model, cap);
+  const { waves, held } = graph.computeWaves(model, cap, { coherence: graph.coherenceEnabled(g.meta) });
   const ready = (waves[0] || []).map((n) => n.invoke);
   const onHuman = held.onHuman.map((n) => n.invoke);
 
@@ -65,12 +65,21 @@ try {
     }
   } catch { /* skip */ }
 
-  if (!ready.length && !onHuman.length && !nudge && !backlogNote) emit("");
+  // Linear one-liner (guarded, ZERO network: config presence + env key only).
+  let linearNote = "";
+  try {
+    const lc = await import(new URL("../scripts/lib/linear-core.mjs", import.meta.url));
+    const st = lc.linearState({ meta: g.meta, env: process.env });
+    if (st.configured) linearNote = ` ${lc.linearStatusLine(st)}`;
+  } catch { /* skip */ }
+
+  if (!ready.length && !onHuman.length && !nudge && !backlogNote && !linearNote) emit("");
 
   let ctx = `roadmap (${(g.pis || []).length} PIs): ready now (cap ${cap}) — ${ready.join(", ") || "none"}.`;
   if (onHuman.length) ctx += ` Held on a human: ${onHuman.join(", ")}.`;
   if (nudge) ctx += ` ⟳ ${nudge}`;
   ctx += backlogNote;
+  ctx += linearNote;
   ctx += ` Use /slice <name> to orient, /fanout to launch a wave, or 'roadmap plan' for the full wave map.`;
   emit(ctx);
 } catch {

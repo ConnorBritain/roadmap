@@ -15,7 +15,28 @@ export const baseRefOf = (graph) => `${remoteOf(graph)}/${baseBranchOf(graph)}`;
 
 export function branchFor(node, graph) {
   const conv = (graph.meta && graph.meta.branch_convention) || "{pi}/{sprint}";
-  return conv.replace("{pi}", node.piId).replace("{sprint}", node.id);
+  let br = conv.replace("{pi}", node.piId).replace("{sprint}", node.id);
+  // {linear} = the node's Linear issue identifier, lowercased — a branch containing it is
+  // auto-linked to the issue by Linear. Cleanup runs ONLY when the token was used, so
+  // conventions without it stay byte-identical; a node without an id degrades gracefully
+  // ({pi}/{linear}-{sprint} -> platform/s1, no "/-" or "--" residue).
+  if (conv.includes("{linear}")) {
+    br = br.replace("{linear}", String(node.linear || "").toLowerCase())
+      .replace(/--+/g, "-").replace(/\/-/g, "/").replace(/-+$/, "");
+  }
+  return br;
+}
+
+// Launch-command template for INTERACTIVE worker/lead sessions. meta.agent_cmd swaps the
+// agent (e.g. a codex invocation) — {mode} = permission mode, {prompt} = the prompt wrapped
+// in the call site's quote char (each shell context picks its own). The default template
+// produces today's claude command byte-for-byte.
+// ponytail: interactive-only lever; autonomous headless launches stay hardcoded to claude —
+// add a second template when someone actually runs a non-claude headless agent.
+export const DEFAULT_AGENT_CMD = "claude --permission-mode {mode} {prompt}";
+export function agentCmdFor(graph, { prompt, mode, quote = '"' }) {
+  const tpl = (graph.meta && graph.meta.agent_cmd) || DEFAULT_AGENT_CMD;
+  return tpl.replace("{mode}", mode).replace("{prompt}", `${quote}${prompt}${quote}`);
 }
 
 export function worktreeFor(node, graph) {
@@ -94,6 +115,6 @@ ${gate}
 
 ## 6. Report back
 LOC delta · file inventory · gate result (pass/fail with output) · commit SHA · PR # · 2–3 line retro.
-Leftovers: before opening the PR, file anything left hanging (follow-ups, discovered bugs, deferred work) on the backlog — the \`backlog_add\` MCP tool if available, else \`roadmap backlog add "<title>" -k followup --slice ${node.invoke}\`, else list each under a **Leftovers** heading in the PR body (the lead's /sync harvests it).
+Leftovers: before opening the PR, file anything that genuinely blocks or follows this slice (discovered bugs, broken contracts, deferred gate items) to the BACKLOG ONLY — the \`backlog_add\` MCP tool if available, else \`roadmap backlog add "<title>" -k followup --slice ${node.invoke}\`, else a **Leftovers** heading in the PR body (the lead's /sync harvests it). NEVER add sprints or PIs from this session — scope decisions belong to the human. Skip speculative ideas entirely (YAGNI applies to captures too).
 `;
 }
