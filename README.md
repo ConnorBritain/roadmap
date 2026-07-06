@@ -90,6 +90,7 @@ Run from anywhere inside a repo. `docs/roadmap/roadmap.yaml` is found by walking
 | `roadmap backlog [list\|add\|set]` | The erratic-work tracker: `add "title" [-k kind] [--tier PN] [--weight N] [--why reason] [--slice invoke]` (first add creates `backlog.yaml`), `set <id> f=v ...`, bare = priority-sorted open items. |
 | `roadmap grab <id> [-t term] [--dry]` | Launch **one backlog item** in its own worktree (`<root>/backlog-<id>`, branch `backlog/<id>`) with a synthesized kickoff brief (the item's `prompt` embedded). Marks it `in_progress`. |
 | `roadmap promote <id> --pi <pi> [--id sN]` | Promote a backlog item into a roadmap **sprint** (item id becomes the invoke key; title/est/gate/touches/prompt/priority carry; `promoted_to` back-links). Both YAMLs validated before either is written. |
+| `roadmap linear status\|auth\|setup\|sync` | Optional **Linear** integration (see [Linear](#linear-optional--project-manage-from-linear-while-agents-execute)): `status [--probe]` state check, `auth` env-var instructions, `setup --team KEY` guided config, `sync [--dry] [--push-only] [--pull-only]`. |
 | `roadmap fan [-t wt\|warp\|tmux\|print\|background] [-c N] [-w N] [--track A] [--lead-claude] [-d] [-o file] [--worker-mode <m>] [--autonomous --yes-spawn-autonomous]` | Launch a wave: a lead pane/tab plus one per slice, each in its own worktree with a synthesized kickoff brief. **Launches by default**; `-d/--dry` or `-o/--out` to preview. `--track <lane>` fans out only the slices in that lane. Worker **and** lead sessions take `--permission-mode` from `meta.worker_mode` (falls back to `plan`); `--worker-mode` overrides per run. Terminal defaults per platform (win32 to `wt`, else `tmux`). |
 | `roadmap cleanup [-r] [-f]` | Prune fanout worktrees merged into the base branch and clean. **Dry by default**; `-r/--remove` acts; `-f/--force` includes unmerged/dirty. Only touches worktrees under the worktree root. |
 | `roadmap mcp` | Run the MCP server (stdio JSON-RPC) directly, for debugging or non-plugin registration. The plugin starts it for you. |
@@ -126,6 +127,8 @@ Install it as a plugin (see [Install](#install)) and the roadmap becomes an *in-
   - `/init`: a PM-style interview that bootstraps a `roadmap.yaml` (warm-start from existing docs, or cold).
   - `/fanout`: compute the waves and launch (wraps the same scheduler and adapters as the CLI).
   - `/backlog`: capture + triage erratic work — normalizes your dump into prioritized items, then offers `grab` or `promote` per item.
+  - `/imagine`: divergent strategy interview on a live roadmap — vision drift, bets, risks/cuts — whose every conclusion lands **in the graph** (north-star pointer, new PIs, thin scheduled slices). `/init` bootstraps; `/imagine` re-plans.
+  - `/prioritize`: convergent tier-by-tier triage of ready slices + open backlog with a forced reason per placement ("these two can't both be P1 — which ships first and why?"); source-aware (an item from a public Linear intake team is weighted knowingly); writes in one atomic `bulk_set`.
 - **Hook** (`hooks/hooks.json`): a `SessionStart` hook injects the at-a-glance plus the current ready-wave and the backlog open-count, so a fresh session immediately knows what's runnable (and, on first run, installs the `yaml` dep).
 - **Agents** (`agents/*.md`): four specialized subagents Claude invokes across the roadmap, fanout, and review lifecycle.
 
@@ -145,6 +148,7 @@ The plugin ships its own MCP server — named **`graph`** in `.mcp.json`, auto-s
 - **Read:** `plan`, `ready_wave`, `show`, `validate`, `backlog_list` return structured JSON.
 - **Mutate (roadmap):** `add_pi`, `add_sprint`, `set_status`, `set_fields`, `bulk_set` (atomic multi-slice edit: one validate, one write, one render — all-or-nothing), `prune` edit `roadmap.yaml` through the YAML Document API (comments preserved), refuse any edit that would corrupt the graph (duplicate invoke key, unresolved dependency, cycle, bad priority/execution block), and re-render `SLICES.md` in the same step.
 - **Mutate (backlog):** `backlog_add` (creates `backlog.yaml` on first capture), `backlog_set`, and `backlog_promote` (spans both files: both validated before either is written).
+- **Linear:** `linear_status` (zero-network state check) and `linear_sync { dry, push, pull }` — always registered, politely erroring with setup guidance when `meta.linear` is absent.
 
 Launched worker sessions are told to file leftovers before opening their PR — `backlog_add` if the MCP is available, `roadmap backlog add` if the CLI is linked, else a **Leftovers** section in the PR body that `/sync` harvests.
 
@@ -164,6 +168,7 @@ meta:
   remote: origin                  # git remote (default origin)
   terminal: tmux                  # default fanout adapter: tmux|warp|wt|background|print
   worker_mode: plan               # launched sessions' --permission-mode: plan|auto|acceptEdits|bypassPermissions
+  agent_cmd: "claude --permission-mode {mode} {prompt}"   # optional: launch a different agent
   default_concurrency: 3
   # Optional: teach the resource classifier a bespoke runner / override per-class cost
   weight_patterns: { heavy: ["my-e2e-suite"], medium: ["my-bundler"] }
@@ -218,6 +223,7 @@ pis:
 - **`touches`/`owns`** mechanize the two-wave pattern: two ready slices that write the same file never share a wave; a convergence sprint just `deps`-on the divergent ones.
 - **`gated_on: <name>`** marks a human-gated slice. It never auto-schedules; it surfaces under "held on a human."
 - **`worker_mode`** sets the `--permission-mode` launched sessions start in; **`weight`** (`heavy|medium|light`) optionally overrides a sprint's inferred resource class.
+- **`agent_cmd`** templates every INTERACTIVE worker/lead launch (`{mode}` + `{prompt}` tokens) so fanout can spawn codex or any other CLI agent; the default reproduces today's claude command byte-for-byte. Autonomous headless launches stay claude.
 - **`priority`** (`{ tier: P0–P3, weight: 0–100, reason }`, all optional) decides who gets a scarce cap slot within a wave, badges the renders (`[P0]`), and drives `roadmap next`. Two unprioritized slices order exactly as before — an existing roadmap schedules and renders identically.
 - **`prompt`** is the stashed init prompt: `/slice <key>` relays it, the synthesized kickoff brief embeds it verbatim (`## 0.5 Author instructions`), and it's updatable as new info comes in via `roadmap set <key> prompt=@notes.md` or the `set_fields`/`bulk_set` tools.
 - **`execution`** declares HOW to staff the slice (see [Execution strategy hints](#execution-strategy-hints)); **`track`** tags the slice's lane for `--track`.
@@ -292,6 +298,34 @@ items:
 - **Small / self-contained** → `roadmap grab <id>`: its own worktree (`<root>/backlog-<id>`, branch `backlog/<id>`) and session, kickoff brief synthesized from the item (prompt embedded), item marked `in_progress`.
 - **Bigger / belongs in the plan** → `roadmap promote <id> --pi <pi>`: becomes a `scheduled` sprint (the item id becomes the invoke key; title/est/gate/touches/prompt/priority carry over) with a `promoted_to` back-link on the item. Both YAMLs are validated before either is written.
 - **Not sure what's next?** → `roadmap next` picks the single highest-priority ready thing across both trackers (roadmap wins ties) and prints its pickup brief.
+
+---
+
+## Linear (optional) — project-manage from Linear while agents execute
+
+Add `meta.linear` and the roadmap projects itself into Linear: **the YAML stays canonical; Linear is a projection plus a proposal inbox.** Humans see and steer the plan on a board; agents keep executing from the graph; nothing is written twice.
+
+```yaml
+meta:
+  linear:
+    team: ENG                      # push target (team key). Auth = LINEAR_API_KEY env var, never a file.
+    granularity: slices            # pis (Projects only) | slices | slices+backlog — what leaks to Linear
+    verbosity: brief               # title | brief | full — issue-description detail
+    pull: propose                  # off | propose (walk the inbox in /sync) | auto
+    status_map: { blocked: "Blocked" }   # optional exact-name overrides; defaults map by state TYPE
+    watch:                         # inbound sources — e.g. a public "Submit an issue" team
+      - { team: PUB, project: "Submit an issue", kind: bug, priority: { tier: P3 } }
+```
+
+**Mapping.** PI ↔ Linear **Project** · slice / backlog item ↔ **Issue** · `priority.tier` P0–P3 ↔ Urgent/High/Medium/Low · `status` ↔ workflow state by TYPE (names differ per team; `status_map` overrides by name). Issue ids are written back into the YAML (`linear: ABC-123`) — the mapping's source of truth survives any machine.
+
+**Push** (`roadmap linear sync`, or automatically inside `/sync` when authed): diff-based and idempotent — an unchanged roadmap sends zero ops. Descriptions follow the `verbosity` lever, never copy read-order/prompt, and always end with a machine footer (`roadmap: slice=<invoke> · pick up: /slice <invoke>` + a SLICES.md link) — so an agent dispatched *from Linear* (via Linear's own agent delegation or hosted MCP) self-orients in one command. Set `branch_convention: "{pi}/{linear}-{sprint}"` and Linear auto-links every fanout PR to its issue.
+
+**Pull.** New issues in `watch` sources become **proposed backlog items** carrying `source.linear: {team, project, issue}` — so `/prioritize` can weight work by where it came from (a public intake team ≠ a maintainer capture), with the watch's default `priority` as the implicit weighting. Edits to mapped issues (state/priority changes made in Linear) become proposed deltas. With `pull: propose` (recommended), `/sync` walks the inbox with you — keep / edit / skip per item; nothing enters the graph unconfirmed. The sync cursor is per-machine (`.roadmap-linear-state.json`, git-ignored) and only advances once the inbox is handled, so unhandled proposals reappear rather than vanish.
+
+**Detection is graceful.** No `meta.linear` → every Linear behavior is off and the tool is byte-identical to before. Configured but no `LINEAR_API_KEY` → one advisory line, everything else works. The session-start hook reports state with zero network; `roadmap linear status --probe` is the only networked check. Bootstrap: `roadmap linear auth` (key instructions) → `roadmap linear setup --team <KEY>` → `roadmap linear sync --dry`.
+
+**Per-PI override.** A PI can set its own `linear.granularity` (e.g. keep an internal PI's slices off a shared board). Creating one that conflicts with the global requires an explicit `yes_linear_override: true` ack — otherwise the mutation is rejected with instructions and nothing is written; `roadmap validate` warns on stored mismatches.
 
 ---
 

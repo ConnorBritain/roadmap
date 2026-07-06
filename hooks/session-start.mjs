@@ -65,12 +65,25 @@ try {
     }
   } catch { /* skip */ }
 
-  if (!ready.length && !onHuman.length && !nudge && !backlogNote) emit("");
+  // Linear one-liner (guarded, ZERO network: config presence + env key only).
+  let linearNote = "";
+  try {
+    const lc = await import(new URL("../scripts/lib/linear-core.mjs", import.meta.url));
+    const st = lc.linearState({ meta: g.meta, env: process.env });
+    if (st.configured) {
+      linearNote = st.authed
+        ? ` Linear: wired (team ${st.cfg.team} · pull ${st.cfg.pull}).`
+        : ` Linear: configured but unauthed — set LINEAR_API_KEY ('roadmap linear auth' explains).`;
+    }
+  } catch { /* skip */ }
+
+  if (!ready.length && !onHuman.length && !nudge && !backlogNote && !linearNote) emit("");
 
   let ctx = `roadmap (${(g.pis || []).length} PIs): ready now (cap ${cap}) — ${ready.join(", ") || "none"}.`;
   if (onHuman.length) ctx += ` Held on a human: ${onHuman.join(", ")}.`;
   if (nudge) ctx += ` ⟳ ${nudge}`;
   ctx += backlogNote;
+  ctx += linearNote;
   ctx += ` Use /slice <name> to orient, /fanout to launch a wave, or 'roadmap plan' for the full wave map.`;
   emit(ctx);
 } catch {
