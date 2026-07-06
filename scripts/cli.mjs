@@ -25,6 +25,8 @@ COMMANDS
   set <name> f=v  edit a slice's fields (f=@file for multiline, f=null deletes)
   render          regenerate docs/SLICES.md (+ docs/BACKLOG.md when a backlog exists)
   fan             launch a wave — a lead + one pane/tab per slice, each in its own worktree
+                  (--cloud dispatches the wave to CLOUD agents via Linear instead — no worktrees)
+  dispatch <key>  send one slice/backlog item to a cloud agent via its Linear issue [--to claude|codex|oz]
   backlog         erratic-work tracker: list | add "title" [-k kind --tier PN] | set <id> f=v
   grab <id>       launch ONE backlog item in its own worktree + session
   promote <id>    promote a backlog item into a roadmap sprint (--pi <pi> [--id sN])

@@ -16,7 +16,8 @@
 import { writeFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import os from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { loadGraph, flatten, computeWaves, readyNodes, coherenceEnabled } from "./lib/graph.mjs";
 import { recommendConcurrency, probeDisk } from "./lib/recommend.mjs";
 import { synthesizeBrief, branchFor, worktreeFor, launchPrompt, baseRefOf, remoteOf, agentCmdFor } from "./lib/brief.mjs";
@@ -50,6 +51,26 @@ const model = flatten(graph);
 const term = val("--term", (graph.meta && graph.meta.terminal) || terminalChoices(os.platform())[0]);
 // Worker permission mode: flag > meta.worker_mode > 'plan'. The lead session uses the same mode.
 const workerMode = val("--worker-mode", (graph.meta && graph.meta.worker_mode) || "plan");
+
+// ── cloud fanout: dispatch the wave to CLOUD agents via Linear instead of local worktrees.
+// Placed BEFORE all worktree/disk/terminal logic on purpose — no disk ceiling, no checkout:
+// the bottleneck moves from this machine to the agent plan's limits. (v0.5 seam — dispatch
+// itself is pending live verification; see scripts/dispatch.mjs.)
+if (has("--cloud")) {
+  // Machine ceilings vanish; the REVIEW ceiling doesn't — a human still merges the PRs.
+  const cloudCap = has("--cap") ? Number(val("--cap", 5)) : Number(val("--review-ceiling", 5));
+  const { waves: cloudWaves } = computeWaves(model, cloudCap, { coherence: coherenceEnabled(graph.meta) });
+  const wave = filterByTrack(cloudWaves[waveIdx - 1] || [], track);
+  if (!wave.length) { console.error(`No runnable slices in wave ${waveIdx} (cap ${cloudCap}).`); process.exit(0); }
+  console.error(`cloud fanout: wave ${waveIdx}, ${wave.length} slice(s) → roadmap dispatch (no worktrees, no disk ceiling; cap = review ceiling ${cloudCap})`);
+  const scriptsDir = dirname(fileURLToPath(import.meta.url));
+  let failed = 0;
+  for (const n of wave) {
+    const r = spawnSync("node", [join(scriptsDir, "dispatch.mjs"), n.invoke, ...(val("--to") ? ["--to", val("--to")] : [])], { stdio: "inherit" });
+    if ((r.status ?? 1) !== 0) failed += 1;
+  }
+  process.exit(failed ? 1 : 0);
+}
 
 const ready = readyNodes(model);
 const rec = recommendConcurrency(ready, graph, { reviewCeiling: Number(val("--review-ceiling", 5)), disk: probeDisk(graph) });

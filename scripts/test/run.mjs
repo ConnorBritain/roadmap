@@ -39,6 +39,7 @@ import {
 } from "../lib/linear-core.mjs";
 import { addPi } from "../lib/mcp-core.mjs";
 import { runSync, runProvision, readCursor } from "../linear.mjs";
+import { runDispatch } from "../dispatch.mjs";
 import { graphDiff, backlogDiff, reviewDigest, pisInFlight } from "../lib/review-core.mjs";
 import { parseDocument } from "yaml";
 import { join, resolve } from "node:path";
@@ -1455,6 +1456,7 @@ function linearRepo() {
 }
 function fakeLinear({ failOn = null, snapshot = {}, inboundByTeam = null, teamLabels = [], teamProjects = [] } = {}) {
   const calls = [];
+  const createdIssues = {};   // identifier → snapshot shape, so later issue(id:) lookups resolve
   let created = 0;
   let labelsCreated = 0;
   const fetchImpl = async (url, { body }) => {
@@ -1486,17 +1488,23 @@ function fakeLinear({ failOn = null, snapshot = {}, inboundByTeam = null, teamLa
       if (failOn === "commentCreate") throw new Error("simulated comment failure");
       return respond({ commentCreate: { comment: { id: "c-1" } } });
     }
-    if (query.includes("issue(id:")) {   // snapshot aliases — configurable per test
-      const data = {};
+    if (query.includes("issue(id:")) {   // snapshot aliases + uuid lookups — configurable per test
       const ids = [...query.matchAll(/issue\(id: "([^"]+)"\)/g)].map((m) => m[1]);
-      ids.forEach((id, j) => { data[`i${j}`] = snapshot[id] || null; });
+      const lookup = (id) => snapshot[id] || createdIssues[id] || null;
+      if (!query.includes("i0:")) return respond({ issue: lookup(ids[0]) });   // single un-aliased lookup (dispatch)
+      const data = {};
+      ids.forEach((id, j) => { data[`i${j}`] = lookup(id); });
       return respond(data);
     }
     if (query.includes("projectCreate")) return respond({ projectCreate: { project: { id: "proj-new" } } });
     if (query.includes("issueCreate")) {
       if (failOn === "issueCreate") throw new Error("simulated transport failure");
       created += 1;
-      return respond({ issueCreate: { issue: { id: `uuid-${created}`, identifier: `ENG-${100 + created}` } } });
+      const identifier = `ENG-${100 + created}`;
+      createdIssues[identifier] = { id: `uuid-${created}`, identifier, title: variables.input.title,
+        description: variables.input.description || "", priority: variables.input.priority ?? 0,
+        state: { id: variables.input.stateId }, labels: { nodes: (variables.input.labelIds || []).map((id) => ({ id })) } };
+      return respond({ issueCreate: { issue: { id: `uuid-${created}`, identifier } } });
     }
     if (query.includes("issueUpdate")) return respond({ issueUpdate: { issue: { id: "x" } } });
     if (query.includes("issues(filter")) {
@@ -1903,6 +1911,40 @@ test("dispatchGuidance carries the dispatch contract", () => {
   ok(g.includes("YAML is canonical"), "canonicality stated");
   const plan = provisionPlan({ graph: { pis: [] }, teamLabels: { roadmap: "x" } });
   ok(!plan.createLabels.includes("roadmap") && plan.existingLabels.includes("roadmap"), "provisionPlan respects existing labels");
+});
+
+// ── cloud dispatch (v0.5 stub) ───────────────────────────────────────────────
+// WHY: dispatching an unmapped slice must push-map FIRST or the @-mention comment lands
+// nowhere; and the capsule must carry the machine footer any delegated agent parses.
+test("runDispatch push-maps an unmapped slice, then comments the capsule with the footer", async () => {
+  const root = linearRepo();
+  const fake = fakeLinear();
+  const r = await runDispatch(root, "auth-login", { fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" } });
+  eq(r.pushed, true, "pushed before commenting");
+  eq(r.agent, "@Claude", "default agent");
+  const createIdx = fake.calls.findIndex((c) => c.query.includes("issueCreate"));
+  const commentIdx = fake.calls.findIndex((c) => c.query.includes("commentCreate"));
+  ok(createIdx >= 0 && commentIdx > createIdx, "issueCreate strictly before commentCreate");
+  const body = fake.calls[commentIdx].variables.input.body;
+  ok(body.startsWith("@Claude"), "@-mention leads the comment");
+  ok(body.includes("roadmap: slice=auth-login"), "machine footer in the capsule");
+  ok(body.includes("never merge"), "merge prohibition in the capsule");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: the transport-verified gate is the whole safety story of the stub — a failure must
+// name what succeeded and what didn't, so verification day knows exactly where it broke.
+test("runDispatch failure names both stages when commentCreate is rejected", async () => {
+  const root = linearRepo();
+  const fake = fakeLinear({ failOn: "commentCreate" });
+  await runDispatch(root, "auth-login", { fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" } }).then(
+    () => { throw new Error("should have thrown"); },
+    (e) => {
+      ok(e.message.includes("push-map (pushed"), "names the stage that worked");
+      ok(e.message.includes("commentCreate") && e.message.includes("simulated comment failure"), "names the stage that failed");
+      ok(e.message.includes("not attempted (unverified)"), "delegate-field honesty");
+    });
+  rmSync(root, { recursive: true, force: true });
 });
 
 await Promise.all(pending);
