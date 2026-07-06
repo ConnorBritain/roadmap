@@ -337,6 +337,8 @@ Fanning out N worktrees costs real disk. `roadmap plan` / `fan` / `grab` estimat
 
 ## Install
 
+> **Full deployment guide** — every surface (CLI, Claude Code plugin, standalone MCP, Claude Desktop, Codex, CI), exactly where config vs. secrets live, Linear setup per environment, and the planned Jira shape: **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**. The short versions follow.
+
 ### The `roadmap` CLI
 
 ```bash

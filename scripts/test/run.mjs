@@ -1422,6 +1422,16 @@ test("validateLinearConfig: enum/team errors, PI-mismatch warning, non-string sp
   ok(r.errors.some((e) => e.includes("must be a string issue identifier")), "non-string sprint linear errors");
 });
 
+// WHY: a hand-authored meta.jira block would silently do nothing — a user believing it
+// syncs loses work; validate must say so until jira.mjs actually exists.
+test("validateGraph warns on the not-yet-implemented meta.jira block", () => {
+  const g = { meta: { schema_version: 1, program: "T", jira: { project: "ENG" } }, pis: [
+    { id: "a", title: "A", status: "active", sprints: [{ id: "s1", title: "S", status: "active", invoke: "x", est_sessions: 1 }] }] };
+  const r = validateGraph(g);
+  eq(r.errors, [], "warn, not error — the roadmap still works");
+  ok(r.warnings.some((w) => w.includes("meta.jira is not implemented")), "the block is called out");
+});
+
 // WHY: a malformed {linear} branch breaks worktree creation mid-fanout — the token must
 // produce a Linear-autolinkable branch with an id and degrade cleanly without one.
 test("branchFor {linear} token: autolinkable with an id, clean without", () => {

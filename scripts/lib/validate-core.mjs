@@ -22,6 +22,10 @@ export function validateGraph(graph) {
     err(`meta.terminal "${meta.terminal}" is not a known adapter`);
   }
 
+  // Jira is the designed follow-up but NOT implemented — surface a stray block instead of
+  // letting someone believe it syncs (docs/DEPLOYMENT.md documents the planned shape).
+  if (meta.jira != null) warn("meta.jira is not implemented yet (Linear is the only tracker today) — the block is ignored");
+
   // Optional meta.linear + per-PI overrides + sprint linear fields. Absent → no-op.
   const lin = validateLinearConfig(graph);
   for (const e of lin.errors) err(e);

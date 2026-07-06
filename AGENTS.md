@@ -31,6 +31,10 @@ The repo still contains Claude-oriented plugin assets under `.claude-plugin/`, `
 - `node scripts/cli.mjs show <slice>`
 - `node scripts/cli.mjs next` · `backlog` · `set <slice> f=v` · `grab <id>` · `promote <id> --pi <pi>` · `linear status|sync`
 
+## Deployment
+
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) is the authoritative guide: surfaces (CLI / plugin / standalone MCP / Claude Desktop / CI), and the one rule — committed YAML carries configuration, the environment carries secrets (`LINEAR_API_KEY`), nothing else exists. Never write a credential into any repo file.
+
 ## Linear (optional)
 
 When `meta.linear` exists, the YAML projects to Linear (push) and inbound issues arrive as proposals (pull) — see README → Linear. The pure brain is `scripts/lib/linear-core.mjs`; ALL network IO lives in `scripts/linear.mjs` (injectable transport — tests use a fake, never the API). No `meta.linear` → all Linear behavior is off; keep it that way (backward compat is asserted by tests).
