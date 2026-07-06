@@ -32,7 +32,7 @@ import { mutateRoadmap, mutateBacklog, mutateBoth } from "../lib/store.mjs";
 import {
   normalizeLinearConfig, effectiveGranularity, linearState, checkPiOverrideAck,
   resolvePushState, pullStatusFor, priorityToLinear, LINEAR_TO_PRIORITY,
-  issueDescription, machineFooter, buildPushPlan, buildPullProposals, validateLinearConfig,
+  issueDescription, machineFooter, buildPushPlan, buildPullProposals, validateLinearConfig, holdsFor,
 } from "../lib/linear-core.mjs";
 import { addPi } from "../lib/mcp-core.mjs";
 import { runSync, readCursor } from "../linear.mjs";
@@ -1448,7 +1448,7 @@ function linearRepo() {
     `meta:\n  schema_version: 1\n  program: T\n  linear:\n    team: ENG\n    pull: propose\n    watch:\n      - { team: PUB, project: Submit an issue, kind: bug, priority: {tier: P3} }\npis:\n  - id: auth\n    title: Authentication\n    status: active\n    sprints:\n      - { id: s1, title: Login, status: active, invoke: auth-login }\n`, "utf8");
   return root;
 }
-function fakeLinear({ failOn = null } = {}) {
+function fakeLinear({ failOn = null, snapshot = {}, inboundByTeam = null } = {}) {
   const calls = [];
   let created = 0;
   const fetchImpl = async (url, { body }) => {
@@ -1462,9 +1462,10 @@ function fakeLinear({ failOn = null } = {}) {
         { id: "st-c", name: "Done", type: "completed", position: 2 },
       ] },
       projects: { nodes: [] } }] } });
-    if (query.includes("issue(id:")) {   // snapshot aliases — nothing exists in Linear yet
+    if (query.includes("issue(id:")) {   // snapshot aliases — configurable per test
       const data = {};
-      (query.match(/i\d+:/g) || []).forEach((_, j) => { data[`i${j}`] = null; });
+      const ids = [...query.matchAll(/issue\(id: "([^"]+)"\)/g)].map((m) => m[1]);
+      ids.forEach((id, j) => { data[`i${j}`] = snapshot[id] || null; });
       return respond(data);
     }
     if (query.includes("projectCreate")) return respond({ projectCreate: { project: { id: "proj-new" } } });
@@ -1476,6 +1477,7 @@ function fakeLinear({ failOn = null } = {}) {
     if (query.includes("issueUpdate")) return respond({ issueUpdate: { issue: { id: "x" } } });
     if (query.includes("issues(filter")) {
       const team = variables.filter.team.key.eq;
+      if (inboundByTeam) return respond({ issues: { nodes: inboundByTeam[team] || [] } });
       return respond({ issues: { nodes: team === "PUB" ? [
         { identifier: "PUB-42", title: "Crash on empty config", priority: 1, updatedAt: "2026-07-06T00:00:00Z",
           state: { name: "Backlog", type: "backlog" }, team: { key: "PUB" }, project: { name: "Submit an issue" } },
@@ -1521,6 +1523,29 @@ test("runSync flushes write-backs on a mid-push throw and leaves the cursor unto
   ok(yaml.includes("project: proj-new"), "the project created BEFORE the failure kept its write-back");
   ok(!yaml.includes("ENG-10"), "the failed issue wrote nothing back");
   eq(readCursor(root), null, "cursor untouched on failure");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: the LIVE-verified clobber race — push ran before pull and overwrote a human's
+// Urgent edit in Linear before it could even be proposed. Pull must run first and push
+// must hold any field with an open inbound proposal, or Linear-side edits silently lose.
+test("runSync pulls before pushing: a human's Linear priority edit becomes a delta and is NOT clobbered", async () => {
+  const root = linearRepo();
+  // map the sprint to ENG-1; the human set it Urgent(1) in Linear; local has no priority (→0)
+  const yamlPath = join(root, "docs", "roadmap", "roadmap.yaml");
+  writeFileSync(yamlPath, readFileSync(yamlPath, "utf8").replace("invoke: auth-login }", "invoke: auth-login, linear: ENG-1 }"), "utf8");
+  const snapIssue = { id: "uuid-1", identifier: "ENG-1", title: "Login", description: "irrelevant", priority: 1, state: { id: "st-s" } };
+  const fake = fakeLinear({
+    snapshot: { "ENG-1": { ...snapIssue, stateId: undefined } },
+    inboundByTeam: { ENG: [{ identifier: "ENG-1", title: "Login", priority: 1, updatedAt: "2026-07-06T00:00:00Z",
+      state: { name: "In Progress", type: "started" }, team: { key: "ENG" }, project: null }], PUB: [] },
+  });
+  const r = await runSync(root, { fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-06T12:00:00Z" });
+  const pri = r.proposals.deltas.find((d) => d.field === "priority.tier");
+  eq([pri.from, pri.to], [null, "P0"], "the human's Urgent edit arrives as a proposal");
+  const updates = fake.calls.filter((c) => c.query.includes("issueUpdate"));
+  for (const u of updates) ok(!("priority" in u.variables.input), "push never touches the held priority field");
+  eq(r.cursorAdvanced, false, "cursor held while the delta is unresolved");
   rmSync(root, { recursive: true, force: true });
 });
 

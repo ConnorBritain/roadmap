@@ -148,7 +148,7 @@ export function machineFooter(target, docsUrl) {
   const pickup = target.type === "slice" ? `/slice ${target.key}` : `roadmap grab ${target.key}`;
   const doc = target.type === "slice" ? "SLICES.md" : "BACKLOG.md";
   const link = docsUrl ? `${docsUrl}/docs/${doc}#${target.key}` : `docs/${doc}#${target.key}`;
-  return `---\nroadmap: ${target.type}=${target.key} · pick up: ${pickup}\n${link}`;
+  return `roadmap: ${target.type}=${target.key} · pick up: ${pickup}\n${link}`;
 }
 
 const oneLine = (s) => String(s).replace(/\s*\n\s*/g, " ").trim();
@@ -156,6 +156,9 @@ const oneLine = (s) => String(s).replace(/\s*\n\s*/g, " ").trim();
 export function issueDescription(node, cfg, { docsUrl = null, target } = {}) {
   const tgt = target || { type: "slice", key: node.invoke };
   const footer = machineFooter(tgt, docsUrl);
+  // Live-verified: Linear normalizes stored markdown to "---\n\n" after a horizontal rule —
+  // our canonical form must BE that normalized form or the exact-string diff updates every
+  // issue on every sync. Footer-only descriptions skip the rule entirely.
   if (cfg.verbosity === "title") return footer;
   const lines = [];
   if (node.what && node.what !== node.title) lines.push(oneLine(node.what));
@@ -172,14 +175,17 @@ export function issueDescription(node, cfg, { docsUrl = null, target } = {}) {
       if (src) lines.push(`Source: ${src}`);
     }
   }
-  return (lines.length ? lines.join("\n") + "\n\n" : "") + footer;
+  return (lines.length ? lines.join("\n") + "\n\n---\n\n" : "") + footer;
 }
 
 // ── push plan (diff-based, idempotent) ────────────────────────────────────────
 // existing: the fetched Linear snapshot — { issues: { [identifier]: { id, title, description,
 // priority, stateId } }, projects: { [projectId]: { id, name } } }. Ops reference projects
 // symbolically (projectRef = pi id); the executor resolves refs after creating projects.
-export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsUrl = null }) {
+// holds: Set of "IDENTIFIER:field" (field = projection key: priority | stateId) for issues
+// with an OPEN inbound proposal — push skips those fields so a human's Linear edit is never
+// clobbered while the proposal is unresolved (live-verified failure mode).
+export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsUrl = null, holds = new Set() }) {
   const ops = [];
   const model = flatten(graph);
 
@@ -230,6 +236,7 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
     if (!cur) return;   // mapped but not in snapshot (deleted in Linear?) — leave for the human
     const changed = {};
     for (const k of ["title", "description", "priority", "stateId"]) {
+      if (holds.has(`${node.linear}:${k}`)) continue;   // pending inbound proposal owns this field
       if (projection[k] !== cur[k]) changed[k] = projection[k];
     }
     if (Object.keys(changed).length) ops.push({ op: "updateIssue", id: cur.id, identifier: node.linear, payload: changed });
@@ -256,14 +263,14 @@ export function buildPullProposals({ cfg, inbound, graph, backlog }) {
     if (known) {
       const to = pullStatusFor(iss.state && iss.state.type);
       if (to === "canceled") {
-        if (known.kind === "item") { if (known.status !== "dropped") deltas.push({ kind: known.kind, key: known.key, field: "status", from: known.status, to: "dropped" }); }
-        else deltas.push({ kind: known.kind, key: known.key, field: "status", from: known.status, to: null, note: `canceled in Linear — no roadmap equivalent; decide by hand` });
+        if (known.kind === "item") { if (known.status !== "dropped") deltas.push({ kind: known.kind, key: known.key, identifier: iss.identifier, field: "status", from: known.status, to: "dropped" }); }
+        else deltas.push({ kind: known.kind, key: known.key, identifier: iss.identifier, field: "status", from: known.status, to: null, note: `canceled in Linear — no roadmap equivalent; decide by hand` });
       } else if (to && to !== known.status && !(known.kind === "item" && to === "active" && known.status === "in_progress")) {
-        deltas.push({ kind: known.kind, key: known.key, field: "status", from: known.status, to: known.kind === "item" && to === "active" ? "in_progress" : to });
+        deltas.push({ kind: known.kind, key: known.key, identifier: iss.identifier, field: "status", from: known.status, to: known.kind === "item" && to === "active" ? "in_progress" : to });
       }
       const tier = LINEAR_TO_PRIORITY[iss.priority] || null;
       const curTier = (known.priority && known.priority.tier) || null;
-      if (tier !== curTier) deltas.push({ kind: known.kind, key: known.key, field: "priority.tier", from: curTier, to: tier });
+      if (tier !== curTier) deltas.push({ kind: known.kind, key: known.key, identifier: iss.identifier, field: "priority.tier", from: curTier, to: tier });
       continue;
     }
     // Unknown issue from a watch source → proposed backlog capture. Stable id = the
@@ -281,4 +288,10 @@ export function buildPullProposals({ cfg, inbound, graph, backlog }) {
     });
   }
   return { newItems, deltas };
+}
+
+// The push-side field holds for a set of pending deltas (see buildPushPlan's `holds`).
+export function holdsFor(deltas) {
+  const map = { status: "stateId", "priority.tier": "priority" };
+  return new Set((deltas || []).filter((d) => d.to != null && d.identifier).map((d) => `${d.identifier}:${map[d.field] || d.field}`));
 }

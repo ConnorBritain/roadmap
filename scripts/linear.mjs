@@ -17,7 +17,7 @@ import { setFields } from "./lib/mcp-core.mjs";
 import { addItem, setItemFields } from "./lib/backlog-core.mjs";
 import { mutateRoadmap, mutateBacklog, loadBacklog, roadmapPaths } from "./lib/store.mjs";
 import {
-  normalizeLinearConfig, linearState, buildPushPlan, buildPullProposals,
+  normalizeLinearConfig, linearState, buildPushPlan, buildPullProposals, holdsFor,
 } from "./lib/linear-core.mjs";
 
 const ENDPOINT = "https://api.linear.app/graphql";
@@ -113,13 +113,41 @@ export async function runSync(root, opts = {}) {
 
   const result = { pushed: [], proposals: null, cursorAdvanced: false, dry: !!opts.dry };
 
+  // ── pull FIRST (live-verified ordering): inbound is read before any push executes, so a
+  // human's Linear edit can never be clobbered by the projection while it's still an open
+  // proposal — push holds those fields until the proposal is resolved. In auto mode the
+  // deltas apply to the YAML here, so the subsequent push naturally agrees with them.
+  let holds = new Set();
+  let inboxEmpty = true;
+  if (!opts.pushOnly && cfg.pull !== "off") {
+    const inbound = await fetchInbound(cfg, state.lastSync, io);
+    const proposals = buildPullProposals({ cfg, inbound, graph, backlog });
+    result.proposals = proposals;
+    inboxEmpty = !proposals.newItems.length && !proposals.deltas.length;
+    if (!opts.dry && cfg.pull === "auto") {
+      for (const item of proposals.newItems) mutateBacklog(root, (doc) => addItem(doc, item), { createIfMissing: true });
+      for (const d of proposals.deltas) {
+        if (d.to == null) continue;   // canceled-slice flags stay human decisions even on auto
+        const fields = d.field === "status" ? { status: d.to } : { priority: { ...(currentPriority(root, d) || {}), tier: d.to } };
+        if (d.kind === "slice") mutateRoadmap(root, (doc) => setFields(doc, { invoke: d.key, fields }));
+        else mutateBacklog(root, (doc) => setItemFields(doc, { id: d.key, fields }));
+      }
+      result.applied = proposals;
+    } else {
+      holds = holdsFor(proposals.deltas);
+    }
+  }
+  // Re-read after auto-apply so the push plan reflects the accepted inbound edits.
+  const pushGraph = result.applied ? loadGraph(roadmapPaths(root).yaml) : graph;
+  const pushBacklog = result.applied ? loadBacklog(root) : backlog;
+
   // ── push ──
   if (!opts.pullOnly) {
-    const { ops } = buildPushPlan({ graph, backlog, cfg, teamStates: team.states, existing, docsUrl });
+    const { ops } = buildPushPlan({ graph: pushGraph, backlog: pushBacklog, cfg, teamStates: team.states, existing, docsUrl, holds });
     if (opts.dry) {
       result.pushPlan = ops;
     } else if (ops.length) {
-      const projectIds = projectIdsByPi(graph);
+      const projectIds = projectIdsByPi(pushGraph);
       const writeBacks = { pis: [], sprints: [], items: [] };
       // finally-flush: if an op throws mid-push, everything Linear already created still gets
       // its id written back — otherwise the next sync would create duplicates for those nodes.
@@ -168,27 +196,10 @@ export async function runSync(root, opts = {}) {
     }
   }
 
-  // ── pull ──
-  if (!opts.pushOnly && cfg.pull !== "off") {
-    const inbound = await fetchInbound(cfg, state.lastSync, io);
-    const proposals = buildPullProposals({ cfg, inbound, graph: loadGraph(roadmapPaths(root).yaml), backlog: loadBacklog(root) });
-    result.proposals = proposals;
-    const empty = !proposals.newItems.length && !proposals.deltas.length;
-    if (!opts.dry && cfg.pull === "auto") {
-      for (const item of proposals.newItems) mutateBacklog(root, (doc) => addItem(doc, item), { createIfMissing: true });
-      for (const d of proposals.deltas) {
-        if (d.to == null) continue;   // canceled-slice flags stay human decisions even on auto
-        const fields = d.field === "status" ? { status: d.to } : { priority: { ...(currentPriority(root, d) || {}), tier: d.to } };
-        if (d.kind === "slice") mutateRoadmap(root, (doc) => setFields(doc, { invoke: d.key, fields }));
-        else mutateBacklog(root, (doc) => setItemFields(doc, { id: d.key, fields }));
-      }
-      result.applied = proposals;
-    }
-    // Cursor: advance only when the inbox is handled (auto) or empty — in propose mode a
-    // non-empty inbox stays in the window so unhandled proposals reappear rather than vanish.
-    if (!opts.dry && (cfg.pull === "auto" || empty)) { writeCursor(root, now); result.cursorAdvanced = true; }
-  } else if (!opts.dry && !opts.pushOnly) {
-    writeCursor(root, now); result.cursorAdvanced = true;   // pull off: cursor tracks push-only syncs
+  // ── cursor ── advance only when the inbox is handled (auto) or empty — in propose mode a
+  // non-empty inbox stays in the window so unhandled proposals reappear rather than vanish.
+  if (!opts.dry && !opts.pushOnly) {
+    if (cfg.pull === "off" || cfg.pull === "auto" || inboxEmpty) { writeCursor(root, now); result.cursorAdvanced = true; }
   }
   return result;
 }
