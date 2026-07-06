@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// slice-roadmap — wave scheduler CLI (print-only; spawns nothing).
+// roadmap — wave scheduler CLI (print-only; spawns nothing).
 // Builds the execution plan via lib/plan.mjs (recommended cap + waves) and prints it,
 // or emits it as JSON (consumed by fanout.mjs / adapters / the MCP read tools).
 //

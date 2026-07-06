@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// slice-roadmap — MCP server (hand-rolled JSON-RPC 2.0 over stdio, newline-delimited).
+// roadmap — MCP server (hand-rolled JSON-RPC 2.0 over stdio, newline-delimited).
 // Exposes the roadmap as agent-callable tools: read (plan / ready_wave / show / validate) and
 // mutate (add_pi / add_sprint / set_status / set_fields / prune). Mutations edit roadmap.yaml
 // through the yaml Document API (comments preserved), validate the result before writing, and
@@ -17,7 +17,7 @@ import { renderMarkdown } from "./lib/render-core.mjs";
 import { TOOLS, READ_HANDLERS, MUTATION_HANDLERS, validateDocOrThrow, serialize } from "./lib/mcp-core.mjs";
 
 const PROTOCOL_VERSION = "2024-11-05";
-const SERVER_INFO = { name: "roadmap", version: "0.1.0" };
+const SERVER_INFO = { name: "graph", version: "0.2.0" };
 
 function paths() {
   const root = findRepoRoot(process.env.CODEX_PROJECT_DIR || process.env.CLAUDE_PROJECT_DIR || process.cwd());

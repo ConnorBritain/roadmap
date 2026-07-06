@@ -1,4 +1,4 @@
-// slice-roadmap — pure validator: roadmap graph -> { errors, warnings, nodeCount }.
+// roadmap — pure validator: roadmap graph -> { errors, warnings, nodeCount }.
 // No IO. validate.mjs prints + exits on the result; the MCP `validate` read tool returns it.
 // Structural checks + dependency resolution (via flatten) + cycle detection.
 

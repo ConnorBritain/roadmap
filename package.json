@@ -1,14 +1,14 @@
 {
-  "name": "slice-roadmap",
-  "version": "0.1.0",
-  "description": "Hierarchical roadmap graph + multi-session fanout for Codex and Claude-style coding workflows. YAML canonical, SLICES.md generated.",
+  "name": "roadmap",
+  "version": "0.2.0",
+  "description": "Roadmap + backlog graph with prioritized, deterministic multi-session fanout. YAML canonical, SLICES.md/BACKLOG.md generated.",
   "type": "module",
   "private": true,
   "author": "Connor England",
   "license": "MIT",
   "repository": { "type": "git", "url": "https://github.com/ConnorBritain/roadmap.git" },
   "homepage": "https://github.com/ConnorBritain/roadmap#readme",
-  "engines": { "node": ">=18" },
+  "engines": { "node": ">=18.15" },
   "bin": {
     "roadmap": "scripts/cli.mjs"
   },

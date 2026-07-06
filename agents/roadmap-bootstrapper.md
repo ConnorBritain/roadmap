@@ -1,6 +1,6 @@
 ---
 name: roadmap-bootstrapper
-description: Drafts a docs/roadmap/roadmap.yaml from a repo's EXISTING roadmap material — a tracker, docs/sprints/**, a STATUS doc, git history. Invoke from /slice-init to warm-start before the confirmation interview. Returns the draft YAML; does not write files.
+description: Drafts a docs/roadmap/roadmap.yaml from a repo's EXISTING roadmap material — a tracker, docs/sprints/**, a STATUS doc, git history. Invoke from /init to warm-start before the confirmation interview. Returns the draft YAML; does not write files.
 model: sonnet
 tools: Read, Grep, Glob, Bash(git log:*), Bash(gh pr list:*)
 ---

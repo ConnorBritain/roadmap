@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// slice-roadmap — the interactive console (bare `roadmap` in a TTY, or `roadmap go`).
+// roadmap — the interactive console (bare `roadmap` in a TTY, or `roadmap go`).
 // Hot-loads THIS repo's roadmap (cwd = repo root, set by cli.mjs), shows what's runnable, then
 // walks through a few prompts — terminal, max concurrency, wave, lead?, action — and hands the
 // choices to fanout.mjs. Worker permission mode is NOT surfaced here: it comes from

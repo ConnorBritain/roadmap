@@ -56,10 +56,10 @@ try {
 
   if (!ready.length && !onHuman.length && !nudge) emit("");
 
-  let ctx = `slice-roadmap (${(g.pis || []).length} PIs): ready now (cap ${cap}) — ${ready.join(", ") || "none"}.`;
+  let ctx = `roadmap (${(g.pis || []).length} PIs): ready now (cap ${cap}) — ${ready.join(", ") || "none"}.`;
   if (onHuman.length) ctx += ` Held on a human: ${onHuman.join(", ")}.`;
   if (nudge) ctx += ` ⟳ ${nudge}`;
-  ctx += ` Use /slice <name> to orient, /slice-fanout to launch a wave, or 'roadmap plan' for the full wave map.`;
+  ctx += ` Use /slice <name> to orient, /fanout to launch a wave, or 'roadmap plan' for the full wave map.`;
   emit(ctx);
 } catch {
   emit("");   // missing deps / parse error → silent; never break the session

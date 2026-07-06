@@ -1,4 +1,4 @@
-// slice-roadmap — MCP brain (PURE). Tool registry, read handlers, YAML-Document mutation
+// roadmap — MCP brain (PURE). Tool registry, read handlers, YAML-Document mutation
 // functions, and the pre-write integrity gate. No IO: the server (mcp.mjs) does the fs reads,
 // writes, and JSON-RPC. Mutations operate on a `yaml` Document (parseDocument) so comments and
 // formatting in roadmap.yaml survive the edit; reads operate on a plain graph object.

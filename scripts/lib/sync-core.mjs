@@ -1,4 +1,4 @@
-// slice-roadmap — reconcile brain (PURE). Detects slices whose work has merged but whose roadmap
+// roadmap — reconcile brain (PURE). Detects slices whose work has merged but whose roadmap
 // status still says open, so the SessionStart hook and the PR monitor can nudge the agent to
 // reconcile (mark complete + record the PR, then re-render). No IO: the caller supplies the
 // merged-PR list (from gh); this just matches it against the graph by fanout branch.
@@ -24,7 +24,7 @@ export function findUnrecordedMerges(graph, mergedPrs) {
   return out;
 }
 
-// Post-run guardrail (the under-parallelization warning surfaced in /slice-sync). `runStats` is the
+// Post-run guardrail (the under-parallelization warning surfaced in /sync). `runStats` is the
 // observed run telemetry/log: [{ invoke, workers }] (the LIVE worker count a slice actually ran with).
 // Flags any slice that declares a `min_concurrency` floor, touches ≥2 disjoint dir clusters (so it
 // COULD have parallelized), and ran with fewer live workers than its floor. Returns warning strings.
@@ -51,6 +51,6 @@ export function reconcileNudge(unrecorded) {
   if (!unrecorded || !unrecorded.length) return "";
   const items = unrecorded.map((u) => `${u.invoke} (PR #${u.pr})`).join(", ");
   return `${unrecorded.length} slice(s) have a merged PR but are still open: ${items}. `
-    + `Reconcile the roadmap: run /slice-sync, or call the roadmap set_status tool for each `
+    + `Reconcile the roadmap: run /sync, or call the roadmap set_status tool for each `
     + `(status=complete, record the PR). It re-renders SLICES.md.`;
 }

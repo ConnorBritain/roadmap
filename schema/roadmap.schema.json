@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/ConnorBritain/roadmap/schema/roadmap.schema.json",
-  "title": "slice-roadmap roadmap.yaml",
+  "title": "roadmap roadmap.yaml",
   "description": "Canonical roadmap graph: PIs containing sprints, with dependency edges, file-ownership for two-wave detection, session estimates, gates, and per-sprint kickoff briefs. SLICES.md is generated from this file; do not edit the generated markdown.",
   "type": "object",
   "required": ["meta", "pis"],
@@ -19,7 +19,7 @@
         "default_gate": { "type": "string", "description": "Verification gate inherited by sprints whose gate is 'default' or interpolates {{default}}" },
         "branch_convention": { "type": "string", "default": "{pi}/{sprint}" },
         "worktree_root": { "type": "string", "description": "Parent dir for per-sprint worktrees; use a WSL/Linux-fs path, NOT a OneDrive-synced checkout" },
-        "terminal": { "enum": ["warp", "wt", "tmux", "iterm", "background", "print"], "default": "print", "description": "Default terminal adapter for /slice-fanout launches" },
+        "terminal": { "enum": ["warp", "wt", "tmux", "iterm", "background", "print"], "default": "print", "description": "Default terminal adapter for /fanout launches" },
         "default_concurrency": { "type": "integer", "minimum": 1, "default": 3 },
         "worker_mode": { "enum": ["plan", "auto", "acceptEdits", "bypassPermissions"], "default": "plan", "description": "Default --permission-mode for launched worker + lead sessions; --worker-mode overrides. 'auto' = auto-approve tool/bash/MCP with safety checks (NOT a bypass); 'plan' = read-only research that gates edits behind plan approval." },
         "completed_window_days": { "type": "integer", "minimum": 1, "default": 14, "description": "How recently a sprint must have completed to appear in the Recently-completed table" },

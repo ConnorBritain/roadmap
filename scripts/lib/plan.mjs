@@ -1,4 +1,4 @@
-// slice-roadmap — pure plan builder: roadmap graph -> the execution plan object.
+// roadmap — pure plan builder: roadmap graph -> the execution plan object.
 // No IO: flattens, recommends a cap, computes the waves, and returns the structured plan
 // (cap, recommended, binding, sys, candidates, waves[], held). scheduler.mjs prints it;
 // the MCP read tools (plan / ready_wave) return it as JSON. computeWaves may throw on a

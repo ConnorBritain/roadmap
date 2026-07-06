@@ -1,4 +1,4 @@
-// slice-roadmap — interactive console core (PURE, unit-tested).
+// roadmap — interactive console core (PURE, unit-tested).
 // The bare-`roadmap` wizard's decisions live here so they're testable without a TTY:
 // which terminal to default to, how arrow-keys move a selection, how the cap field parses,
 // and how the collected answers translate into the exact `fanout.mjs` flags. The raw-mode IO

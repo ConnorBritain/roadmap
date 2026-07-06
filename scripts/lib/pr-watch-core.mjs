@@ -1,4 +1,4 @@
-// slice-roadmap — PR-watch brain (PURE). Decides which PR changes are worth telling the lead
+// roadmap — PR-watch brain (PURE). Decides which PR changes are worth telling the lead
 // about, and which branches belong to this roadmap's fanout. No IO: watch-prs.mjs polls `gh`,
 // normalizes each PR, and feeds snapshots through here. The watcher stays quiet until a PR
 // actually changes phase, so an always-on monitor never spams.
@@ -30,7 +30,7 @@ export function prPhase(pr) {
 }
 
 const PHASE_MSG = {
-  merged: "merged — reconcile the roadmap (/slice-sync or the set_status tool)",
+  merged: "merged — reconcile the roadmap (/sync or the set_status tool)",
   closed: "closed without merging",
   draft: "opened as a draft",
   conflicts: "has merge conflicts",

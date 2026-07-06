@@ -1,5 +1,5 @@
 ---
-name: slice-sync
+name: sync
 description: Reconcile the roadmap graph with reality (merged PRs + tracker/status) and re-render docs/SLICES.md. Run after a batch of merges. Edits docs/roadmap/roadmap.yaml statuses + regenerates the markdown; never touches code.
 argument-hint: "[--since YYYY-MM-DD] [--dry-run]"
 allowed-tools: Read, Edit, Bash(roadmap render:*), Bash(roadmap:*), Bash(node:*), Bash(git log:*), Bash(gh pr list:*), Bash(gh pr view:*)

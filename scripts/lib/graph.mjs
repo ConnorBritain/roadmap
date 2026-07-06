@@ -1,4 +1,4 @@
-// slice-roadmap — graph brain.
+// roadmap — graph brain.
 // Loads roadmap.yaml, flattens PIs→sprint nodes, resolves dependency edges,
 // detects cycles, derives the exec-plan line + session rollups, and computes
 // the fanout waves. Every consumer (render, validate, scheduler) goes through here

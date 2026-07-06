@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// roadmap — the slice-roadmap shell CLI.
+// roadmap — the roadmap shell CLI.
 // Dispatches `roadmap <command> [args]` from ANYWHERE inside a repo: it walks up from cwd
 // to find docs/roadmap/roadmap.yaml and runs the target script with cwd = that repo root,
 // so every relative default (--in, --out) just works. Pure logic lives in lib/cli-core.mjs.
@@ -11,7 +11,7 @@ import { route, classify, buildArgs, findRepoRoot, missingRoadmapHelp, expandSho
 
 const SCRIPTS = dirname(fileURLToPath(import.meta.url));
 
-const HELP = `roadmap — slice-roadmap CLI   (run from anywhere inside a repo with ${REL.join("/")})
+const HELP = `roadmap — roadmap CLI   (run from anywhere inside a repo with ${REL.join("/")})
 
 USAGE
   roadmap <command> [options]        bare 'roadmap' = interactive console (TTY) / plan (piped)

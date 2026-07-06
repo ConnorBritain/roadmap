@@ -1,4 +1,4 @@
-// slice-roadmap — concurrency recommender.
+// roadmap — concurrency recommender.
 // Recommends a max-parallel-sessions cap from a resource + repo-purpose eval, and
 // reports WHICH constraint binds. The point: concurrency that exceeds your RAM/CPU
 // thrashes the machine, and concurrency that exceeds independent work or your ability

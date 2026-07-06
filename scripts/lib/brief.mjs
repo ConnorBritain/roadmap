@@ -1,4 +1,4 @@
-// slice-roadmap — kickoff-brief synthesizer.
+// roadmap — kickoff-brief synthesizer.
 // Turns a sprint node into the self-contained brief a launched session reads to
 // "just start". Mirrors the 6-part subagent-handoff contract (target/scope, reference,
 // gate+commands, branch/commit/PR, DO NOT MERGE, report-back) so an autonomous or
@@ -26,7 +26,7 @@ export function worktreeFor(node, graph) {
 }
 
 // The prompt each launched session starts with. SELF-CONTAINED: it reads the kickoff brief
-// written into the worktree, so it works whether or not the slice-roadmap plugin/skill is
+// written into the worktree, so it works whether or not the roadmap plugin/skill is
 // installed in the spawned session. ASCII + no quote chars (it's embedded in shell quotes).
 export function launchPrompt(node) {
   // Steers to research -> plan -> WAIT -> implement. Combined with a permissive --worker-mode

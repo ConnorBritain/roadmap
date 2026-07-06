@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// slice-roadmap — render roadmap.yaml → SLICES.md (the generated human view).
+// roadmap — render roadmap.yaml → SLICES.md (the generated human view).
 // Thin file-writer around lib/render-core.mjs (the pure renderer).
 // Usage:
 //   node render.mjs [--in docs/roadmap/roadmap.yaml] [--out docs/SLICES.md] [--cap N] [--stdout]

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// slice-roadmap — graph-brain test suite.
+// roadmap — graph-brain test suite.
 // Zero-dependency runner. Each test states WHY it matters (what breaks if it regresses),
 // because this brain schedules concurrent sessions that commit/push — a wrong wave is a
 // real-world collision, not a cosmetic bug. Run: node scripts/test/run.mjs  (or npm test).
@@ -622,7 +622,7 @@ test("findUnrecordedMerges flags only open slices whose fanout branch merged", (
   const found = findUnrecordedMerges(g, merged);
   eq(found.map((u) => u.invoke), ["auth-sessions"], "only the open + merged slice (s1 done, s3 no PR)");
   eq(found[0].pr, 42, "carries the PR number");
-  ok(reconcileNudge(found).includes("auth-sessions") && /set_status|slice-sync/.test(reconcileNudge(found)), "nudge names the slice + the action");
+  ok(reconcileNudge(found).includes("auth-sessions") && /set_status|sync/.test(reconcileNudge(found)), "nudge names the slice + the action");
   eq(reconcileNudge([]), "", "silent when nothing is unrecorded");
 });
 
@@ -816,9 +816,9 @@ test("filterByTrack keeps only the matching lane and is a no-op without a track"
   eq(filterByTrack(wave, "Z").length, 0, "no match → empty");
 });
 
-// ── post-run guardrail: under-parallelization warning for /slice-sync ─────────
+// ── post-run guardrail: under-parallelization warning for /sync ─────────
 // WHY: the guardrail closes the loop — if a slice that declared a floor and touches disjoint dirs
-// actually ran with fewer live workers, /slice-sync must say so, or the under-parallelization the
+// actually ran with fewer live workers, /sync must say so, or the under-parallelization the
 // whole feature targets goes unnoticed run after run.
 test("underParallelizedWarnings flags a disjoint slice that ran below its floor, and stays quiet otherwise", () => {
   const g = { meta: {}, pis: [{ id: "a", title: "A", status: "active", sprints: [

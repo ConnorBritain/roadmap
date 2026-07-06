@@ -2,7 +2,7 @@
 
 `roadmap` is a CLI, MCP server, and Claude Code plugin. It turns one YAML file into your repo's plan of record (a **hierarchical, dependency-aware graph**), then **fans that plan out into parallel coding sessions**, each scoped to a single unit of work in its own git worktree.
 
-In this Codex environment, the primary surfaces are the CLI, the MCP server, and the repo-level [`AGENTS.md`](C:\Users\connor.england\.codex\worktrees\66df\slice-roadmap\AGENTS.md). The Claude plugin assets are still included for teams already using them.
+In this Codex environment, the primary surfaces are the CLI, the MCP server, and the repo-level [`AGENTS.md`](C:\Users\connor.england\.codex\worktrees\66df\roadmap\AGENTS.md). The Claude plugin assets are still included for teams already using them.
 
 - **One source of truth.** `docs/roadmap/roadmap.yaml` holds the PIs, sprints, deps, file-ownership, session estimates, gates, and kickoff briefs.
 - **Generated view.** `docs/SLICES.md` is *rendered* from the YAML; never hand-edit it.
@@ -51,7 +51,7 @@ That's the whole loop: `cd` into a repo, type `roadmap ...`, it finds the roadma
 
 ### Using it in Codex
 
-- Codex reads [`AGENTS.md`](C:\Users\connor.england\.codex\worktrees\66df\slice-roadmap\AGENTS.md) from this repo automatically, so repo conventions live there now.
+- Codex reads [`AGENTS.md`](C:\Users\connor.england\.codex\worktrees\66df\roadmap\AGENTS.md) from this repo automatically, so repo conventions live there now.
 - You can drive everything from the shared terminal with `npm run plan`, `npm run validate`, `npm run render`, or `node scripts/cli.mjs ...`.
 - `npm run mcp` starts the same MCP server the Claude plugin uses.
 - The fanout launcher still opens `claude` worker sessions today; the rest of the repo is usable from Codex directly.
@@ -79,7 +79,7 @@ Run from anywhere inside a repo. `docs/roadmap/roadmap.yaml` is found by walking
 | `roadmap cleanup [-r] [-f]` | Prune fanout worktrees merged into the base branch and clean. **Dry by default**; `-r/--remove` acts; `-f/--force` includes unmerged/dirty. Only touches worktrees under the worktree root. |
 | `roadmap mcp` | Run the MCP server (stdio JSON-RPC) directly, for debugging or non-plugin registration. The plugin starts it for you. |
 | `roadmap watch` | Watch this roadmap's fanout PRs and print a line as each becomes ready / conflicts / merges. The plugin runs it as a monitor; this is the manual pane version. |
-| `roadmap sync` / `roadmap init` | Reserved on the CLI. Reconcile and bootstrap live as the `/slice-sync` and `/slice-init` **plugin skills** (surface 2). |
+| `roadmap sync` / `roadmap init` | Reserved on the CLI. Reconcile and bootstrap live as the `/sync` and `/init` **plugin skills** (surface 2). |
 
 Short flags (`-w -c -t -d -o -j -r -f -lc -wm`) expand to their long forms; positional slice keys pass through untouched.
 
@@ -107,15 +107,15 @@ Install it as a plugin (see [Install](#install)) and the roadmap becomes an *in-
 
 - **Skills** (`skills/*/SKILL.md`)
   - `/slice <key>`: orient on one slice (read-only) by its what, read-order, next action, gate, and branch.
-  - `/slice-sync`: reconcile statuses against merged PRs and the tracker, then re-render `SLICES.md`.
-  - `/slice-init`: a PM-style interview that bootstraps a `roadmap.yaml` (warm-start from existing docs, or cold).
-  - `/slice-fanout`: compute the waves and launch (wraps the same scheduler and adapters as the CLI).
+  - `/sync`: reconcile statuses against merged PRs and the tracker, then re-render `SLICES.md`.
+  - `/init`: a PM-style interview that bootstraps a `roadmap.yaml` (warm-start from existing docs, or cold).
+  - `/fanout`: compute the waves and launch (wraps the same scheduler and adapters as the CLI).
 - **Hook** (`hooks/hooks.json`): a `SessionStart` hook injects the at-a-glance plus the current ready-wave, so a fresh session immediately knows what's runnable (and, on first run, installs the `yaml` dep).
 - **Agents** (`agents/*.md`): four specialized subagents Claude invokes across the roadmap, fanout, and review lifecycle.
 
 | Agent | Role | Read/write | Suggested model |
 |---|---|---|---|
-| **roadmap-bootstrapper** | Cold/warm-start: reads the repo's existing roadmap docs, tracker, sprint dirs, and `git log`, and **drafts a `roadmap.yaml`**. Used by `/slice-init` to pre-fill before the interactive confirmation. | reads repo, proposes YAML | sonnet |
+| **roadmap-bootstrapper** | Cold/warm-start: reads the repo's existing roadmap docs, tracker, sprint dirs, and `git log`, and **drafts a `roadmap.yaml`**. Used by `/init` to pre-fill before the interactive confirmation. | reads repo, proposes YAML | sonnet |
 | **slice-scoper** | Takes a thin `scheduled` slice and **fills it in**: infers `touches`/`owns` by grepping the code, drafts `read_order`, `est_sessions`, and the `gate`, and writes the sprint spec, turning it into a `next`-ready slice. | reads code, proposes slice fields | sonnet/opus |
 | **roadmap-auditor** | Read-only **drift and gap finder**: audits `roadmap.yaml` against reality (merged PRs, strategy docs, sprint dirs) and reports stale statuses and un-surfaced work. | read-only report | sonnet |
 | **wave-shepherd** | The **lead-pane brain**: after a fanout wave produces PRs, reviews each against its slice's gate and scope and recommends a safe **merge order** (respecting deps, flagging conflicts). Reviews; never merges. | read-only review | opus |
@@ -202,7 +202,7 @@ Agents chronically **under-parallelize** — a lone subagent where a team fits, 
 execution:
   mode: agent-team        # solo | subagents | dynamic-workflow | agent-team
   concurrency: 5          # suggested LIVE worker count
-  min_concurrency: 4      # floor — /slice-sync warns if a run used fewer on disjoint files
+  min_concurrency: 4      # floor — /sync warns if a run used fewer on disjoint files
   team:                   # composition (omit for solo); roles: verifier|implementer|reviewer|researcher|integrator
     - role: verifier
     - role: implementer
@@ -228,7 +228,7 @@ The block renders as an **imperative directive** at the top of the slice's read-
   Rationale: 16 disjoint fault-class files; verifier-first; one reviewer reconciles.
 ```
 
-**Validation** (`roadmap validate`) checks the enums (`mode`, `role`), the integer bounds (`concurrency`/`min_concurrency`/`count` ≥ 1), `min_concurrency ≤ concurrency`, and that a declared `team` head-count agrees with `concurrency` when both are present. When `execution` is absent or `concurrency` is unset, a *suggested* floor is computed from the slice's `touches` (the count of distinct disjoint top-level dir clusters, capped at 6) and surfaced as a hint — never a hard default. After a wave, `/slice-sync` flags any slice that declared a `min_concurrency` floor, touches disjoint dirs, yet ran with fewer live workers (*"slice X ran 2 workers; min_concurrency 4 — under-parallelized"*).
+**Validation** (`roadmap validate`) checks the enums (`mode`, `role`), the integer bounds (`concurrency`/`min_concurrency`/`count` ≥ 1), `min_concurrency ≤ concurrency`, and that a declared `team` head-count agrees with `concurrency` when both are present. When `execution` is absent or `concurrency` is unset, a *suggested* floor is computed from the slice's `touches` (the count of distinct disjoint top-level dir clusters, capped at 6) and surfaced as a hint — never a hard default. After a wave, `/sync` flags any slice that declared a `min_concurrency` floor, touches disjoint dirs, yet ran with fewer live workers (*"slice X ran 2 workers; min_concurrency 4 — under-parallelized"*).
 
 **`--track`** lets one person fan out only their lane: `roadmap fan --wave 1 --track A` keeps just the wave's slices tagged `track: A` (forward-compat with the three-track partition).
 
@@ -243,11 +243,11 @@ git clone https://github.com/ConnorBritain/roadmap.git
 cd roadmap && npm install && npm link
 ```
 
-`npm link` puts `roadmap` on your PATH in every shell. On Windows it writes `roadmap.cmd`/`roadmap.ps1` shims (PowerShell and cmd) plus a unix bin (WSL/bash; run `npm link` once in each Node environment you use). `npm unlink -g slice-roadmap` removes it.
+`npm link` puts `roadmap` on your PATH in every shell. On Windows it writes `roadmap.cmd`/`roadmap.ps1` shims (PowerShell and cmd) plus a unix bin (WSL/bash; run `npm link` once in each Node environment you use). `npm unlink -g roadmap` removes it.
 
 ### In Codex
 
-No plugin install is required. Open the repo in Codex, use the commands above, and rely on [`AGENTS.md`](C:\Users\connor.england\.codex\worktrees\66df\slice-roadmap\AGENTS.md) for repo-local guidance.
+No plugin install is required. Open the repo in Codex, use the commands above, and rely on [`AGENTS.md`](C:\Users\connor.england\.codex\worktrees\66df\roadmap\AGENTS.md) for repo-local guidance.
 
 For MCP usage in agent environments, run:
 
@@ -255,7 +255,7 @@ For MCP usage in agent environments, run:
 npm run mcp
 ```
 
-The checked-in [`.mcp.json`](C:\Users\connor.england\.codex\worktrees\66df\slice-roadmap\.mcp.json) remains the Claude-plugin entrypoint.
+The checked-in [`.mcp.json`](C:\Users\connor.england\.codex\worktrees\66df\roadmap\.mcp.json) remains the Claude-plugin entrypoint.
 
 **Alias fallback (no npm):** drop a shim in your shell profile instead.
 
@@ -278,7 +278,7 @@ claude plugin marketplace add ConnorBritain/roadmap
 # or from a local checkout:
 claude plugin marketplace add /path/to/roadmap
 
-claude plugin install slice-roadmap@roadmap   # user scope; --scope project to pin per-repo
+claude plugin install roadmap@roadmap   # user scope; --scope project to pin per-repo
 ```
 
 That wires the skills, agents, the SessionStart hook, the PR-watch monitor, and the MCP server in one step (new sessions pick them up; `/mcp` reconnects the current one). The plugin bundles its MCP via `.mcp.json`, so don't also `claude mcp add roadmap` (you would get two servers named `roadmap`).
@@ -295,7 +295,7 @@ Don't commit a device-specific alias into a repo. Point contributors at this too
 - **Renderer** (`render.mjs`): hierarchical `SLICES.md` (per-PI sections, nested sprint tables, derived exec-plan lines, cross-PI wave map, held-on-human).
 - **Scheduler** (`scheduler.mjs`): recommended-cap eval (CPU / RAM / independent-work / review ceiling, reporting which binds) plus the waves.
 - **Fanout** (`fanout.mjs`): `tmux`, `wt`, `warp`, `print`, `background` adapters; per-slice worktree plus synthesized kickoff brief; the interactive console (`wizard.mjs`); guarded launch (`--dry`/`--out` preview, autonomous double-ack); `cleanup.mjs` worktree pruning.
-- **Plugin surface**: four skills (`slice`, `slice-sync`, `slice-init`, `slice-fanout`), four agents, and a `SessionStart` hook.
+- **Plugin surface**: four skills (`slice`, `sync`, `init`, `fanout`), four agents, and a `SessionStart` hook.
 - **MCP server** (`mcp.mjs` + `lib/mcp-core.mjs`): a bundled, hand-rolled JSON-RPC stdio server with read tools (plan / ready_wave / show / validate) and comment-preserving, schema-validated mutate tools (add_pi / add_sprint / set_status / set_fields / prune) that re-render `SLICES.md` on every edit.
 - **PR-watch monitor** (`watch-prs.mjs` + `lib/pr-watch-core.mjs` + `monitors/monitors.json`): polls `gh` for the fanout branches and notifies the lead on each PR phase transition.
 - **Tests**: `npm test` runs the zero-dependency suite over the pure brain (graph, recommender, brief, plan, render, validate, CLI core, wizard core, MCP core, PR-watch core).

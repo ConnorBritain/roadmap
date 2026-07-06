@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// slice-roadmap — validate a roadmap.yaml.
+// roadmap — validate a roadmap.yaml.
 // Thin wrapper around lib/validate-core.mjs. Exits non-zero on any error.
 // Usage: node validate.mjs [path-to-roadmap.yaml]   (default: docs/roadmap/roadmap.yaml)
 
