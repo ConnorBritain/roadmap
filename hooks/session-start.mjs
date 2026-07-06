@@ -11,7 +11,7 @@ import { join, dirname, resolve } from "node:path";
 // or slow, return [] so the hook stays fast and silent. Never throws.
 function mergedPrs(root) {
   try {
-    const r = spawnSync("gh", ["pr", "list", "--state", "merged", "--limit", "100", "--json", "number,headRefName"],
+    const r = spawnSync("gh", ["pr", "list", "--state", "merged", "--limit", "100", "--json", "number,headRefName,title,body"],
       { cwd: root, encoding: "utf8", timeout: 5000 });
     if (r.status !== 0 || !r.stdout) return [];
     return JSON.parse(r.stdout);
