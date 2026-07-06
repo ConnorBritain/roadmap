@@ -14,6 +14,7 @@ import { loadGraph } from "./lib/graph.mjs";
 import { loadBacklog, mutateBacklog } from "./lib/store.mjs";
 import { backlogItemToNode, setItemFields } from "./lib/backlog-core.mjs";
 import { synthesizeBrief, branchFor, worktreeFor, launchPrompt, baseRefOf, remoteOf } from "./lib/brief.mjs";
+import { probeDisk } from "./lib/recommend.mjs";
 import { terminalChoices } from "./lib/wizard-core.mjs";
 
 const args = process.argv.slice(2);
@@ -37,6 +38,17 @@ if (item.status !== "open" && item.status !== "in_progress") {
 }
 
 const graph = loadGraph("docs/roadmap/roadmap.yaml");
+
+// Disk hard-block (skipped on --dry: previewing costs nothing).
+if (!dry) {
+  const disk = probeDisk(graph);
+  if (disk && disk.freeGb - 2 < disk.perWorktreeGb) {
+    console.error(`✗ not enough disk for a worktree: need ~${disk.perWorktreeGb.toFixed(1)}GB, ${disk.freeGb.toFixed(1)}GB free on the worktree volume.`);
+    console.error(`  Free space, point meta.worktree_root at a roomier volume, or calibrate meta.worktree_gb.`);
+    process.exit(1);
+  }
+}
+
 const node = backlogItemToNode(item);
 const term = val("--term", (graph.meta && graph.meta.terminal) || terminalChoices(os.platform())[0]);
 const workerMode = val("--worker-mode", (graph.meta && graph.meta.worker_mode) || "plan");

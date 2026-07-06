@@ -1,10 +1,14 @@
 // roadmap — concurrency recommender.
 // Recommends a max-parallel-sessions cap from a resource + repo-purpose eval, and
 // reports WHICH constraint binds. The point: concurrency that exceeds your RAM/CPU
-// thrashes the machine, and concurrency that exceeds independent work or your ability
-// to review the resulting PRs is wasted. So we take the min of four real ceilings.
+// thrashes the machine, concurrency that exceeds free DISK fails mid-checkout, and
+// concurrency that exceeds independent work or your ability to review the resulting
+// PRs is wasted. So we take the min of five real ceilings.
 
 import os from "node:os";
+import { existsSync, statfsSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { dirname, resolve } from "node:path";
 import { resolveGate } from "./graph.mjs";
 
 // Per-session resource cost by weight class — cross-language defaults (a full test
@@ -71,6 +75,44 @@ export function nodeWeight(node, graph) {
   return (graph.meta && graph.meta.default_weight) || "light";
 }
 
+// Disk feasibility probe: what one more worktree costs vs what the worktree volume has free.
+// Per-worktree cost = the checked-out tree's blob bytes (git ls-tree -r -l HEAD; one fast
+// command, no fs walk) × a safety factor, overridable via meta.worktree_gb — the calibration
+// knob for repos whose gates install node_modules or build artifacts per worktree.
+// ponytail: 1.3× covers normal build litter; per-worktree package installs can exceed it —
+// meta.worktree_gb is the knob, no measurement machinery.
+// Returns { perWorktreeGb, freeGb } or null when undetectable (no git HEAD, statfs
+// unsupported) — the caller then simply skips the disk ceiling.
+export function probeDisk(graph, cwd = process.cwd()) {
+  try {
+    const meta = (graph && graph.meta) || {};
+    let perWorktreeGb = typeof meta.worktree_gb === "number" ? meta.worktree_gb : null;
+    if (perWorktreeGb == null) {
+      const r = spawnSync("git", ["ls-tree", "-r", "-l", "HEAD"], { cwd, encoding: "utf8", maxBuffer: 64 * 2 ** 20 });
+      if (r.status !== 0 || !r.stdout) return null;
+      let bytes = 0;
+      for (const line of r.stdout.split("\n")) {
+        const m = /\s(\d+)\t/.exec(line);   // blob size column; trees show "-"
+        if (m) bytes += Number(m[1]);
+      }
+      if (!bytes) return null;
+      perWorktreeGb = (bytes / 2 ** 30) * 1.3;
+    }
+    // Free space on the volume that will hold the worktrees — walk worktree_root up to its
+    // nearest EXISTING ancestor (the root itself may not exist until the first fanout).
+    let dir = resolve(meta.worktree_root || resolve(cwd, "..", "_worktrees"));
+    while (!existsSync(dir)) {
+      const up = dirname(dir);
+      if (up === dir) break;
+      dir = up;
+    }
+    const s = statfsSync(dir);   // Node >= 18.15, win32 + POSIX
+    return { perWorktreeGb, freeGb: (s.bavail * s.bsize) / 2 ** 30 };
+  } catch {
+    return null;
+  }
+}
+
 export function systemInfo() {
   const cpus = os.cpus() || [];
   return {
@@ -84,12 +126,14 @@ export function systemInfo() {
 const avg = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
 
 // Recommend a concurrency cap over the set of slices we'd actually fan out (`ready`).
-// opts: { sys, useFree (RAM basis), reviewCeiling, osCoreReserve, osRamReserveGb }
+// opts: { sys, useFree (RAM basis), reviewCeiling, osCoreReserve, osRamReserveGb,
+//         disk ({ perWorktreeGb, freeGb } from probeDisk; absent/null → no disk ceiling) }
 export function recommendConcurrency(ready, graph, opts = {}) {
   const sys = opts.sys || systemInfo();
   const reviewCeiling = opts.reviewCeiling ?? 5;
   const coreReserve = opts.osCoreReserve ?? 2;     // leave cores for the OS/editor/lead
   const ramReserve = opts.osRamReserveGb ?? 4;
+  const disk = opts.disk || null;                  // stays PURE: callers probe (probeDisk) and inject
 
   const COST = costTable(graph);
   const costs = (ready.length ? ready : [null]).map((n) =>
@@ -112,12 +156,21 @@ export function recommendConcurrency(ready, graph, opts = {}) {
     { n: workCap,       why: `work — ${ready.length} independent ready slice(s)` },
     { n: reviewCeiling, why: `review — PR review/merge bottleneck (soft ceiling)` },
   ];
+  // Disk ceiling — the only one allowed to compute to 0: recommended stays >= 1 (soft
+  // auto-dial), but callers that create worktrees (fan, grab) hard-block on disk.cap < 1.
+  let diskCap = null;
+  if (disk) {
+    const diskReserve = opts.diskReserveGb ?? 2;
+    diskCap = Math.floor(Math.max(0, disk.freeGb - diskReserve) / Math.max(disk.perWorktreeGb, 0.01));
+    candidates.push({ n: Math.max(diskCap, 0), why: `disk — need ~${disk.perWorktreeGb.toFixed(1)}GB/worktree, ${disk.freeGb.toFixed(1)}GB free` });
+  }
   const binding = candidates.reduce((a, b) => (b.n < a.n ? b : a));
   return {
     recommended: Math.max(1, binding.n),
     binding,
     candidates,
     sys,
+    disk: disk ? { ...disk, cap: diskCap } : null,
     avgRam,
     avgCores,
     weights: ready.map((n) => ({ invoke: n.invoke, weight: nodeWeight(n, graph) })),

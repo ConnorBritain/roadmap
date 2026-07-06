@@ -19,6 +19,7 @@
         "default_gate": { "type": "string", "description": "Verification gate inherited by sprints whose gate is 'default' or interpolates {{default}}" },
         "branch_convention": { "type": "string", "default": "{pi}/{sprint}" },
         "worktree_root": { "type": "string", "description": "Parent dir for per-sprint worktrees; use a WSL/Linux-fs path, NOT a OneDrive-synced checkout" },
+        "worktree_gb": { "type": "number", "minimum": 0, "description": "Calibration knob for the disk ceiling: GB one worktree really costs (checkout + installs + build litter). Omitted → estimated from the tracked tree's size × 1.3" },
         "terminal": { "enum": ["warp", "wt", "tmux", "iterm", "background", "print"], "default": "print", "description": "Default terminal adapter for /fanout launches" },
         "default_concurrency": { "type": "integer", "minimum": 1, "default": 3 },
         "worker_mode": { "enum": ["plan", "auto", "acceptEdits", "bypassPermissions"], "default": "plan", "description": "Default --permission-mode for launched worker + lead sessions; --worker-mode overrides. 'auto' = auto-approve tool/bash/MCP with safety checks (NOT a bypass); 'plan' = read-only research that gates edits behind plan approval." },

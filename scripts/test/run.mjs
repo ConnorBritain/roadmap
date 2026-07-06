@@ -7,7 +7,7 @@
 import {
   flatten, detectCycle, computeWaves, execPlan, sessionsRemaining, resolveGate, isDone, readyNodes,
 } from "../lib/graph.mjs";
-import { nodeWeight, recommendConcurrency } from "../lib/recommend.mjs";
+import { nodeWeight, recommendConcurrency, probeDisk } from "../lib/recommend.mjs";
 import { synthesizeBrief, branchFor, worktreeFor, baseRefOf, baseBranchOf, remoteOf, launchPrompt } from "../lib/brief.mjs";
 import { route, classify, buildArgs, findRepoRoot, missingRoadmapHelp, expandShort, REL } from "../lib/cli-core.mjs";
 import { launchDecision } from "../lib/fanout-core.mjs";
@@ -1118,6 +1118,38 @@ test("BACKLOG_TOOLS registry is well-formed and covers list/add/set/promote", ()
   const combined = [...TOOLS.map((t) => t.name), ...names];
   eq(new Set(combined).size, combined.length, "no name collisions with the roadmap tools");
   ok(combined.length >= 14, "14+ tools after the expansion");
+});
+
+// ── disk ceiling ──────────────────────────────────────────────────────────────
+// WHY: a fanout that exceeds free disk fails mid-checkout with worktrees half-created.
+// The ceiling must bind when it's the smallest, report cap 0 as the hard-block signal
+// (while recommended stays >= 1 for the soft path), and vanish entirely when unprobeable.
+test("disk is a fifth ceiling: binds when smallest, cap 0 signals hard-block, null skips it", () => {
+  const bigSys = { sys: { cores: 64, totalGb: 256, freeGb: 256, platform: "linux" }, reviewCeiling: 50 };
+  const bound = recommendConcurrency(recoReady, recoGraph, { ...bigSys, disk: { perWorktreeGb: 2, freeGb: 6 } });
+  eq(bound.recommended, 2, "floor((6-2 reserve)/2) = 2 binds");
+  ok(bound.binding.why.startsWith("disk"), "bound by disk");
+  ok(/need ~2\.0GB\/worktree, 6\.0GB free/.test(bound.binding.why), "why names the numbers");
+  eq(bound.disk.cap, 2, "cap surfaced for callers");
+  const full = recommendConcurrency(recoReady, recoGraph, { ...bigSys, disk: { perWorktreeGb: 5, freeGb: 3 } });
+  eq(full.disk.cap, 0, "cap 0 = even one worktree won't fit (the hard-block signal)");
+  eq(full.recommended, 1, "recommended stays >= 1 — hard-blocking is the launcher's job");
+  const skipped = recommendConcurrency(recoReady, recoGraph, { ...bigSys, disk: null });
+  eq(skipped.candidates.length, 4, "no disk → four ceilings, unchanged");
+  eq(skipped.disk, null, "no disk info surfaced");
+});
+
+// WHY: meta.worktree_gb is the calibration knob for repos whose gates install per-worktree —
+// when set it must win over the ls-tree estimate; and probeDisk must degrade to null (never
+// throw) so an unprobeable environment just loses the ceiling, not the whole plan.
+test("probeDisk honors the meta.worktree_gb override and never throws", () => {
+  const probed = probeDisk({ meta: { worktree_gb: 2.5 } });
+  if (probed) {
+    eq(probed.perWorktreeGb, 2.5, "explicit worktree_gb wins over the estimate");
+    ok(probed.freeGb > 0, "free space detected");
+  }
+  // no-git cwd → estimate path fails → null, not a throw
+  eq(probeDisk({ meta: {} }, "/nonexistent-dir-for-roadmap-test"), null, "unprobeable → null");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

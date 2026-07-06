@@ -18,7 +18,7 @@ import { spawn, spawnSync } from "node:child_process";
 import os from "node:os";
 import { join } from "node:path";
 import { loadGraph, flatten, computeWaves, readyNodes } from "./lib/graph.mjs";
-import { recommendConcurrency } from "./lib/recommend.mjs";
+import { recommendConcurrency, probeDisk } from "./lib/recommend.mjs";
 import { synthesizeBrief, branchFor, worktreeFor, launchPrompt, baseRefOf, remoteOf } from "./lib/brief.mjs";
 import { launchDecision } from "./lib/fanout-core.mjs";
 import { terminalChoices } from "./lib/wizard-core.mjs";
@@ -52,7 +52,14 @@ const term = val("--term", (graph.meta && graph.meta.terminal) || terminalChoice
 const workerMode = val("--worker-mode", (graph.meta && graph.meta.worker_mode) || "plan");
 
 const ready = readyNodes(model);
-const rec = recommendConcurrency(ready, graph, { reviewCeiling: Number(val("--review-ceiling", 5)) });
+const rec = recommendConcurrency(ready, graph, { reviewCeiling: Number(val("--review-ceiling", 5)), disk: probeDisk(graph) });
+// Disk hard-block: auto-dialing handles the soft path (recommended >= 1), but when even ONE
+// worktree won't fit, launching would fail mid-checkout — refuse before creating anything.
+if (rec.disk && rec.disk.cap < 1) {
+  console.error(`✗ not enough disk for even one worktree: need ~${rec.disk.perWorktreeGb.toFixed(1)}GB, ${rec.disk.freeGb.toFixed(1)}GB free on the worktree volume.`);
+  console.error(`  Free space, point meta.worktree_root at a roomier volume, or calibrate meta.worktree_gb if the estimate is off.`);
+  process.exit(1);
+}
 const cap = has("--cap") ? Number(val("--cap", rec.recommended)) : rec.recommended;
 
 let waves;

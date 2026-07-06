@@ -5,19 +5,21 @@
 // dependency cycle; callers catch.
 
 import { flatten, computeWaves, readyNodes } from "./graph.mjs";
-import { recommendConcurrency, nodeWeight } from "./recommend.mjs";
+import { recommendConcurrency, nodeWeight, probeDisk } from "./recommend.mjs";
 import { branchFor, worktreeFor, launchPrompt } from "./brief.mjs";
 import { normalizeExecution, suggestedConcurrency } from "./execution.mjs";
 
 const round = (x) => Math.round(x * 10) / 10;
 
-// buildPlan(graph, { cap, useFree, reviewCeiling }). cap omitted -> the recommended cap.
+// buildPlan(graph, { cap, useFree, reviewCeiling, disk }). cap omitted -> the recommended cap.
+// disk: undefined -> probe the machine (the real surfaces); null/object -> injected (tests).
 export function buildPlan(graph, opts = {}) {
   const model = flatten(graph);
   const ready = readyNodes(model);
   const rec = recommendConcurrency(ready, graph, {
     useFree: opts.useFree,
     reviewCeiling: opts.reviewCeiling ?? 5,
+    disk: opts.disk !== undefined ? opts.disk : probeDisk(graph),
   });
   const cap = opts.cap != null ? Number(opts.cap) : rec.recommended;
   const { waves, held } = computeWaves(model, cap);
@@ -27,6 +29,7 @@ export function buildPlan(graph, opts = {}) {
     recommended: rec.recommended,
     binding: rec.binding,
     sys: { cores: rec.sys.cores, totalGb: round(rec.sys.totalGb), freeGb: round(rec.sys.freeGb), platform: rec.sys.platform },
+    disk: rec.disk ? { perWorktreeGb: round(rec.disk.perWorktreeGb), freeGb: round(rec.disk.freeGb), cap: rec.disk.cap } : null,
     candidates: rec.candidates,
     waves: waves.map((w) =>
       w.map((n) => ({
