@@ -90,7 +90,9 @@ Run from anywhere inside a repo. `docs/roadmap/roadmap.yaml` is found by walking
 | `roadmap backlog [list\|add\|set]` | The erratic-work tracker: `add "title" [-k kind] [--tier PN] [--weight N] [--why reason] [--slice invoke]` (first add creates `backlog.yaml`), `set <id> f=v ...`, bare = priority-sorted open items. |
 | `roadmap grab <id> [-t term] [--dry]` | Launch **one backlog item** in its own worktree (`<root>/backlog-<id>`, branch `backlog/<id>`) with a synthesized kickoff brief (the item's `prompt` embedded). Marks it `in_progress`. |
 | `roadmap promote <id> --pi <pi> [--id sN]` | Promote a backlog item into a roadmap **sprint** (item id becomes the invoke key; title/est/gate/touches/prompt/priority carry; `promoted_to` back-links). Both YAMLs validated before either is written. |
-| `roadmap linear status\|auth\|setup\|sync` | Optional **Linear** integration (see [Linear](#linear-optional--project-manage-from-linear-while-agents-execute)): `status [--probe]` state check, `auth` env-var instructions, `setup --team KEY` guided config, `sync [--dry] [--push-only] [--pull-only]`. |
+| `roadmap linear status\|auth\|setup\|provision\|sync\|post-update` | Optional **Linear** integration (see [Linear](#linear-optional--project-manage-from-linear-while-agents-execute)): `status [--probe]` state check, `auth` env-var instructions, `setup --team KEY` guided config, `provision` (labels + views + guidance texts), `sync [--dry] [--push-only] [--pull-only]`, `post-update --pi <id> --body <text>` (digest → project update). |
+| `roadmap review [--since <rev\|date>] [-j]` | The **date-anchored review digest**: shipped vs captured vs aging vs new PIs vs sprawl since `meta.last_review` (git-snapshot diff). The `/debrief` and `/retro` engine; works with zero Linear. |
+| `roadmap dispatch <key> [--to claude]` | Send one slice/backlog item to a **cloud agent** via its Linear issue (v0.5 seam, pending live verification). `roadmap fan --cloud` does the whole wave — no worktrees, no disk ceiling. |
 | `roadmap fan [-t wt\|warp\|tmux\|print\|background] [-c N] [-w N] [--track A] [--lead-claude] [-d] [-o file] [--worker-mode <m>] [--autonomous --yes-spawn-autonomous]` | Launch a wave: a lead pane/tab plus one per slice, each in its own worktree with a synthesized kickoff brief. **Launches by default**; `-d/--dry` or `-o/--out` to preview. `--track <lane>` fans out only the slices in that lane. Worker **and** lead sessions take `--permission-mode` from `meta.worker_mode` (falls back to `plan`); `--worker-mode` overrides per run. Terminal defaults per platform (win32 to `wt`, else `tmux`). |
 | `roadmap cleanup [-r] [-f]` | Prune fanout worktrees merged into the base branch and clean. **Dry by default**; `-r/--remove` acts; `-f/--force` includes unmerged/dirty. Only touches worktrees under the worktree root. |
 | `roadmap mcp` | Run the MCP server (stdio JSON-RPC) directly, for debugging or non-plugin registration. The plugin starts it for you. |
@@ -129,6 +131,8 @@ Install it as a plugin (see [Install](#install)) and the roadmap becomes an *in-
   - `/backlog`: capture + triage erratic work — normalizes your dump into prioritized items, then offers `grab` or `promote` per item.
   - `/imagine`: divergent strategy interview on a live roadmap — vision drift, bets, risks/cuts — whose every conclusion lands **in the graph** (north-star pointer, new PIs, thin scheduled slices). `/init` bootstraps; `/imagine` re-plans.
   - `/prioritize`: convergent tier-by-tier triage of ready slices + open backlog with a forced reason per placement ("these two can't both be P1 — which ships first and why?"); source-aware (an item from a public Linear intake team is weighted knowingly); writes in one atomic `bulk_set`.
+  - `/debrief`: the atomic lookback — date-anchored digest under hard high-signal rules, captain's-log entry in `docs/roadmap/REVIEWS.md`, anchor update. No graph mutations.
+  - `/retro`: the full review-and-redirect ritual — debrief's lookback + per-bet double-down/kill/defer decisions applied to the graph + optional `/imagine` handoff.
 - **Hook** (`hooks/hooks.json`): a `SessionStart` hook injects the at-a-glance plus the current ready-wave and the backlog open-count, so a fresh session immediately knows what's runnable (and, on first run, installs the `yaml` dep).
 - **Agents** (`agents/*.md`): four specialized subagents Claude invokes across the roadmap, fanout, and review lifecycle.
 
@@ -326,6 +330,34 @@ meta:
 **Detection is graceful.** No `meta.linear` → every Linear behavior is off and the tool is byte-identical to before. Configured but no `LINEAR_API_KEY` → one advisory line, everything else works. The session-start hook reports state with zero network; `roadmap linear status --probe` is the only networked check. Bootstrap: `roadmap linear auth` (key instructions) → `roadmap linear setup --team <KEY>` → `roadmap linear sync --dry`.
 
 **Per-PI override.** A PI can set its own `linear.granularity` (e.g. keep an internal PI's slices off a shared board). Creating one that conflicts with the global requires an explicit `yes_linear_override: true` ack — otherwise the mutation is rejected with instructions and nothing is written; `roadmap validate` warns on stored mismatches.
+
+### Topology: Linear as the board
+
+The recommended workspace shape at agent scale: **one team per actively-managed repo** (dispatch routing is deterministic, workflow states and `status_map` compose 1:1, and the issue identifier tells you the repo), **PIs = Projects, slices/items = Issues, native priority = tier**, plus **one shared intake team** (a public "Submit an issue" board) wired as a `watch` source. Repos not under agent management get no team.
+
+`roadmap linear provision` shapes the workspace idempotently: creates the labels the graph already knows (`roadmap` marker on every synced issue, `kind:*` for backlog items, `track:*` for the lanes actually present), attempts the five standard views (**Ready wave · In flight · Held on human · Backlog triage · Recently shipped** — the visibility layer; if the view API rejects, it prints a 60-second manual checklist instead), and prints two guidance texts: the workspace agent guidance and the **repo dispatch contract** to paste into `CLAUDE.md`/`AGENTS.md` — the block any cloud-delegated agent reads to self-orient (footer parse → YAML canonical → gate → PR, never merge → backlog-only leftovers). Projects carry PI theme + exit criteria as their descriptions.
+
+### Cloud dispatch (v0.5 seam — pending live verification)
+
+`roadmap dispatch <key> [--to claude|codex|oz]` sends one slice/backlog item to a **cloud agent** via its Linear issue: push-maps it if needed, then posts an @-mention comment carrying the dispatch capsule. `roadmap fan --cloud` does it for a whole wave — **no worktrees, no disk ceiling**; the machine stops being the bottleneck and the cap defaults to the review ceiling (a human still merges). The @-mention-summons-the-agent mechanics and the delegate-field API are unverified against a live workspace — the command does the verified transport and tells you exactly what to check.
+
+---
+
+## Riding the wave: discipline + the review ritual
+
+Two second-order effects of agent-scale work, both encoded:
+
+**Sprawl curbing (advisory, never blocking).** Helpful agents love filing follow-up scope; unchecked, every sprint spawns two backlog items and a sibling sprint. The kickoff brief now hard-forbids worker sessions from adding sprints/PIs (leftovers go to the **backlog only**; "YAGNI applies to captures too"), the `add_sprint`/`add_pi` tool descriptions carry the same scope-discipline nudge, and `/sync` + the review digest surface **sprawl warnings**: a capture ratio ((captured items + added sprints) per completed slice, threshold `meta.discipline.capture_ratio`, default 2) plus an unconditional flag on any PI that appeared since the last review.
+
+**Coherence wave packing.** Under a cap, the scheduler now prefers **finishing started PIs over opening fresh ones** (then closest-to-done first) — strictly *below* declared priority, so a P0 in a fresh PI still wins. Same-PI siblings fill the cap contiguously, `roadmap plan` prints `(closes auth)` on waves that finish a PI, and the digest reports **PIs in flight** (the fragmentation count). Opt out with `meta.discipline.coherence: false`.
+
+**The review ritual — three modalities.** This is how the human stays in control of the deluge:
+
+- **`/debrief`** — atomic lookback, **no graph mutations**: `roadmap review` diffs the graph against the date-anchored snapshot (`meta.last_review.commit`, via `git show`) and the skill presents it under hard style rules (≤15 lines; recommendations in "X instead of Y" form, tied to the north star; agent-originated scope named; no cheerleading), then logs a ≤10-line hand-authored entry to `docs/roadmap/REVIEWS.md` and re-anchors.
+- **`/imagine` + `/prioritize`** — the forward atomics (strategy interview; tier triage with forced reasons).
+- **`/retro`** — the composition: the debrief lookback, then per-bet **double-down / kill / defer** (every kill names what the freed sessions buy; every sprawl-flagged sidequest gets an explicit keep-or-drop), decisions applied through the mutation tools, optional `/imagine` handoff, and the close covers the decisions. When Linear is wired, the digest posts as project updates (`roadmap linear post-update`).
+
+`roadmap review [--since <rev|date>] [--json]` is the engine: shipped vs captured vs aging vs new PIs vs sprawl, computed from git history — works with zero Linear.
 
 ---
 

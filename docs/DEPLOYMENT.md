@@ -120,9 +120,12 @@ meta:
 roadmap linear auth              # prints the key instructions (never stores anything)
 roadmap linear status --probe    # confirms auth with one viewer query
 roadmap linear setup --team ENG  # queries your teams, writes meta.linear via the validated store
+roadmap linear provision         # labels + standard views + the two guidance texts to paste
 roadmap linear sync --dry        # shows the push plan + pull inbox, writes nothing
 roadmap linear sync              # projects the roadmap; /sync now includes the Linear phase
 ```
+
+`provision` also prints the **repo dispatch contract** — paste it into `CLAUDE.md`/`AGENTS.md` so cloud agents delegated a Linear issue (Claude Code coding sessions, Codex, Warp Oz) self-orient from the issue footer.
 
 **Detection is graceful at every state** — the same sentence everywhere (hook, CLI, MCP):
 
