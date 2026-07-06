@@ -7,12 +7,23 @@ import { flatten, isDone } from "./graph.mjs";
 import { branchFor } from "./brief.mjs";
 import { normalizeExecution, dirClusters } from "./execution.mjs";
 
-// findUnrecordedMerges(graph, mergedPrs): mergedPrs is [{ number, headRefName }] (state=merged).
-// Returns the not-done slices whose fanout branch has a merged PR: [{ invoke, pr, branch }].
+// findUnrecordedMerges(graph, mergedPrs): mergedPrs is [{ number, headRefName, title?, body? }]
+// (state=merged). Returns the not-done slices whose work has a merged PR: [{ invoke, pr, branch }].
+// Two matching layers:
+//   1. branch — headRefName equals the slice's convention branch (local fanout worktrees).
+//   2. marker — the PR title/body contains the machine line `roadmap: slice=<invoke>` (cloud
+//      dispatches push unpredictable claude/-prefixed branches, so the capsule + dispatch
+//      guidance require the marker in the PR description; the kickoff brief adds it too).
 export function findUnrecordedMerges(graph, mergedPrs) {
   const byBranch = new Map();
+  const byMarker = new Map();   // invoke -> pr number (first match wins)
   for (const pr of mergedPrs || []) {
-    if (pr && pr.headRefName && !byBranch.has(pr.headRefName)) byBranch.set(pr.headRefName, pr.number);
+    if (!pr) continue;
+    if (pr.headRefName && !byBranch.has(pr.headRefName)) byBranch.set(pr.headRefName, pr.number);
+    const text = `${pr.title || ""}\n${pr.body || ""}`;
+    for (const m of text.matchAll(/roadmap: slice=([a-z0-9][a-z0-9-]*)/g)) {
+      if (!byMarker.has(m[1])) byMarker.set(m[1], pr.number);
+    }
   }
   const model = flatten(graph);
   const out = [];
@@ -20,6 +31,7 @@ export function findUnrecordedMerges(graph, mergedPrs) {
     if (isDone(n.status)) continue;
     const branch = branchFor(n, graph);
     if (byBranch.has(branch)) out.push({ invoke: n.invoke, pr: byBranch.get(branch), branch });
+    else if (byMarker.has(n.invoke)) out.push({ invoke: n.invoke, pr: byMarker.get(n.invoke), branch: "(cloud — matched by PR marker)" });
   }
   return out;
 }

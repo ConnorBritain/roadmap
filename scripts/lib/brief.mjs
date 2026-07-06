@@ -111,7 +111,7 @@ ${gate}
 
 ## 5. Commit + PR
 - Commit style: \`<area>: <what> (${node.piId}-${node.id.toUpperCase()})\`, professional, no AI attribution.
-- Open a PR \`--base ${baseBranchOf(graph)} --head ${branch}\`. **Do NOT merge.**
+- Open a PR \`--base ${baseBranchOf(graph)} --head ${branch}\` whose description includes the exact line \`roadmap: slice=${node.invoke}\` (the reconcile marker). **Do NOT merge.**
 
 ## 6. Report back
 LOC delta · file inventory · gate result (pass/fail with output) · commit SHA · PR # · 2–3 line retro.

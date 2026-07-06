@@ -139,7 +139,8 @@ export async function runDispatch(root, key, opts = {}) {
       "",
       "This is a roadmap cloud dispatch. The repo is cloned for you. Open docs/SLICES.md#" + key +
       " and the entry (including its prompt) in docs/roadmap/roadmap.yaml — the YAML is canonical." +
-      " Honor the verification gate before committing, open a PR, NEVER merge." +
+      " Honor the verification gate before committing, then open a PR whose DESCRIPTION includes the exact line" +
+      ` 'roadmap: ${found.type}=${key}' (that line is how the roadmap reconciles cloud PRs). NEVER merge.` +
       " Leftovers go to the BACKLOG ONLY — never new sprints or PIs (YAGNI applies to captures).",
     ].join("\n");
     const fired = await fireRoutine(routine, text, opts.fetchImpl || fetch);
@@ -176,7 +177,7 @@ export async function runDispatch(root, key, opts = {}) {
     "",
     machineFooter({ type: found.type, key }, null),
     "",
-    "Follow the repo's dispatch guidance (CLAUDE.md/AGENTS.md — 'Working a roadmap-dispatched Linear issue'). In short: the repo's docs/roadmap YAML is canonical, honor the slice's gate, open a PR and never merge, leftovers to the backlog only.",
+    `Follow the repo's dispatch guidance (CLAUDE.md/AGENTS.md — 'Working a roadmap-dispatched Linear issue'). In short: the repo's docs/roadmap YAML is canonical, honor the slice's gate, open a PR whose description includes the line 'roadmap: ${found.type}=${key}', never merge, leftovers to the backlog only.`,
   ].join("\n");
 
   try {

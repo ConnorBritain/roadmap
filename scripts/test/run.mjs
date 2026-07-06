@@ -1976,6 +1976,40 @@ test("runDispatch failure names both stages when commentCreate is rejected", asy
   rmSync(root, { recursive: true, force: true });
 });
 
+// ── cloud PR matcher ─────────────────────────────────────────────────────────
+// WHY: cloud sessions push unpredictable claude/-prefixed branches, so branch matching
+// misses every cloud PR and merged cloud work silently stays "open" on the roadmap. The
+// marker line in the PR description is the deterministic hook we control end-to-end.
+test("findUnrecordedMerges layer 2: cloud PRs match by the roadmap marker in title/body", () => {
+  const g = { meta: {}, pis: [{ id: "a", title: "A", status: "active", sprints: [
+    sp("s1", { status: "active", invoke: "auth-login" }),
+    sp("s2", { status: "active", invoke: "auth-tokens" }),
+    sp("s3", { status: "complete", invoke: "auth-done" }),
+  ]}]};
+  const found = findUnrecordedMerges(g, [
+    { number: 7, headRefName: "a/s1" },                                                          // layer 1: convention branch
+    { number: 8, headRefName: "claude/fix-tokens-x9", body: "…\nroadmap: slice=auth-tokens\n…" }, // layer 2: cloud marker
+    { number: 9, headRefName: "claude/old-work", body: "roadmap: slice=auth-done" },              // done slice → ignored
+    { number: 10, headRefName: "claude/unrelated", body: "roadmap: slice=nonexistent" },          // unknown key → ignored
+  ]);
+  eq(found.map((f) => [f.invoke, f.pr]), [["auth-login", 7], ["auth-tokens", 8]], "both layers matched, done + unknown ignored");
+  ok(found[1].branch.includes("cloud"), "cloud matches are labeled");
+  // a slice matched by BOTH layers reports once (branch wins)
+  const both = findUnrecordedMerges(g, [
+    { number: 11, headRefName: "a/s1", body: "roadmap: slice=auth-login" },
+  ]);
+  eq(both.length, 1, "no double report");
+});
+
+// WHY: the marker only works if every PR-producing surface plants it — brief (local
+// fanout), dispatch capsules (cloud + mention), and the repo guidance must all carry it.
+test("every PR-producing surface plants the reconcile marker instruction", () => {
+  const g = { meta: { schema_version: 1, program: "T", default_gate: "npm test" },
+    pis: [{ id: "a", title: "A", status: "active", sprints: [sp("s1", { status: "active", invoke: "x" })] }] };
+  ok(synthesizeBrief(flatten(g).nodes[0], g).includes("roadmap: slice=x"), "kickoff brief carries the marker");
+  ok(dispatchGuidance().includes("roadmap: slice=<key>"), "repo dispatch guidance carries it");
+});
+
 // ── claude-cloud transport ────────────────────────────────────────────────────
 const PROFILES = {
   connor: { account: "connor@x.com", routines: {
