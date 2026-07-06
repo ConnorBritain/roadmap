@@ -1454,7 +1454,7 @@ function linearRepo() {
     `meta:\n  schema_version: 1\n  program: T\n  linear:\n    team: ENG\n    pull: propose\n    watch:\n      - { team: PUB, project: Submit an issue, kind: bug, priority: {tier: P3} }\npis:\n  - id: auth\n    title: Authentication\n    status: active\n    sprints:\n      - { id: s1, title: Login, status: active, invoke: auth-login }\n`, "utf8");
   return root;
 }
-function fakeLinear({ failOn = null, snapshot = {}, inboundByTeam = null, teamLabels = [], teamProjects = [] } = {}) {
+function fakeLinear({ failOn = null, snapshot = {}, inboundByTeam = null, teamLabels = [], teamProjects = [], existingViews = [] } = {}) {
   const calls = [];
   const createdIssues = {};   // identifier → snapshot shape, so later issue(id:) lookups resolve
   let created = 0;
@@ -1480,6 +1480,7 @@ function fakeLinear({ failOn = null, snapshot = {}, inboundByTeam = null, teamLa
       if (failOn !== "customViewCreate") return respond({ customViewCreate: { customView: { id: `view-${calls.length}` } } });
       throw new Error("simulated view rejection");
     }
+    if (query.includes("customViews(first")) return respond({ customViews: { nodes: existingViews.map((name, i) => ({ id: `v${i}`, name })) } });
     if (query.includes("projectUpdateCreate")) {
       if (failOn === "projectUpdateCreate") throw new Error("simulated post rejection");
       return respond({ projectUpdateCreate: { projectUpdate: { id: "pu-1" } } });
@@ -1911,6 +1912,34 @@ test("dispatchGuidance carries the dispatch contract", () => {
   ok(g.includes("YAML is canonical"), "canonicality stated");
   const plan = provisionPlan({ graph: { pis: [] }, teamLabels: { roadmap: "x" } });
   ok(!plan.createLabels.includes("roadmap") && plan.existingLabels.includes("roadmap"), "provisionPlan respects existing labels");
+});
+
+// ── live-caught regressions (v0.4 verification day) ──────────────────────────
+// WHY: live-caught — the createProject executor forwarded only name+teamIds, dropping the
+// description, so every project was born bare and the NEXT sync healed it (perpetual
+// first-run churn). The executor must spread the whole planned payload.
+test("createProject forwards the full payload (description included)", async () => {
+  const root = linearRepo();
+  const yamlPath = join(root, "docs", "roadmap", "roadmap.yaml");
+  writeFileSync(yamlPath, readFileSync(yamlPath, "utf8").replace("title: Authentication", "title: Authentication\n    theme: Own the login flow"), "utf8");
+  const fake = fakeLinear();
+  await runSync(root, { fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-06T12:00:00Z" });
+  const create = fake.calls.find((c) => c.query.includes("projectCreate"));
+  eq(create.variables.input.description, "Own the login flow", "description reaches the wire on create");
+  eq(create.variables.input.teamIds, ["team-1"], "teamIds still attached");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: live-caught — provision re-created the five views on every run (duplicate boards).
+// Existing view names must be skipped.
+test("runProvision skips views that already exist", async () => {
+  const root = linearRepo();
+  const fake = fakeLinear({ existingViews: STANDARD_VIEWS.map((v) => v.name) });
+  const r = await runProvision(root, { fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" } });
+  eq(r.views, [], "nothing created");
+  eq(r.viewsExisting, STANDARD_VIEWS.map((v) => v.name), "all five recognized as present");
+  ok(!fake.calls.some((c) => c.query.includes("customViewCreate")), "no create mutation fired");
+  rmSync(root, { recursive: true, force: true });
 });
 
 // ── cloud dispatch (v0.5 stub) ───────────────────────────────────────────────

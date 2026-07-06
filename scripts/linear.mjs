@@ -163,7 +163,7 @@ export async function runSync(root, opts = {}) {
         for (const op of ops) {
           if (op.op === "createProject") {
             const d = await gql(`mutation($input: ProjectCreateInput!) { projectCreate(input: $input) { project { id } } }`,
-              { input: { name: op.payload.name, teamIds: [team.id] } }, io);
+              { input: { ...op.payload, teamIds: [team.id] } }, io);   // spread: dropping fields here caused live churn (description)
             projectIds[op.projectRef] = d.projectCreate.project.id;
             writeBacks.pis.push({ pi: op.writeBack.pi, project: d.projectCreate.project.id });
           } else if (op.op === "updateProject") {
@@ -244,15 +244,22 @@ export async function runProvision(root, opts = {}) {
     }
   }
 
-  // Views: customViewCreate's input shape is UNVERIFIED — attempt each; first rejection
-  // degrades to the manual checklist (the designed fallback, not a failure).
+  // Views (live-verified mutation). Idempotency: skip names that already exist — a re-run
+  // must not duplicate the board (live-caught failure mode). Any rejection degrades to the
+  // manual checklist (the designed fallback, not a failure).
+  let existingViews = new Set();
+  try {
+    const vd = await gql(`query { customViews(first: 100) { nodes { id name } } }`, {}, io);
+    existingViews = new Set(vd.customViews.nodes.map((v) => v.name));
+  } catch { /* view listing unavailable → fall through to create-and-let-it-ride */ }
   for (const v of plan.views) {
+    if (existingViews.has(v.name)) { result.viewsExisting = [...(result.viewsExisting || []), v.name]; continue; }
     try {
       await gql(`mutation($input: CustomViewCreateInput!) { customViewCreate(input: $input) { customView { id } } }`,
         { input: { name: v.name, teamId: team.id, description: v.hint } }, io);
       result.views.push(v.name);
     } catch (e) {
-      result.viewChecklist = { rejected: e.message, checklist: manualViewChecklist(plan.views.filter((x) => !result.views.includes(x.name))) };
+      result.viewChecklist = { rejected: e.message, checklist: manualViewChecklist(plan.views.filter((x) => !result.views.includes(x.name) && !existingViews.has(x.name))) };
       break;
     }
   }
@@ -342,6 +349,7 @@ if (isMain) {
       const r = await runProvision(root);
       console.log(`labels: ${r.labelsCreated.length ? `created ${r.labelsCreated.join(", ")}` : "all present"}${r.labelsExisting.length ? ` (existing: ${r.labelsExisting.join(", ")})` : ""}`);
       if (r.views.length) console.log(`views created: ${r.views.join(", ")}`);
+      if (r.viewsExisting && r.viewsExisting.length) console.log(`views already present: ${r.viewsExisting.join(", ")}`);
       if (r.viewChecklist) {
         console.log(`customViewCreate rejected (${r.viewChecklist.rejected}) — pending live verification; manual checklist (~60s in Linear):`);
         console.log(r.viewChecklist.checklist);

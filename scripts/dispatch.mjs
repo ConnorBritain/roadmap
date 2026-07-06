@@ -76,7 +76,10 @@ if (isMain) {
   try {
     const r = await runDispatch(process.cwd(), key, { to: val("--to") });
     console.log(`dispatched ${r.dispatched} → ${r.identifier} via ${r.agent} @-mention comment.`);
-    console.log(`VERIFY the agent picked it up — @-mention summoning and the delegate-field API are pending live verification; if nothing happens, delegate by hand in Linear.`);
+    console.log(`VERIFY the agent picked it up. Live-tested finding: the comment posts fine, but summoning requires the agent's`);
+    console.log(`integration to be INSTALLED in the Linear workspace (Settings → Integrations — e.g. the Claude/coding-sessions`);
+    console.log(`agent); without it there is nothing to summon. If installed and nothing happens, delegate by hand — the capsule`);
+    console.log(`comment is already on the issue to orient the agent.`);
   } catch (e) {
     console.error(`✗ ${e.message}`);
     process.exit(1);
