@@ -37,10 +37,12 @@ import {
 } from "../lib/linear-core.mjs";
 import { addPi } from "../lib/mcp-core.mjs";
 import { runSync, readCursor } from "../linear.mjs";
+import { graphDiff, backlogDiff, reviewDigest, pisInFlight } from "../lib/review-core.mjs";
 import { parseDocument } from "yaml";
 import { join, resolve } from "node:path";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 
 let passed = 0, failed = 0;
 const pending = [];   // async tests settle before the summary (see the await at the bottom)
@@ -1669,6 +1671,109 @@ test("buildPlan waveCloses names the PIs a wave finishes", () => {
   const plan = buildPlan(g, { cap: 3, disk: null });
   eq(plan.waveCloses[0], ["a"], "wave 1 closes PI a (b still has contended work)");
   ok(plan.waveCloses[plan.waves.length - 1].includes("b"), "the final wave closes b");
+});
+
+// ── review-core: the /debrief evidence base ───────────────────────────────────
+const oldReviewGraph = {
+  meta: { schema_version: 1, program: "T" },
+  pis: [
+    { id: "auth", title: "Auth", status: "active", sprints: [
+      { id: "s1", title: "Login", status: "active", invoke: "auth-login" },
+      { id: "s2", title: "Tokens", status: "next", invoke: "auth-tokens" },
+      { id: "s3", title: "Old", status: "next", invoke: "auth-old" },
+      { id: "s4", title: "Stuck", status: "gated", gated_on: "Connor", invoke: "auth-stuck" },
+    ]},
+  ],
+};
+const newReviewGraph = {
+  meta: { schema_version: 1, program: "T", discipline: { capture_ratio: 2 } },
+  pis: [
+    { id: "auth", title: "Auth", status: "active", sprints: [
+      { id: "s1", title: "Login", status: "complete", invoke: "auth-login", prs: ["#12"] },   // shipped
+      { id: "s2", title: "Tokens", status: "blocked", invoke: "auth-tokens", priority: { tier: "P1" } },  // flip + priority
+      { id: "s4", title: "Stuck", status: "gated", gated_on: "Connor", invoke: "auth-stuck" },            // held in both
+      { id: "s5", title: "New A", status: "next", invoke: "auth-new-a" },                                  // added
+      { id: "s6", title: "New B", status: "next", invoke: "auth-new-b" },                                  // added
+      { id: "s7", title: "New C", status: "next", invoke: "auth-new-c" },                                  // added
+    ]},                                                                                                     // s3 pruned
+    { id: "billing", title: "Billing", status: "scheduled", sprints: [
+      { id: "s1", title: "Seed", status: "scheduled", invoke: "billing-seed" },                            // new PI
+    ]},
+  ],
+};
+
+// WHY: the digest is the entire evidence base for /debrief — a miscounted diff bucket
+// produces wrong strategic advice with total confidence.
+test("graphDiff buckets exactly: added/completed/removed/flips/priority/held", () => {
+  const gd = graphDiff(oldReviewGraph, newReviewGraph);
+  eq(gd.addedPis, [{ id: "billing", title: "Billing" }], "new PI");
+  eq(gd.addedSprints.map((s) => s.invoke).sort(), ["auth-new-a", "auth-new-b", "auth-new-c", "billing-seed"], "added sprints");
+  eq(gd.completedSlices, [{ invoke: "auth-login", pi: "auth", title: "Login", prs: ["#12"] }], "shipped with PRs");
+  eq(gd.removedSprints.map((s) => s.invoke), ["auth-old"], "pruned sprint");
+  eq(gd.statusFlips, [{ invoke: "auth-tokens", from: "next", to: "blocked" }], "flip recorded; →done excluded (it's shipped)");
+  eq(gd.priorityChanges, [{ invoke: "auth-tokens", from: null, to: "P1" }], "tier change");
+  eq(gd.stillHeld, [{ invoke: "auth-stuck", status: "gated" }], "held in BOTH snapshots only — newly-blocked auth-tokens is a flip, not aging");
+});
+
+// WHY: /debrief must work before a backlog exists and on the review that first introduces one.
+test("backlogDiff handles null snapshots and buckets captured/closed/promoted", () => {
+  eq(backlogDiff(null, null), { captured: [], closed: [], promoted: [] }, "no backlog either side");
+  const b = backlogDiff(
+    { meta: { schema_version: 1 }, items: [
+      { id: "b1", title: "Old open", kind: "bug", status: "open" },
+      { id: "b2", title: "Was open", kind: "chore", status: "open" },
+      { id: "b3", title: "Move me", kind: "followup", status: "open" },
+    ]},
+    { meta: { schema_version: 1 }, items: [
+      { id: "b1", title: "Old open", kind: "bug", status: "open" },
+      { id: "b2", title: "Was open", kind: "chore", status: "done" },
+      { id: "b3", title: "Move me", kind: "followup", status: "promoted", promoted_to: "auth/s9" },
+      { id: "b4", title: "Fresh", kind: "idea", status: "open" },
+    ]});
+  eq(b.captured, [{ id: "b4", title: "Fresh", kind: "idea" }], "new capture");
+  eq(b.closed, [{ id: "b2", title: "Was open", status: "done" }], "closed item");
+  eq(b.promoted, [{ id: "b3", promoted_to: "auth/s9" }], "promotion with back-link");
+  eq(backlogDiff(null, { meta: { schema_version: 1 }, items: [{ id: "x", title: "X", kind: "bug", status: "open" }] }).captured.length, 1, "first backlog → everything captured");
+});
+
+// WHY: the digest's sprawl lines must be byte-identical to /sync's (same function) or the
+// two guardrails drift apart; and pisInFlight is the fragmentation coherence exists to shrink.
+test("reviewDigest composes counts, reuses sprawlWarnings verbatim, and counts PIs in flight", () => {
+  const gd = graphDiff(oldReviewGraph, newReviewGraph);
+  const bd = backlogDiff(null, { meta: { schema_version: 1 }, items: [{ id: "b1", title: "Cap", kind: "bug", status: "open" }] });
+  const d = reviewDigest({ gd, bd, graph: newReviewGraph });
+  eq(d.netGrowth, { added: 5, completed: 1, ratio: 5 }, "1 item + 4 sprints vs 1 shipped");
+  eq(d.sprawl, sprawlWarnings({ completed: 1, captured: 1, addedSprints: 4, addedPis: ["billing"], ratioThreshold: 2 }), "same function, same lines");
+  eq(d.sprawl.length, 2, "ratio warning + PI flag");
+  eq(d.pisInFlight, 1, "auth started with open work; billing untouched");
+  eq(pisInFlight({ pis: [
+    { id: "a", sprints: [{ status: "complete" }, { status: "next" }] },
+    { id: "b", sprints: [{ status: "active" }, { status: "next" }] },
+    { id: "c", sprints: [{ status: "next" }] },
+    { id: "d", sprints: [{ status: "complete" }] },
+  ]}), 2, "started+open counts; untouched and fully-done don't");
+});
+
+// WHY: the CLI is the anchor→git-show→digest wiring /debrief trusts — one real-git test
+// proves the pathspec, rev resolution, and JSON contract on this platform (Windows included).
+test("review.mjs end-to-end in a real git repo: --since <sha> diffs old vs new YAML", () => {
+  const root = mkdtempSync(join(tmpdir(), "roadmap-review-test-"));
+  mkdirSync(join(root, "docs", "roadmap"), { recursive: true });
+  const yamlPath = join(root, "docs", "roadmap", "roadmap.yaml");
+  const g = (...a) => spawnSync("git", a, { cwd: root, encoding: "utf8" });
+  g("init", "-q");
+  g("config", "user.email", "t@t"); g("config", "user.name", "t");
+  writeFileSync(yamlPath, `meta:\n  schema_version: 1\n  program: T\npis:\n  - id: a\n    title: A\n    status: active\n    sprints:\n      - { id: s1, title: S, status: next, invoke: a-s1 }\n`, "utf8");
+  g("add", "-A"); g("commit", "-qm", "v1");
+  const sha = g("log", "-1", "--format=%H").stdout.trim();
+  writeFileSync(yamlPath, `meta:\n  schema_version: 1\n  program: T\npis:\n  - id: a\n    title: A\n    status: active\n    sprints:\n      - { id: s1, title: S, status: complete, invoke: a-s1, prs: ["#7"] }\n      - { id: s2, title: N, status: next, invoke: a-s2 }\n`, "utf8");
+  const r = spawnSync("node", [join(resolve("scripts"), "review.mjs"), "--since", sha, "--json"], { cwd: root, encoding: "utf8" });
+  eq(r.status, 0, `review.mjs exited 0 (stderr: ${r.stderr})`);
+  const { anchor, digest } = JSON.parse(r.stdout);
+  eq(anchor.commit, sha, "anchor honored");
+  eq(digest.shipped.map((s) => s.invoke), ["a-s1"], "shipped detected from the git snapshot");
+  eq(digest.captured.sprints.map((s) => s.invoke), ["a-s2"], "added sprint detected");
+  rmSync(root, { recursive: true, force: true });
 });
 
 await Promise.all(pending);
