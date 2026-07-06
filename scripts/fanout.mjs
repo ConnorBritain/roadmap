@@ -20,7 +20,7 @@ import { join } from "node:path";
 import { loadGraph, flatten, computeWaves, readyNodes } from "./lib/graph.mjs";
 import { recommendConcurrency, probeDisk } from "./lib/recommend.mjs";
 import { synthesizeBrief, branchFor, worktreeFor, launchPrompt, baseRefOf, remoteOf } from "./lib/brief.mjs";
-import { launchDecision } from "./lib/fanout-core.mjs";
+import { launchDecision, bashWorktreeLines, pwshWorktreeLines, diskBlockLines } from "./lib/fanout-core.mjs";
 import { terminalChoices } from "./lib/wizard-core.mjs";
 import { filterByTrack } from "./lib/execution.mjs";
 
@@ -56,8 +56,7 @@ const rec = recommendConcurrency(ready, graph, { reviewCeiling: Number(val("--re
 // Disk hard-block: auto-dialing handles the soft path (recommended >= 1), but when even ONE
 // worktree won't fit, launching would fail mid-checkout — refuse before creating anything.
 if (rec.disk && rec.disk.cap < 1) {
-  console.error(`✗ not enough disk for even one worktree: need ~${rec.disk.perWorktreeGb.toFixed(1)}GB, ${rec.disk.freeGb.toFixed(1)}GB free on the worktree volume.`);
-  console.error(`  Free space, point meta.worktree_root at a roomier volume, or calibrate meta.worktree_gb if the estimate is off.`);
+  diskBlockLines(rec.disk).forEach((l) => console.error(l));
   process.exit(1);
 }
 const cap = has("--cap") ? Number(val("--cap", rec.recommended)) : rec.recommended;
@@ -101,11 +100,7 @@ function tmuxScript() {
   L.push(``);
   L.push(`# 1) one worktree + uncommitted kickoff brief per slice`);
   for (const n of wave) {
-    const wt = worktreeFor(n, graph), br = branchFor(n, graph);
-    L.push(`git worktree add "${wt}" -b "${br}" ${baseRefOf(graph)} 2>/dev/null || echo "worktree ${wt} exists, reusing"`);
-    L.push(`cat > "${wt}/.kickoff.md" <<'KICKOFF_EOF'`);
-    L.push(synthesizeBrief(n, graph).trimEnd());
-    L.push(`KICKOFF_EOF`);
+    L.push(...bashWorktreeLines(worktreeFor(n, graph), branchFor(n, graph), baseRefOf(graph), synthesizeBrief(n, graph)));
   }
   L.push(``);
   L.push(`# 2) tmux: lead pane (review/merge) + one pane per slice`);
@@ -170,11 +165,7 @@ function wtScript() {
   L.push(``);
   L.push(`# 1) one worktree + uncommitted kickoff brief per slice`);
   for (const n of wave) {
-    const wt = worktreeFor(n, graph), br = branchFor(n, graph);
-    L.push(`git worktree add "${wt}" -b "${br}" ${baseRefOf(graph)} 2>$null; if ($LASTEXITCODE -ne 0) { Write-Host "worktree ${wt} exists, reusing" }`);
-    L.push(`Set-Content -LiteralPath "${wt}/.kickoff.md" -Encoding utf8 -Value @'`);
-    L.push(synthesizeBrief(n, graph).trimEnd());
-    L.push(`'@`);
+    L.push(...pwshWorktreeLines(worktreeFor(n, graph), branchFor(n, graph), baseRefOf(graph), synthesizeBrief(n, graph)));
   }
   L.push(``);
   L.push(`# 2) Windows Terminal: a LEAD tab + one tab per slice`);
@@ -233,11 +224,7 @@ function warpScript() {
   L.push(``);
   L.push(`# 1) one worktree + uncommitted kickoff brief per slice`);
   for (const n of wave) {
-    const wt = worktreeFor(n, graph), br = branchFor(n, graph);
-    L.push(`git worktree add "${wt}" -b "${br}" ${baseRefOf(graph)} 2>$null; if ($LASTEXITCODE -ne 0) { Write-Host "worktree ${wt} exists, reusing" }`);
-    L.push(`Set-Content -LiteralPath "${wt}/.kickoff.md" -Encoding utf8 -Value @'`);
-    L.push(synthesizeBrief(n, graph).trimEnd());
-    L.push(`'@`);
+    L.push(...pwshWorktreeLines(worktreeFor(n, graph), branchFor(n, graph), baseRefOf(graph), synthesizeBrief(n, graph)));
   }
   L.push(``);
   L.push(`# 2) write the Warp Tab Config, then open it via the warp:// deeplink`);

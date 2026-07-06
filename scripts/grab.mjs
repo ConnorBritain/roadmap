@@ -15,6 +15,7 @@ import { loadBacklog, mutateBacklog } from "./lib/store.mjs";
 import { backlogItemToNode, setItemFields } from "./lib/backlog-core.mjs";
 import { synthesizeBrief, branchFor, worktreeFor, launchPrompt, baseRefOf, remoteOf } from "./lib/brief.mjs";
 import { probeDisk } from "./lib/recommend.mjs";
+import { bashWorktreeLines, pwshWorktreeLines, diskBlockLines } from "./lib/fanout-core.mjs";
 import { terminalChoices } from "./lib/wizard-core.mjs";
 
 const args = process.argv.slice(2);
@@ -43,8 +44,7 @@ const graph = loadGraph("docs/roadmap/roadmap.yaml");
 if (!dry) {
   const disk = probeDisk(graph);
   if (disk && disk.freeGb - 2 < disk.perWorktreeGb) {
-    console.error(`✗ not enough disk for a worktree: need ~${disk.perWorktreeGb.toFixed(1)}GB, ${disk.freeGb.toFixed(1)}GB free on the worktree volume.`);
-    console.error(`  Free space, point meta.worktree_root at a roomier volume, or calibrate meta.worktree_gb.`);
+    diskBlockLines(disk).forEach((l) => console.error(l));
     process.exit(1);
   }
 }
@@ -64,10 +64,7 @@ if (term === "tmux") {
     `# roadmap grab — ${id} (${item.kind}), terminal=tmux`,
     `set -euo pipefail`,
     `git fetch ${remoteOf(graph)} --quiet`,
-    `git worktree add "${wt}" -b "${br}" ${baseRefOf(graph)} 2>/dev/null || echo "worktree ${wt} exists, reusing"`,
-    `cat > "${wt}/.kickoff.md" <<'KICKOFF_EOF'`,
-    brief,
-    `KICKOFF_EOF`,
+    ...bashWorktreeLines(wt, br, baseRefOf(graph), brief),
     `tmux new-window -c "${wt}" -n "${id}" '${claudeCmd('"')}' 2>/dev/null || tmux new-session -s "grab-${id}" -c "${wt}" '${claudeCmd('"')}'`,
   ].join("\n") + "\n";
 } else if (term === "wt") {
@@ -75,10 +72,7 @@ if (term === "tmux") {
     `# roadmap grab — ${id} (${item.kind}), terminal=wt`,
     `$ErrorActionPreference = 'Continue'`,
     `git fetch ${remoteOf(graph)} --quiet`,
-    `git worktree add "${wt}" -b "${br}" ${baseRefOf(graph)} 2>$null; if ($LASTEXITCODE -ne 0) { Write-Host "worktree ${wt} exists, reusing" }`,
-    `Set-Content -LiteralPath "${wt}/.kickoff.md" -Encoding utf8 -Value @'`,
-    brief,
-    `'@`,
+    ...pwshWorktreeLines(wt, br, baseRefOf(graph), brief),
     // ';' is wt's tab delimiter even inside quotes — the launch prompt contains none, keep it that way.
     `Start-Process wt -ArgumentList 'new-tab --title "${id}" -d "${wt}" powershell -NoExit -Command "${claudeCmd("'")}"'`,
   ].join("\n") + "\n";

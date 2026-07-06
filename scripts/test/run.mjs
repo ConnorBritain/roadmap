@@ -28,8 +28,11 @@ import {
   performPromotion,
 } from "../lib/backlog-core.mjs";
 import { validateGraph } from "../lib/validate-core.mjs";
+import { mutateRoadmap, mutateBacklog, mutateBoth } from "../lib/store.mjs";
 import { parseDocument } from "yaml";
 import { join, resolve } from "node:path";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 let passed = 0, failed = 0;
 function test(name, fn) {
@@ -1150,6 +1153,68 @@ test("probeDisk honors the meta.worktree_gb override and never throws", () => {
   }
   // no-git cwd → estimate path fails → null, not a throw
   eq(probeDisk({ meta: {} }, "/nonexistent-dir-for-roadmap-test"), null, "unprobeable → null");
+});
+
+// ── store.mjs: the file-write-ordering / rollback guarantees (fs-backed) ──────
+// WHY: store.mjs is the one place with data-loss blast radius — every mutating surface
+// routes through it. If a thrown validation still wrote a file, or promote wrote one file
+// of two, the "validate before write" contract is a lie the unit tests above can't catch.
+function tempRepo() {
+  const root = mkdtempSync(join(tmpdir(), "roadmap-store-test-"));
+  mkdirSync(join(root, "docs", "roadmap"), { recursive: true });
+  writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"),
+    `meta:\n  schema_version: 1\n  program: T\npis:\n  - id: a\n    title: A\n    status: active\n    sprints:\n      - { id: s1, title: S, status: active, invoke: taken }\n`, "utf8");
+  return root;
+}
+
+test("mutateRoadmap leaves roadmap.yaml byte-identical when the mutation or gate throws", () => {
+  const root = tempRepo();
+  const yamlPath = join(root, "docs", "roadmap", "roadmap.yaml");
+  const before = readFileSync(yamlPath, "utf8");
+  throws(() => mutateRoadmap(root, () => { throw new Error("boom"); }), "boom", "fn throw propagates");
+  eq(readFileSync(yamlPath, "utf8"), before, "fn throw → file untouched");
+  throws(() => mutateRoadmap(root, (doc) => setFields(doc, { invoke: "taken", fields: { priority: { tier: "NOPE" } } })),
+    "priority.tier", "pre-write gate throw propagates");
+  eq(readFileSync(yamlPath, "utf8"), before, "gate throw → file untouched, no SLICES rendered");
+  ok(!existsSync(join(root, "docs", "SLICES.md")), "no SLICES.md written on failure");
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("mutateBoth writes NEITHER file when the second validation throws (promote collision)", () => {
+  const root = tempRepo();
+  const rPath = join(root, "docs", "roadmap", "roadmap.yaml");
+  const bPath = join(root, "docs", "roadmap", "backlog.yaml");
+  // an item whose id collides with the existing invoke "taken" → roadmap gate rejects
+  writeFileSync(bPath, `meta:\n  schema_version: 1\nitems:\n  - { id: taken, title: Collides, kind: bug, status: open }\n`, "utf8");
+  const rBefore = readFileSync(rPath, "utf8");
+  const bBefore = readFileSync(bPath, "utf8");
+  throws(() => mutateBoth(root, (rDoc, bDoc) => performPromotion(rDoc, bDoc, { id: "taken", pi: "a" })),
+    "duplicate invoke", "collision rejected");
+  eq(readFileSync(rPath, "utf8"), rBefore, "roadmap.yaml untouched");
+  eq(readFileSync(bPath, "utf8"), bBefore, "backlog.yaml untouched (validated-both-before-either held)");
+  // and the success path writes both + both renders
+  const r = mutateBoth(root, (rDoc, bDoc) => {
+    addItem(bDoc, { title: "ok item", id: "okid", kind: "chore" });
+    return performPromotion(rDoc, bDoc, { id: "okid", pi: "a" });
+  });
+  eq(r.to, "a/s2", "promoted into the next free sprint id");
+  ok(readFileSync(rPath, "utf8").includes("okid"), "roadmap gained the sprint");
+  ok(existsSync(join(root, "docs", "BACKLOG.md")) && existsSync(join(root, "docs", "SLICES.md")), "both views rendered");
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("mutateBacklog createIfMissing bootstraps a block-style backlog.yaml and the SLICES pointer", () => {
+  const root = tempRepo();
+  const bPath = join(root, "docs", "roadmap", "backlog.yaml");
+  throws(() => mutateBacklog(root, (doc) => addItem(doc, { title: "x" })), "no docs/roadmap/backlog.yaml",
+    "without createIfMissing a missing file is an error, not a silent create");
+  const r = mutateBacklog(root, (doc) => addItem(doc, { title: "first capture", kind: "bug" }), { createIfMissing: true });
+  eq(r.added, "b1", "auto-id from an empty file");
+  const src = readFileSync(bPath, "utf8");
+  ok(/items:\n  - id: b1/.test(src), "block style from birth (not flow)");
+  ok(readFileSync(join(root, "docs", "SLICES.md"), "utf8").includes("**Backlog:** 1 open item(s)"),
+    "backlog mutation refreshes the SLICES.md open-count pointer");
+  rmSync(root, { recursive: true, force: true });
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
