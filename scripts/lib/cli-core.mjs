@@ -5,7 +5,7 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
 export const REL = ["docs", "roadmap", "roadmap.yaml"];
-const MAP = { plan: "scheduler.mjs", render: "render.mjs", fan: "fanout.mjs", fanout: "fanout.mjs", validate: "validate.mjs", show: "show.mjs", cleanup: "cleanup.mjs", wizard: "wizard.mjs", go: "wizard.mjs", mcp: "mcp.mjs", watch: "watch-prs.mjs", set: "set.mjs" };
+const MAP = { plan: "scheduler.mjs", render: "render.mjs", fan: "fanout.mjs", fanout: "fanout.mjs", validate: "validate.mjs", show: "show.mjs", cleanup: "cleanup.mjs", wizard: "wizard.mjs", go: "wizard.mjs", mcp: "mcp.mjs", watch: "watch-prs.mjs", set: "set.mjs", backlog: "backlog.mjs", grab: "grab.mjs", promote: "promote.mjs", next: "next.mjs" };
 const NOT_YET = { sync: "P4", init: "P4" };
 
 // Walk up from `start` to the first dir containing docs/roadmap/roadmap.yaml; null if none.

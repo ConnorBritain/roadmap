@@ -54,11 +54,23 @@ try {
     nudge = sync.reconcileNudge(sync.findUnrecordedMerges(g, mergedPrs(root)));
   } catch { /* gh or sync-core unavailable — skip the nudge */ }
 
-  if (!ready.length && !onHuman.length && !nudge) emit("");
+  // Backlog open-count (guarded: absent/unparseable backlog → silent).
+  let backlogNote = "";
+  try {
+    if (existsSync(join(root, "docs", "roadmap", "backlog.yaml"))) {
+      const store = await import(new URL("../scripts/lib/store.mjs", import.meta.url));
+      const bl = await import(new URL("../scripts/lib/backlog-core.mjs", import.meta.url));
+      const n = bl.openCount(store.loadBacklog(root));
+      if (n > 0) backlogNote = ` Backlog: ${n} open (see /backlog or docs/BACKLOG.md).`;
+    }
+  } catch { /* skip */ }
+
+  if (!ready.length && !onHuman.length && !nudge && !backlogNote) emit("");
 
   let ctx = `roadmap (${(g.pis || []).length} PIs): ready now (cap ${cap}) — ${ready.join(", ") || "none"}.`;
   if (onHuman.length) ctx += ` Held on a human: ${onHuman.join(", ")}.`;
   if (nudge) ctx += ` ⟳ ${nudge}`;
+  ctx += backlogNote;
   ctx += ` Use /slice <name> to orient, /fanout to launch a wave, or 'roadmap plan' for the full wave map.`;
   emit(ctx);
 } catch {

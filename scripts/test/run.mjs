@@ -22,6 +22,10 @@ import {
 } from "../lib/execution.mjs";
 import { renderMarkdown } from "../lib/render-core.mjs";
 import { comparePriority, validatePriority, tierBadge, TIERS } from "../lib/priority.mjs";
+import {
+  validateBacklog, addItem, setItemFields, validateBacklogDocOrThrow, sortByPriority,
+  openCount, renderBacklogMarkdown, backlogItemToNode, pickNext, BACKLOG_TOOLS, readBacklogList,
+} from "../lib/backlog-core.mjs";
 import { validateGraph } from "../lib/validate-core.mjs";
 import { parseDocument } from "yaml";
 import { join, resolve } from "node:path";
@@ -953,6 +957,119 @@ test("parseAssignments splits on the first '=', marks @file, and passes null thr
   eq(b, { field: "prompt", fromFile: "notes.md" }, "@path marks read-from-file");
   eq(c, { field: "track", raw: "null" }, "null passes through raw (YAML.parse → delete)");
   throws(() => parseAssignments(["notanassignment"]), "expected field=value", "missing '=' rejected");
+});
+
+// ── backlog: validation + mutations ──────────────────────────────────────────
+// WHY: a duplicate id makes grab/promote act on the wrong item; a typo'd kind/status silently
+// buckets work out of the open view. Both must be hard errors before write.
+test("validateBacklog rejects duplicate ids and bad kind/status; a full valid item passes", () => {
+  const good = { meta: { schema_version: 1 }, items: [
+    { id: "fix-x", title: "Fix X", kind: "bug", status: "open",
+      priority: { tier: "P1", weight: 70, reason: "breaks fanout" },
+      source: { slice: "auth-sessions", date: "2026-07-06" }, refs: ["auth-sessions"],
+      touches: ["src/x.ts"], est_sessions: 0.5, gate: "default", prompt: "repro then fix" },
+  ]};
+  eq(validateBacklog(good).errors, [], "full item validates clean");
+  ok(validateBacklog({ meta: { schema_version: 1 }, items: [
+    { id: "a", title: "A", kind: "bug", status: "open" }, { id: "a", title: "B", kind: "bug", status: "open" },
+  ]}).errors[0].includes("duplicate"), "duplicate id rejected");
+  ok(validateBacklog({ meta: { schema_version: 1 }, items: [{ id: "a", title: "A", kind: "task", status: "open" }] })
+    .errors[0].includes("kind"), "bad kind rejected");
+  ok(validateBacklog({ meta: { schema_version: 1 }, items: [{ id: "a", title: "A", kind: "bug", status: "started" }] })
+    .errors[0].includes("status"), "bad status rejected");
+  ok(validateBacklog({ meta: {}, items: [] }).errors[0].includes("schema_version"), "missing schema_version rejected");
+  const w = validateBacklog({ meta: { schema_version: 1 }, items: [{ id: "a", title: "A", kind: "bug", status: "promoted" }] });
+  ok(w.warnings[0].includes("promoted_to"), "promoted without back-link warns");
+});
+
+// WHY: auto-ids must never collide with existing captures (a reused id silently merges two
+// items' histories), and comment preservation is the whole reason mutations use the Document API.
+test("addItem auto-generates the next bN id and preserves comments; setItemFields honors the allow-list", () => {
+  const y = `meta:\n  schema_version: 1\nitems:\n  # keep this comment\n  - { id: b3, title: Old, kind: chore, status: open }\n`;
+  const doc = parseDocument(y);
+  const r = addItem(doc, { title: "New thing", kind: "bug" });
+  eq(r.added, "b4", "next free bN after b3");
+  validateBacklogDocOrThrow(doc);
+  ok(doc.toString().includes("# keep this comment"), "comment survives the edit");
+  throws(() => addItem(doc, { title: "dup", id: "b3" }), "already exists", "explicit dup id rejected");
+  const s = setItemFields(doc, { id: "b4", fields: { status: "in_progress", priority: { tier: "P0" }, prompt: "go" } });
+  eq(s.fields, ["status", "priority", "prompt"], "allowed fields set");
+  throws(() => setItemFields(doc, { id: "b4", fields: { id: "sneaky" } }), "not settable", "id is immutable");
+  setItemFields(doc, { id: "b4", fields: { status: "nope" } });
+  throws(() => validateBacklogDocOrThrow(doc), "status", "pre-write gate catches a bad status");
+});
+
+// WHY: BACKLOG.md is the human triage view — items must group by tier with untriaged last,
+// or a P0 buried under untriaged noise never gets picked up.
+test("renderBacklogMarkdown groups open items by tier (untriaged last) and lists closed/promoted separately", () => {
+  const md = renderBacklogMarkdown({ meta: { schema_version: 1 }, items: [
+    { id: "n1", title: "No tier", kind: "idea", status: "open" },
+    { id: "p0", title: "Urgent", kind: "urgent", status: "open", priority: { tier: "P0", weight: 90, reason: "prod" } },
+    { id: "p2", title: "Later", kind: "chore", status: "open", priority: { tier: "P2" } },
+    { id: "pr", title: "Moved", kind: "followup", status: "promoted", promoted_to: "auth/s9" },
+    { id: "dn", title: "Done", kind: "bug", status: "done", prs: ["#12"], completed_on: "2026-07-01" },
+  ]});
+  const iP0 = md.indexOf("## P0"), iP2 = md.indexOf("## P2"), iUn = md.indexOf("## Untriaged");
+  ok(iP0 >= 0 && iP2 > iP0 && iUn > iP2, "tier sections in order, untriaged last");
+  ok(md.includes("3 open item(s)"), "open count in the header");
+  ok(md.includes("`auth/s9`"), "promoted back-link shown");
+  ok(md.includes("| `dn` | Done | done | #12 | 2026-07-01 |"), "closed row with PR + date");
+  ok(md.includes("_(prod)_"), "priority reason surfaces in the row");
+});
+
+// WHY: grab reuses the fanout machinery via this adapter — a wrong branch/worktree shape
+// would collide a backlog session with a sprint worktree or break synthesizeBrief.
+test("backlogItemToNode yields branch backlog/<id>, worktree <root>/backlog-<id>, and a brief-ready node", () => {
+  const item = { id: "fix-y", title: "Fix Y", kind: "bug", status: "open", touches: ["src/y.ts"],
+    prompt: "do it carefully", gate: "default", source: { note: "start from the failing test" } };
+  const node = backlogItemToNode(item);
+  const g = { meta: { schema_version: 1, program: "T", default_gate: "npm test", worktree_root: "/wt" } };
+  eq(branchFor(node, g), "backlog/fix-y", "branch under the backlog/ namespace");
+  eq(worktreeFor(node, g), "/wt/backlog-fix-y", "worktree beside the sprint worktrees");
+  const brief = synthesizeBrief(node, g);
+  ok(brief.includes("## 0.5 Author instructions (verbatim)\ndo it carefully"), "item prompt embedded");
+  ok(brief.includes("npm test"), "default gate inherited from the roadmap");
+  ok(brief.includes("start from the failing test"), "source note becomes the next action");
+});
+
+// WHY: `roadmap next` is the pickup entry point — it must pick the highest priority across
+// BOTH trackers, let the roadmap win ties (planned work outranks erratic work), and return
+// null (not crash) when there's nothing to do.
+test("pickNext picks the highest-priority ready thing across roadmap + backlog; roadmap wins ties", () => {
+  const g = { pis: [{ id: "a", title: "A", status: "active", sprints: [
+    sp("s1", { invoke: "planned", priority: { tier: "P1" } }),
+  ]}]};
+  const backlog = (tier) => ({ meta: { schema_version: 1 }, items: [
+    { id: "err", title: "Erratic", kind: "urgent", status: "open", ...(tier ? { priority: { tier } } : {}) },
+  ]});
+  eq(pickNext(g, backlog("P0")).type, "backlog", "P0 backlog beats P1 slice");
+  eq(pickNext(g, backlog("P1")).type, "slice", "tie → roadmap wins");
+  eq(pickNext(g, backlog(null)).type, "slice", "untriaged backlog loses to a prioritized slice");
+  eq(pickNext(g, null).type, "slice", "no backlog file → roadmap only");
+  eq(pickNext({ pis: [] }, backlog("P2")).type, "backlog", "empty roadmap → backlog");
+  eq(pickNext({ pis: [] }, null), null, "nothing anywhere → null");
+});
+
+// WHY: equal-priority items must keep capture order (stable sort) or triage lists reshuffle
+// on every render; and backlog_list must not explode when no backlog.yaml exists yet.
+test("sortByPriority is stable for equal priorities; readBacklogList handles a missing backlog", () => {
+  const items = [{ id: "first" }, { id: "second" }, { id: "third", priority: { tier: "P0" } }];
+  eq(sortByPriority(items).map((i) => i.id), ["third", "first", "second"], "P0 first, capture order preserved");
+  ok(readBacklogList(null).note.includes("backlog_add"), "missing file → friendly note, not a throw");
+  const l = readBacklogList({ meta: { schema_version: 1 }, items: [
+    { id: "a", title: "A", kind: "bug", status: "open" }, { id: "b", title: "B", kind: "bug", status: "done" },
+  ]});
+  eq(l.items.length, 1, "default list = open only");
+  eq(openCount({ items: [{ status: "open" }, { status: "in_progress" }, { status: "done" }] }), 2, "open = open + in_progress");
+});
+
+// WHY: the SLICES.md pointer is how a roadmap reader discovers the backlog exists — but a
+// backlog-free repo must render byte-identically (the render backward-compat guarantee).
+test("renderMarkdown emits the backlog pointer only when opts.backlog is given", () => {
+  const g = { meta: { schema_version: 1, program: "T" }, pis: [{ id: "a", title: "A", status: "active", sprints: [
+    { id: "s1", title: "S", status: "active", invoke: "x", what: "w" }] }] };
+  ok(renderMarkdown(g, { backlog: { open: 4 } }).includes("**Backlog:** 4 open item(s)"), "pointer with count");
+  ok(!renderMarkdown(g).includes("**Backlog:**"), "no opts → no pointer line");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

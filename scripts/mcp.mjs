@@ -10,8 +10,9 @@
 import { createInterface } from "node:readline";
 import { findRepoRoot, REL } from "./lib/cli-core.mjs";
 import { loadGraph } from "./lib/graph.mjs";
-import { mutateRoadmap, roadmapPaths } from "./lib/store.mjs";
+import { mutateRoadmap, mutateBacklog, loadBacklog, roadmapPaths } from "./lib/store.mjs";
 import { TOOLS, READ_HANDLERS, MUTATION_HANDLERS } from "./lib/mcp-core.mjs";
+import { BACKLOG_TOOLS, BACKLOG_READ_HANDLERS, BACKLOG_MUTATION_HANDLERS } from "./lib/backlog-core.mjs";
 
 const PROTOCOL_VERSION = "2024-11-05";
 const SERVER_INFO = { name: "graph", version: "0.2.0" };
@@ -31,6 +32,13 @@ function callTool(name, args) {
     // mutateRoadmap = read → mutate → validate → write → re-render; a throw leaves files untouched.
     return mutateRoadmap(repoRoot(), (doc) => MUTATION_HANDLERS[name](doc, args || {}));
   }
+  if (BACKLOG_READ_HANDLERS[name]) {
+    return BACKLOG_READ_HANDLERS[name](loadBacklog(repoRoot()), args || {});
+  }
+  if (BACKLOG_MUTATION_HANDLERS[name]) {
+    return mutateBacklog(repoRoot(), (doc) => BACKLOG_MUTATION_HANDLERS[name](doc, args || {}),
+      { createIfMissing: name === "backlog_add" });
+  }
   throw new Error(`unknown tool "${name}"`);
 }
 
@@ -44,7 +52,7 @@ function handle(msg) {
   if (method === "notifications/initialized" || method === "initialized") return; // notification: no reply
   if (method === "ping") return out({ jsonrpc: "2.0", id, result: {} });
   if (method === "tools/list") {
-    return out({ jsonrpc: "2.0", id, result: { tools: TOOLS } });
+    return out({ jsonrpc: "2.0", id, result: { tools: [...TOOLS, ...BACKLOG_TOOLS] } });
   }
   if (method === "tools/call") {
     const name = params && params.name;

@@ -33,6 +33,12 @@ export function renderMarkdown(graph, opts = {}) {
   w("");
   w("Use `/slice <name>` to orient on a menu entry; `/fanout` reads the same graph to launch concurrent sessions; `/sync` re-renders this file from the YAML after merges. `/pickup` resumes a specific in-progress session.");
   w("");
+  // Backlog pointer — emitted only when the repo has a backlog (opts.backlog), so a
+  // backlog-free repo renders byte-identically.
+  if (opts.backlog) {
+    w(`> **Backlog:** ${opts.backlog.open} open item(s) — erratic/follow-up work lives in [\`docs/BACKLOG.md\`](BACKLOG.md); capture with \`/backlog\` or \`roadmap backlog add\`, launch with \`roadmap grab <id>\`.`);
+    w("");
+  }
 
   // ---- cross-PI wave map ----------------------------------------------------
   w(`## Ready now — wave map (cap ${cap})`);

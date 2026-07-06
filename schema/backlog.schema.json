@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ConnorBritain/roadmap/schema/backlog.schema.json",
+  "title": "roadmap backlog.yaml",
+  "description": "The erratic-work tracker beside the roadmap: follow-ups, bugs, chores, urgent items that surface outside the planned feature/value work. Items are directly launchable (roadmap grab <id>) or promotable into a roadmap sprint (roadmap promote <id> --pi <pi>). BACKLOG.md is generated from this file.",
+  "type": "object",
+  "required": ["meta", "items"],
+  "additionalProperties": false,
+  "properties": {
+    "meta": {
+      "type": "object",
+      "required": ["schema_version"],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": { "const": 1 }
+      }
+    },
+    "items": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/item" }
+    }
+  },
+  "$defs": {
+    "item": {
+      "type": "object",
+      "required": ["id", "title", "kind", "status"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$", "description": "Stable item slug (auto b1..bN when omitted at add). Becomes the sprint invoke key on promote and the grab branch backlog/<id>." },
+        "title": { "type": "string" },
+        "kind": { "enum": ["bug", "chore", "followup", "urgent", "idea"] },
+        "status": { "enum": ["open", "in_progress", "promoted", "done", "dropped"] },
+        "priority": { "$ref": "roadmap.schema.json#/$defs/priority" },
+        "source": {
+          "type": "object", "additionalProperties": false,
+          "description": "Where this surfaced: the slice that spawned it, when, and a note",
+          "properties": {
+            "slice": { "type": "string", "description": "Invoke key of the slice this fell out of" },
+            "date": { "type": "string", "description": "ISO date captured" },
+            "note": { "type": "string" }
+          }
+        },
+        "refs": { "type": "array", "items": { "type": "string" }, "description": "Related roadmap slice invoke keys" },
+        "touches": { "type": "array", "items": { "type": "string" }, "description": "Files this item writes (grab uses it for the brief scope)" },
+        "est_sessions": { "type": "number", "minimum": 0 },
+        "gate": { "type": "string", "description": "'default' inherits the roadmap's meta.default_gate" },
+        "prompt": { "type": "string", "description": "Author-stashed pickup instructions, embedded verbatim in the grab kickoff brief" },
+        "prs": { "type": "array", "items": { "type": "string" } },
+        "completed_on": { "type": "string", "description": "ISO date the item closed (done/dropped)" },
+        "promoted_to": { "type": "string", "description": "pi-id/sprint-id nodeKey written by promote; the back-link to the roadmap" }
+      }
+    }
+  }
+}

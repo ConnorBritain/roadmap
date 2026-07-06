@@ -122,7 +122,9 @@ export function addPi(doc, args) {
   for (const k of ["theme", "program_label", "estimate_weeks", "exit_criteria"]) if (args[k] != null) node[k] = args[k];
   if (Array.isArray(args.deps)) node.deps = args.deps;
   node.sprints = [];
-  doc.addIn(["pis"], node);
+  // createNode: addIn stores a plain object un-wrapped, which breaks later AST reads (.get)
+  // on the same Document (e.g. add_pi then add_sprint in one batch).
+  doc.addIn(["pis"], doc.createNode(node));
   return { added: "pi", id: args.id };
 }
 
@@ -134,8 +136,8 @@ export function addSprint(doc, args) {
   for (const k of ["what", "est_sessions", "gate", "weight", "gated_on", "resume_action", "prompt", "priority"]) if (args[k] != null) node[k] = args[k];
   for (const k of ["deps", "touches", "owns", "read_order"]) if (Array.isArray(args[k])) node[k] = args[k];
   const piMap = pisSeq(doc).items[pi];
-  if (!piMap.has("sprints") || !piMap.get("sprints")) doc.setIn(["pis", pi, "sprints"], [node]);
-  else doc.addIn(["pis", pi, "sprints"], node);
+  if (!piMap.has("sprints") || !piMap.get("sprints")) doc.setIn(["pis", pi, "sprints"], doc.createNode([node]));
+  else doc.addIn(["pis", pi, "sprints"], doc.createNode(node));
   return { added: "sprint", pi: args.pi, invoke: args.invoke };
 }
 
