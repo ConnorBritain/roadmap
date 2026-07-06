@@ -1,4 +1,4 @@
-// slice-roadmap — MCP brain (PURE). Tool registry, read handlers, YAML-Document mutation
+// roadmap — MCP brain (PURE). Tool registry, read handlers, YAML-Document mutation
 // functions, and the pre-write integrity gate. No IO: the server (mcp.mjs) does the fs reads,
 // writes, and JSON-RPC. Mutations operate on a `yaml` Document (parseDocument) so comments and
 // formatting in roadmap.yaml survive the edit; reads operate on a plain graph object.
@@ -7,6 +7,7 @@ import { flatten, detectCycle, STATUS } from "./graph.mjs";
 import { buildPlan } from "./plan.mjs";
 import { validateGraph } from "./validate-core.mjs";
 import { normalizeExecution, suggestedConcurrency, validateExecution } from "./execution.mjs";
+import { validatePriority } from "./priority.mjs";
 
 const STATUSES = Object.keys(STATUS);
 const VALID_STATUS = new Set(STATUSES);
@@ -17,7 +18,7 @@ const DONE = new Set(STATUSES.filter((s) => STATUS[s].done));
 const SETTABLE = new Set([
   "title", "what", "status", "status_label", "est_sessions", "weight",
   "deps", "touches", "owns", "gate", "gated_on", "read_order", "resume_action",
-  "prs", "completed_on", "optional", "execution", "track",
+  "prs", "completed_on", "optional", "execution", "track", "priority", "prompt", "kickoff_brief",
 ]);
 
 // ── tool registry ─────────────────────────────────────────────────────────────
@@ -42,7 +43,9 @@ export const TOOLS = [
       deps: { type: "array", items: { type: "string" } }, touches: { type: "array", items: { type: "string" } },
       owns: { type: "array", items: { type: "string" } }, gate: { type: "string" },
       weight: { enum: ["heavy", "medium", "light"] }, gated_on: { type: "string" },
-      read_order: { type: "array", items: { type: "string" } }, resume_action: { type: "string" } } } },
+      read_order: { type: "array", items: { type: "string" } }, resume_action: { type: "string" },
+      prompt: { type: "string" },
+      priority: { type: "object", properties: { tier: { enum: ["P0", "P1", "P2", "P3"] }, weight: { type: "number", minimum: 0, maximum: 100 }, reason: { type: "string" } } } } } },
   { name: "set_status", description: "Set a slice's status (by invoke), optionally recording PRs + completed_on. Re-renders.",
     inputSchema: { type: "object", required: ["invoke", "status"], properties: {
       invoke: { type: "string" }, status: { enum: STATUSES },
@@ -50,6 +53,10 @@ export const TOOLS = [
   { name: "set_fields", description: "Set one or more allowed fields on a slice (by invoke). null value deletes a field. Re-renders.",
     inputSchema: { type: "object", required: ["invoke", "fields"], properties: {
       invoke: { type: "string" }, fields: { type: "object" } } } },
+  { name: "bulk_set", description: "Set allowed fields on MANY slices in one atomic edit (one validate, one write, one re-render — all-or-nothing). Each update mirrors set_fields: { invoke, fields }, null value deletes a field.",
+    inputSchema: { type: "object", required: ["updates"], properties: {
+      updates: { type: "array", minItems: 1, items: { type: "object", required: ["invoke", "fields"], properties: {
+        invoke: { type: "string" }, fields: { type: "object" } } } } } } },
   { name: "prune", description: "Remove a slice (by invoke), a whole PI (by pi id), or every complete slice (scope='completed'). Re-renders SLICES.md. Validated before writing: the removal is rejected with no change made if it would orphan a dependency, duplicate an invoke key, or otherwise break the graph.",
     inputSchema: { type: "object", properties: {
       invoke: { type: "string" }, pi: { type: "string" }, scope: { enum: ["completed"] } } } },
@@ -74,6 +81,7 @@ export function readShow(graph, args) {
     gatedOn: n.gatedOn, readOrder: n.readOrder, resumeAction: n.resumeAction,
     estSessions: n.estSessions, prs: n.prs,
     track: n.track, execution: normalizeExecution(n.execution), suggestedConcurrency: suggestedConcurrency(n),
+    priority: n.priority, prompt: n.prompt,
   };
 }
 export function readValidate(graph) {
@@ -114,7 +122,9 @@ export function addPi(doc, args) {
   for (const k of ["theme", "program_label", "estimate_weeks", "exit_criteria"]) if (args[k] != null) node[k] = args[k];
   if (Array.isArray(args.deps)) node.deps = args.deps;
   node.sprints = [];
-  doc.addIn(["pis"], node);
+  // createNode: addIn stores a plain object un-wrapped, which breaks later AST reads (.get)
+  // on the same Document (e.g. add_pi then add_sprint in one batch).
+  doc.addIn(["pis"], doc.createNode(node));
   return { added: "pi", id: args.id };
 }
 
@@ -123,11 +133,11 @@ export function addSprint(doc, args) {
   const pi = piIndexById(doc, args.pi);
   if (pi < 0) throw new Error(`no PI "${args.pi}"`);
   const node = { id: args.id, title: args.title, status: args.status || "scheduled", invoke: args.invoke };
-  for (const k of ["what", "est_sessions", "gate", "weight", "gated_on", "resume_action"]) if (args[k] != null) node[k] = args[k];
+  for (const k of ["what", "est_sessions", "gate", "weight", "gated_on", "resume_action", "prompt", "priority"]) if (args[k] != null) node[k] = args[k];
   for (const k of ["deps", "touches", "owns", "read_order"]) if (Array.isArray(args[k])) node[k] = args[k];
   const piMap = pisSeq(doc).items[pi];
-  if (!piMap.has("sprints") || !piMap.get("sprints")) doc.setIn(["pis", pi, "sprints"], [node]);
-  else doc.addIn(["pis", pi, "sprints"], node);
+  if (!piMap.has("sprints") || !piMap.get("sprints")) doc.setIn(["pis", pi, "sprints"], doc.createNode([node]));
+  else doc.addIn(["pis", pi, "sprints"], doc.createNode(node));
   return { added: "sprint", pi: args.pi, invoke: args.invoke };
 }
 
@@ -156,6 +166,17 @@ export function setFields(doc, args) {
     changed.push(k);
   }
   return { updated: args.invoke, fields: changed };
+}
+
+// Atomicity is the caller's single write: every update mutates the same Document, one
+// validateDocOrThrow gates the write, so a bad field in update N leaves updates 1..N-1 unwritten.
+export function bulkSet(doc, args) {
+  if (!args || !Array.isArray(args.updates) || !args.updates.length) {
+    throw new Error("bulk_set requires updates: [{invoke, fields}, ...]");
+  }
+  const updated = [];
+  for (const u of args.updates) updated.push(setFields(doc, u).updated);
+  return { updated, count: updated.length };
 }
 
 export function prune(doc, args = {}) {
@@ -189,7 +210,7 @@ export function prune(doc, args = {}) {
   throw new Error("prune requires one of: invoke, pi, or scope='completed'");
 }
 
-export const MUTATION_HANDLERS = { add_pi: addPi, add_sprint: addSprint, set_status: setStatus, set_fields: setFields, prune };
+export const MUTATION_HANDLERS = { add_pi: addPi, add_sprint: addSprint, set_status: setStatus, set_fields: setFields, bulk_set: bulkSet, prune };
 
 // ── pre-write integrity gate ────────────────────────────────────────────────────
 // Throws if the edited Document would corrupt the roadmap (duplicate invoke, unresolved
@@ -217,6 +238,8 @@ export function validateDocOrThrow(doc) {
     if (!VALID_STATUS.has(n.status)) throw new Error(`invalid status "${n.status}" on slice "${n.invoke}"`);
     const { errors } = validateExecution(n.execution, n.invoke);
     if (errors.length) throw new Error(`edit would corrupt the roadmap: ${errors[0]}`);
+    const pri = validatePriority(n.priority, n.invoke);
+    if (pri.errors.length) throw new Error(`edit would corrupt the roadmap: ${pri.errors[0]}`);
   }
   return graph;
 }

@@ -1,5 +1,5 @@
 ---
-name: slice-fanout
+name: fanout
 description: Compute the ready wave from the roadmap graph and launch each slice concurrently in its own git worktree (tmux lead + slice panes). Recommends a concurrency cap from a CPU/RAM + repo-purpose eval. Honors each slice's execution-strategy hint. Use to parallelize independent slices.
 argument-hint: "[--wave N] [--cap N] [--track A] [--dry] [--out file] [--autonomous]"
 allowed-tools: Read, Bash(roadmap:*), Bash(roadmap fan:*), Bash(roadmap plan:*), Bash(node:*), Bash(git worktree:*), Bash(git fetch:*)

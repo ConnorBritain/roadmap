@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// slice-roadmap — fanout launcher.
+// roadmap — fanout launcher.
 // Computes the ready wave (auto-capped by the resource/purpose recommender unless
 // --cap is given) and launches each slice in its own git worktree via a terminal
 // adapter. Default terminal is tmux: a LEAD pane (your review/merge session) plus
@@ -18,9 +18,9 @@ import { spawn, spawnSync } from "node:child_process";
 import os from "node:os";
 import { join } from "node:path";
 import { loadGraph, flatten, computeWaves, readyNodes } from "./lib/graph.mjs";
-import { recommendConcurrency } from "./lib/recommend.mjs";
+import { recommendConcurrency, probeDisk } from "./lib/recommend.mjs";
 import { synthesizeBrief, branchFor, worktreeFor, launchPrompt, baseRefOf, remoteOf } from "./lib/brief.mjs";
-import { launchDecision } from "./lib/fanout-core.mjs";
+import { launchDecision, bashWorktreeLines, pwshWorktreeLines, diskBlockLines } from "./lib/fanout-core.mjs";
 import { terminalChoices } from "./lib/wizard-core.mjs";
 import { filterByTrack } from "./lib/execution.mjs";
 
@@ -52,7 +52,13 @@ const term = val("--term", (graph.meta && graph.meta.terminal) || terminalChoice
 const workerMode = val("--worker-mode", (graph.meta && graph.meta.worker_mode) || "plan");
 
 const ready = readyNodes(model);
-const rec = recommendConcurrency(ready, graph, { reviewCeiling: Number(val("--review-ceiling", 5)) });
+const rec = recommendConcurrency(ready, graph, { reviewCeiling: Number(val("--review-ceiling", 5)), disk: probeDisk(graph) });
+// Disk hard-block: auto-dialing handles the soft path (recommended >= 1), but when even ONE
+// worktree won't fit, launching would fail mid-checkout — refuse before creating anything.
+if (rec.disk && rec.disk.cap < 1) {
+  diskBlockLines(rec.disk).forEach((l) => console.error(l));
+  process.exit(1);
+}
 const cap = has("--cap") ? Number(val("--cap", rec.recommended)) : rec.recommended;
 
 let waves;
@@ -76,7 +82,7 @@ function claudeCmd(node) {
     ? `claude -p "${prompt}" --permission-mode acceptEdits`   // NOTE: confirm flag at build/test time
     : `claude --permission-mode ${workerMode} "${prompt}"`;
   const withLane = lane === "api"
-    ? `ANTHROPIC_API_KEY="$SLICE_ROADMAP_API_KEY" ${base}`     // api overflow lane (rarely used)
+    ? `ANTHROPIC_API_KEY="$ROADMAP_API_KEY" ${base}`     // api overflow lane (rarely used)
     : base;                                                    // max: inherit the logged-in subscription
   return withLane;
 }
@@ -85,20 +91,16 @@ const repoRoot = process.cwd();
 
 // ── adapters ─────────────────────────────────────────────────────────────────
 function tmuxScript() {
-  const session = "slice-roadmap";
+  const session = "roadmap";
   const L = [];
   L.push(`#!/usr/bin/env bash`);
-  L.push(`# slice-roadmap fanout — wave ${waveIdx}, cap ${cap}, ${wave.length} slice(s), terminal=tmux, lane=${lane}, ${autonomous ? "autonomous" : "interactive"}`);
+  L.push(`# roadmap fanout — wave ${waveIdx}, cap ${cap}, ${wave.length} slice(s), terminal=tmux, lane=${lane}, ${autonomous ? "autonomous" : "interactive"}`);
   L.push(`set -euo pipefail`);
   L.push(`git fetch ${remoteOf(graph)} --quiet`);
   L.push(``);
   L.push(`# 1) one worktree + uncommitted kickoff brief per slice`);
   for (const n of wave) {
-    const wt = worktreeFor(n, graph), br = branchFor(n, graph);
-    L.push(`git worktree add "${wt}" -b "${br}" ${baseRefOf(graph)} 2>/dev/null || echo "worktree ${wt} exists, reusing"`);
-    L.push(`cat > "${wt}/.kickoff.md" <<'KICKOFF_EOF'`);
-    L.push(synthesizeBrief(n, graph).trimEnd());
-    L.push(`KICKOFF_EOF`);
+    L.push(...bashWorktreeLines(worktreeFor(n, graph), branchFor(n, graph), baseRefOf(graph), synthesizeBrief(n, graph)));
   }
   L.push(``);
   L.push(`# 2) tmux: lead pane (review/merge) + one pane per slice`);
@@ -156,18 +158,14 @@ function claudeCmdPwsh(node) {
 // then one `wt` window with a LEAD tab + one tab per slice (each cd'd into its worktree).
 function wtScript() {
   const L = [];
-  L.push(`# slice-roadmap fanout — wave ${waveIdx}, cap ${cap}, ${wave.length} slice(s), terminal=wt, lane=${lane}, ${autonomous ? "autonomous" : "interactive"}`);
+  L.push(`# roadmap fanout — wave ${waveIdx}, cap ${cap}, ${wave.length} slice(s), terminal=wt, lane=${lane}, ${autonomous ? "autonomous" : "interactive"}`);
   if (lane === "api") L.push(`# note: --lane api is not yet wired for the wt adapter; using the logged-in (max) session.`);
   L.push(`$ErrorActionPreference = 'Continue'`);   // git writes progress to stderr; 'Stop' would abort on it
   L.push(`git fetch ${remoteOf(graph)} --quiet`);
   L.push(``);
   L.push(`# 1) one worktree + uncommitted kickoff brief per slice`);
   for (const n of wave) {
-    const wt = worktreeFor(n, graph), br = branchFor(n, graph);
-    L.push(`git worktree add "${wt}" -b "${br}" ${baseRefOf(graph)} 2>$null; if ($LASTEXITCODE -ne 0) { Write-Host "worktree ${wt} exists, reusing" }`);
-    L.push(`Set-Content -LiteralPath "${wt}/.kickoff.md" -Encoding utf8 -Value @'`);
-    L.push(synthesizeBrief(n, graph).trimEnd());
-    L.push(`'@`);
+    L.push(...pwshWorktreeLines(worktreeFor(n, graph), branchFor(n, graph), baseRefOf(graph), synthesizeBrief(n, graph)));
   }
   L.push(``);
   L.push(`# 2) Windows Terminal: a LEAD tab + one tab per slice`);
@@ -208,7 +206,7 @@ function tomlLeaf(id, dir, cmd, focused) {
 }
 function warpTabConfigToml() {
   const ids = wave.map((_, i) => `s${i}`);
-  const L = [`name = "slice-roadmap-wave${waveIdx}"`, `color = "blue"`, ``];
+  const L = [`name = "roadmap-wave${waveIdx}"`, `color = "blue"`, ``];
   // lead on the left; slices stacked on the right (one pane each)
   L.push(tomlSplit("root", "horizontal", wave.length === 1 ? ["lead", "s0"] : ["lead", "slices"]));
   const leadCmd = leadClaude ? `claude --permission-mode ${workerMode} '${LEAD_PROMPT}'` : `echo 'LEAD - review + merge each slice PR; workers do NOT merge'`;
@@ -218,19 +216,15 @@ function warpTabConfigToml() {
   return L.join("\n");
 }
 function warpScript() {
-  const stem = `slice-roadmap-wave${waveIdx}`;
+  const stem = `roadmap-wave${waveIdx}`;
   const L = [];
-  L.push(`# slice-roadmap fanout — wave ${waveIdx}, terminal=warp (Tab Config + warp://tab_config deeplink)`);
+  L.push(`# roadmap fanout — wave ${waveIdx}, terminal=warp (Tab Config + warp://tab_config deeplink)`);
   L.push(`$ErrorActionPreference = 'Continue'`);   // git writes progress to stderr; 'Stop' would abort on it
   L.push(`git fetch ${remoteOf(graph)} --quiet`);
   L.push(``);
   L.push(`# 1) one worktree + uncommitted kickoff brief per slice`);
   for (const n of wave) {
-    const wt = worktreeFor(n, graph), br = branchFor(n, graph);
-    L.push(`git worktree add "${wt}" -b "${br}" ${baseRefOf(graph)} 2>$null; if ($LASTEXITCODE -ne 0) { Write-Host "worktree ${wt} exists, reusing" }`);
-    L.push(`Set-Content -LiteralPath "${wt}/.kickoff.md" -Encoding utf8 -Value @'`);
-    L.push(synthesizeBrief(n, graph).trimEnd());
-    L.push(`'@`);
+    L.push(...pwshWorktreeLines(worktreeFor(n, graph), branchFor(n, graph), baseRefOf(graph), synthesizeBrief(n, graph)));
   }
   L.push(``);
   L.push(`# 2) write the Warp Tab Config, then open it via the warp:// deeplink`);
@@ -300,7 +294,7 @@ if (term === "tmux" || term === "background") {
     console.error(`  install Windows Terminal, or 'roadmap fan --out wave${waveIdx}.ps1' and run it yourself.`);
     process.exit(0);
   }
-  const tmp = join(os.tmpdir(), `slice-roadmap-wave${waveIdx}.ps1`);
+  const tmp = join(os.tmpdir(), `roadmap-wave${waveIdx}.ps1`);
   writeFileSync(tmp, withBom(artifact), "utf8");
   const p = spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", tmp], { stdio: "inherit" });
   p.on("exit", (code) => process.exit(code ?? 0));

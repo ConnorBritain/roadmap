@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// roadmap — the slice-roadmap shell CLI.
+// roadmap — the roadmap shell CLI.
 // Dispatches `roadmap <command> [args]` from ANYWHERE inside a repo: it walks up from cwd
 // to find docs/roadmap/roadmap.yaml and runs the target script with cwd = that repo root,
 // so every relative default (--in, --out) just works. Pure logic lives in lib/cli-core.mjs.
@@ -11,7 +11,7 @@ import { route, classify, buildArgs, findRepoRoot, missingRoadmapHelp, expandSho
 
 const SCRIPTS = dirname(fileURLToPath(import.meta.url));
 
-const HELP = `roadmap — slice-roadmap CLI   (run from anywhere inside a repo with ${REL.join("/")})
+const HELP = `roadmap — roadmap CLI   (run from anywhere inside a repo with ${REL.join("/")})
 
 USAGE
   roadmap <command> [options]        bare 'roadmap' = interactive console (TTY) / plan (piped)
@@ -20,9 +20,14 @@ COMMANDS
   (no command)    interactive console — walk through terminal / wave / cap, then launch  (in a TTY)
   go              the same interactive console (force it when TTY detection is off)
   plan            recommended concurrency cap + execution waves
-  show <name>     one slice's detail (what / read-order / next / gate / branch)
-  render          regenerate docs/SLICES.md from the YAML
+  next            the single highest-priority ready thing across roadmap + backlog
+  show <name>     one slice's detail (what / priority / prompt / read-order / next / gate / branch)
+  set <name> f=v  edit a slice's fields (f=@file for multiline, f=null deletes)
+  render          regenerate docs/SLICES.md (+ docs/BACKLOG.md when a backlog exists)
   fan             launch a wave — a lead + one pane/tab per slice, each in its own worktree
+  backlog         erratic-work tracker: list | add "title" [-k kind --tier PN] | set <id> f=v
+  grab <id>       launch ONE backlog item in its own worktree + session
+  promote <id>    promote a backlog item into a roadmap sprint (--pi <pi> [--id sN])
   cleanup         prune fanout worktrees merged into the base branch + clean
   validate        structural + dependency + cycle checks
   mcp             run the MCP server (stdio); read + mutate tools over JSON-RPC

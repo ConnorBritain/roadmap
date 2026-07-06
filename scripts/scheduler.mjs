@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// slice-roadmap — wave scheduler CLI (print-only; spawns nothing).
+// roadmap — wave scheduler CLI (print-only; spawns nothing).
 // Builds the execution plan via lib/plan.mjs (recommended cap + waves) and prints it,
 // or emits it as JSON (consumed by fanout.mjs / adapters / the MCP read tools).
 //
@@ -14,6 +14,7 @@
 import { loadGraph } from "./lib/graph.mjs";
 import { buildPlan } from "./lib/plan.mjs";
 import { baseRefOf, remoteOf } from "./lib/brief.mjs";
+import { tierBadge } from "./lib/priority.mjs";
 
 const args = process.argv.slice(2);
 const val = (name, def) => {
@@ -57,7 +58,7 @@ if (!plan.waves.length) console.log("No agent-runnable slices right now.");
 plan.waves.forEach((w, i) => {
   const marker = i + 1 === detailWave ? " ◀ detail" : "";
   console.log(`Wave ${i + 1}${marker} — ${w.length} concurrent:`);
-  for (const n of w) console.log(`  • ${n.invoke}  (${n.weight}, ~${n.est_sessions ?? "?"} sess)  — ${n.what}`);
+  for (const n of w) console.log(`  • ${tierBadge(n.priority) ? `[${tierBadge(n.priority)}] ` : ""}${n.invoke}  (${n.weight}, ~${n.est_sessions ?? "?"} sess)  — ${n.what}`);
 });
 if (plan.held.onHuman.length) {
   console.log(`\nHeld on a human:`);

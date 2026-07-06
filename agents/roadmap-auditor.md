@@ -14,4 +14,4 @@ Check four things and report each with evidence (cite PRs / docs / paths):
 3. **Strategy ↔ execution gaps** — read the repo's strategy/north-star/business docs (see `meta.links` and obvious candidates). For every funded wedge / near-term commitment named there, check whether a slice exists. Report wedges with **no roadmap presence** or that are under-scoped, ranked by impact.
 4. **Graph hygiene** — unreachable deps, slices gated on a human with no `gated_on`, PIs with no exit criteria, `invoke` keys that drifted from references.
 
-Be skeptical and evidence-based: if something is genuinely covered/shipped, say so — only flag real gaps. End with a ranked, actionable list ("add/flip/scope these") the lead can hand to `/slice-sync` or `slice-scoper`. Do not fabricate PIs the strategy docs don't support.
+Be skeptical and evidence-based: if something is genuinely covered/shipped, say so — only flag real gaps. End with a ranked, actionable list ("add/flip/scope these") the lead can hand to `/sync` or `slice-scoper`. Do not fabricate PIs the strategy docs don't support.

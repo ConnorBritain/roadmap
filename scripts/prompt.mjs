@@ -1,4 +1,4 @@
-// slice-roadmap — zero-dependency terminal prompts for the bare-`roadmap` wizard.
+// roadmap — zero-dependency terminal prompts for the bare-`roadmap` wizard.
 // IO file (raw-mode stdin, stdout, process.exit on cancel) — lives at scripts/ (not lib/), like the
 // other side-effecting entrypoints. select() uses raw-mode arrow-key navigation when the TTY
 // supports it, and DEGRADES to a numbered text prompt otherwise (so it never hangs on a terminal

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// slice-roadmap — graph-brain test suite.
+// roadmap — graph-brain test suite.
 // Zero-dependency runner. Each test states WHY it matters (what breaks if it regresses),
 // because this brain schedules concurrent sessions that commit/push — a wrong wave is a
 // real-world collision, not a cosmetic bug. Run: node scripts/test/run.mjs  (or npm test).
@@ -7,12 +7,13 @@
 import {
   flatten, detectCycle, computeWaves, execPlan, sessionsRemaining, resolveGate, isDone, readyNodes,
 } from "../lib/graph.mjs";
-import { nodeWeight, recommendConcurrency } from "../lib/recommend.mjs";
+import { nodeWeight, recommendConcurrency, probeDisk } from "../lib/recommend.mjs";
 import { synthesizeBrief, branchFor, worktreeFor, baseRefOf, baseBranchOf, remoteOf, launchPrompt } from "../lib/brief.mjs";
 import { route, classify, buildArgs, findRepoRoot, missingRoadmapHelp, expandShort, REL } from "../lib/cli-core.mjs";
 import { launchDecision } from "../lib/fanout-core.mjs";
 import { terminalChoices, moveSelection, parseCap, buildFanArgs, autoOutName } from "../lib/wizard-core.mjs";
-import { TOOLS, addSprint, setStatus, setFields, prune, validateDocOrThrow, readValidate, serialize } from "../lib/mcp-core.mjs";
+import { TOOLS, addSprint, setStatus, setFields, bulkSet, prune, validateDocOrThrow, readValidate, serialize } from "../lib/mcp-core.mjs";
+import { parseAssignments } from "../lib/cli-core.mjs";
 import { diffPrStates, matchesRoadmapBranches, checksOf } from "../lib/pr-watch-core.mjs";
 import { findUnrecordedMerges, reconcileNudge, underParallelizedWarnings } from "../lib/sync-core.mjs";
 import {
@@ -20,9 +21,18 @@ import {
   teamSize, filterByTrack, dirClusters, EXEC_MODES, EXEC_ROLES,
 } from "../lib/execution.mjs";
 import { renderMarkdown } from "../lib/render-core.mjs";
+import { comparePriority, validatePriority, tierBadge, TIERS } from "../lib/priority.mjs";
+import {
+  validateBacklog, addItem, setItemFields, validateBacklogDocOrThrow, sortByPriority,
+  openCount, renderBacklogMarkdown, backlogItemToNode, pickNext, BACKLOG_TOOLS, readBacklogList,
+  performPromotion,
+} from "../lib/backlog-core.mjs";
 import { validateGraph } from "../lib/validate-core.mjs";
+import { mutateRoadmap, mutateBacklog, mutateBoth } from "../lib/store.mjs";
 import { parseDocument } from "yaml";
 import { join, resolve } from "node:path";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 let passed = 0, failed = 0;
 function test(name, fn) {
@@ -622,7 +632,7 @@ test("findUnrecordedMerges flags only open slices whose fanout branch merged", (
   const found = findUnrecordedMerges(g, merged);
   eq(found.map((u) => u.invoke), ["auth-sessions"], "only the open + merged slice (s1 done, s3 no PR)");
   eq(found[0].pr, 42, "carries the PR number");
-  ok(reconcileNudge(found).includes("auth-sessions") && /set_status|slice-sync/.test(reconcileNudge(found)), "nudge names the slice + the action");
+  ok(reconcileNudge(found).includes("auth-sessions") && /set_status|sync/.test(reconcileNudge(found)), "nudge names the slice + the action");
   eq(reconcileNudge([]), "", "silent when nothing is unrecorded");
 });
 
@@ -816,9 +826,9 @@ test("filterByTrack keeps only the matching lane and is a no-op without a track"
   eq(filterByTrack(wave, "Z").length, 0, "no match → empty");
 });
 
-// ── post-run guardrail: under-parallelization warning for /slice-sync ─────────
+// ── post-run guardrail: under-parallelization warning for /sync ─────────
 // WHY: the guardrail closes the loop — if a slice that declared a floor and touches disjoint dirs
-// actually ran with fewer live workers, /slice-sync must say so, or the under-parallelization the
+// actually ran with fewer live workers, /sync must say so, or the under-parallelization the
 // whole feature targets goes unnoticed run after run.
 test("underParallelizedWarnings flags a disjoint slice that ran below its floor, and stays quiet otherwise", () => {
   const g = { meta: {}, pis: [{ id: "a", title: "A", status: "active", sprints: [
@@ -836,6 +846,375 @@ test("underParallelizedWarnings flags a disjoint slice that ran below its floor,
   eq(warns.length, 1, "only the genuinely under-parallelized slice warns");
   ok(/slice wide ran 2 workers; min_concurrency 4 — under-parallelized/.test(warns[0]), "warning names the slice, the count, and the floor");
   eq(underParallelizedWarnings(g, []), [], "no telemetry → no warnings");
+});
+
+// ── priority: comparator + validation ────────────────────────────────────────
+// WHY: comparePriority returning non-zero for two absent priorities would reorder every
+// existing roadmap's waves — 0-when-both-absent IS the backward-compat guarantee.
+test("comparePriority orders tier before weight and returns 0 when both absent", () => {
+  eq(comparePriority(null, null), 0, "both absent → 0 (falls through to existing order)");
+  eq(comparePriority(undefined, null), 0, "undefined/null equivalent");
+  ok(comparePriority({ tier: "P0" }, { tier: "P1", weight: 100 }) < 0, "tier beats weight");
+  ok(comparePriority({ tier: "P1", weight: 80 }, { tier: "P1", weight: 20 }) < 0, "same tier: higher weight first");
+  ok(comparePriority({ tier: "P3" }, { weight: 100 }) < 0, "any tier beats tierless (absent tier ranks after P3)");
+  ok(comparePriority({ weight: 10 }, null) < 0, "weight-only still outranks nothing");
+  eq(tierBadge({ tier: "P2", weight: 5 }), "P2", "badge is the tier");
+  eq(tierBadge({ weight: 5 }), null, "no tier → no badge");
+  eq(TIERS.length, 4, "P0..P3");
+});
+
+// WHY: a typo'd tier or a weight of 500 must be a validation error, not a silently
+// mis-sorted roadmap; and an absent block must validate clean or every old roadmap breaks.
+test("validatePriority rejects bad tier / out-of-range weight; absent is clean", () => {
+  eq(validatePriority(null, "x").errors, [], "absent → clean");
+  eq(validatePriority({ tier: "P1", weight: 60, reason: "why" }, "x").errors, [], "full valid block");
+  ok(validatePriority({ tier: "p1" }, "x").errors[0].includes("tier"), "lowercase tier rejected");
+  ok(validatePriority({ weight: 500 }, "x").errors[0].includes("weight"), "weight > 100 rejected");
+  ok(validatePriority({ weight: -1 }, "x").errors[0].includes("weight"), "negative weight rejected");
+  ok(validatePriority("P0", "x").errors[0].includes("mapping"), "scalar rejected");
+});
+
+// WHY: priority exists to decide who gets a scarce cap slot. A P0 losing its slot to an
+// alphabetically-earlier P2 means the urgent work waits a wave; and an unprioritized graph
+// must produce today's identical waves or every existing roadmap reshuffles.
+test("computeWaves packs higher-priority slices first under the cap, unchanged when none set", () => {
+  const g = (withPriority) => ({ pis: [{ id: "a", title: "A", status: "active", sprints: [
+    sp("s1", { invoke: "aardvark", touches: ["f1"] }),
+    sp("s2", { invoke: "urgent", touches: ["f2"], ...(withPriority ? { priority: { tier: "P0" } } : {}) }),
+    sp("s3", { invoke: "middling", touches: ["f3"] }),
+  ]}]});
+  const withP = computeWaves(flatten(g(true)), 1);
+  eq(withP.waves[0].map((n) => n.invoke), ["urgent"], "P0 takes the single cap slot");
+  const withoutP = computeWaves(flatten(g(false)), 1);
+  eq(withoutP.waves[0].map((n) => n.invoke), ["aardvark"], "no priorities → existing (status/est/alpha) order");
+});
+
+// WHY: the tier badge is how a human scanning SLICES.md spots the urgent slice; and a
+// priority-free graph must render byte-identically or every existing SLICES.md churns.
+test("renderMarkdown shows tier badges only when priority is present", () => {
+  const g = (priority) => ({
+    meta: { schema_version: 1, program: "T" },
+    pis: [{ id: "a", title: "A", status: "active", sprints: [
+      { id: "s1", title: "Fan", status: "active", invoke: "fan-slice", what: "do it", est_sessions: 1,
+        ...(priority ? { priority } : {}) },
+    ] }],
+  });
+  const md = renderMarkdown(g({ tier: "P0", weight: 80, reason: "prod is down" }));
+  ok(md.includes("**[P0]** `/slice fan-slice`"), "wave-map badge");
+  ok(md.includes("· **P0** |"), "status-cell badge");
+  ok(md.includes("- **Priority:** P0 · weight 80 — prod is down"), "detail line with reason");
+  const plain = renderMarkdown(g(null));
+  ok(!plain.includes("P0") && !plain.includes("**Priority:**"), "no priority → no badge or line anywhere");
+});
+
+// WHY: the stashed prompt is the whole point of prompt-in-slice pickup — the launched session
+// must see the author's words unedited; and a prompt-free slice must produce a byte-identical
+// brief or every existing .kickoff.md changes under diff review.
+test("synthesizeBrief embeds prompt verbatim and is unchanged without it", () => {
+  const g = (prompt) => ({ meta: { schema_version: 1, program: "T", default_gate: "npm test" },
+    pis: [{ id: "a", title: "A", status: "active", sprints: [sp("s1", { status: "active", invoke: "x", ...(prompt ? { prompt } : {}) })] }] });
+  const withPrompt = synthesizeBrief(flatten(g("Fix the wtSafe escaping.\nAdd a run.mjs case.")).nodes[0], g("x"));
+  ok(/## 0\.5 Author instructions \(verbatim\)\nFix the wtSafe escaping\.\nAdd a run\.mjs case\./.test(withPrompt), "prompt carried verbatim in its own section");
+  ok(withPrompt.indexOf("## 0.5") < withPrompt.indexOf("## 1. Scope"), "prompt section precedes Scope");
+  const bare = synthesizeBrief(flatten(g(null)).nodes[0], g(null));
+  ok(!bare.includes("## 0.5"), "no prompt → no section (brief unchanged)");
+});
+
+// WHY: prompt/kickoff_brief/priority must be updatable through the same allow-listed mutation
+// path as every other field — that's the "update the init prompt as new info comes in" feature;
+// and a corrupt priority must be caught by the pre-write gate, not written to disk.
+test("setFields accepts prompt/kickoff_brief/priority and the pre-write gate rejects a bad priority", () => {
+  const y = `meta:\n  schema_version: 1\n  program: T\npis:\n  - id: a\n    title: A\n    status: active\n    sprints:\n      - id: s1\n        title: S\n        status: active\n        invoke: x\n`;
+  const doc = parseDocument(y);
+  const r = setFields(doc, { invoke: "x", fields: { prompt: "do the thing", kickoff_brief: "custom brief", priority: { tier: "P1", weight: 40 } } });
+  eq(r.fields, ["prompt", "kickoff_brief", "priority"], "all three fields settable");
+  validateDocOrThrow(doc); // must not throw
+  setFields(doc, { invoke: "x", fields: { priority: { tier: "NOPE" } } });
+  throws(() => validateDocOrThrow(doc), "priority.tier", "bad tier caught before write");
+});
+
+// ── bulk_set: all-or-nothing multi-slice edit ────────────────────────────────
+// WHY: bulk edits exist to retag/reprioritize many slices at once; if update 1 lands while
+// update 2's bad field throws, the roadmap is left half-edited and no error explains which half.
+test("bulkSet applies every update through one gate — a bad field aborts before any write", () => {
+  const y = `meta:\n  schema_version: 1\n  program: T\npis:\n  - id: a\n    title: A\n    status: active\n    sprints:\n      - { id: s1, title: S1, status: active, invoke: one }\n      - { id: s2, title: S2, status: next, invoke: two }\n`;
+  const doc = parseDocument(y);
+  const r = bulkSet(doc, { updates: [
+    { invoke: "one", fields: { track: "A", priority: { tier: "P1" } } },
+    { invoke: "two", fields: { track: "A" } },
+  ]});
+  eq(r.updated, ["one", "two"], "both slices updated");
+  validateDocOrThrow(doc);
+  // a bad field ANYWHERE in the batch throws before the caller ever reaches serialize/write
+  throws(() => bulkSet(parseDocument(y), { updates: [
+    { invoke: "one", fields: { track: "B" } },
+    { invoke: "two", fields: { nope: 1 } },
+  ]}), 'field "nope" is not settable', "bad field in update 2 throws (caller writes nothing)");
+  throws(() => bulkSet(parseDocument(y), { updates: [] }), "bulk_set requires", "empty updates rejected");
+});
+
+// WHY: `roadmap set gate=npm test -- --grep x=y` must keep everything after the FIRST '='
+// as the value, and @file / null must reach set_fields with their special semantics intact.
+test("parseAssignments splits on the first '=', marks @file, and passes null through", () => {
+  const [a, b, c] = parseAssignments(["gate=npm test -- --grep x=y", "prompt=@notes.md", "track=null"]);
+  eq(a, { field: "gate", raw: "npm test -- --grep x=y" }, "value keeps embedded '='");
+  eq(b, { field: "prompt", fromFile: "notes.md" }, "@path marks read-from-file");
+  eq(c, { field: "track", raw: "null" }, "null passes through raw (YAML.parse → delete)");
+  throws(() => parseAssignments(["notanassignment"]), "expected field=value", "missing '=' rejected");
+});
+
+// ── backlog: validation + mutations ──────────────────────────────────────────
+// WHY: a duplicate id makes grab/promote act on the wrong item; a typo'd kind/status silently
+// buckets work out of the open view. Both must be hard errors before write.
+test("validateBacklog rejects duplicate ids and bad kind/status; a full valid item passes", () => {
+  const good = { meta: { schema_version: 1 }, items: [
+    { id: "fix-x", title: "Fix X", kind: "bug", status: "open",
+      priority: { tier: "P1", weight: 70, reason: "breaks fanout" },
+      source: { slice: "auth-sessions", date: "2026-07-06" }, refs: ["auth-sessions"],
+      touches: ["src/x.ts"], est_sessions: 0.5, gate: "default", prompt: "repro then fix" },
+  ]};
+  eq(validateBacklog(good).errors, [], "full item validates clean");
+  ok(validateBacklog({ meta: { schema_version: 1 }, items: [
+    { id: "a", title: "A", kind: "bug", status: "open" }, { id: "a", title: "B", kind: "bug", status: "open" },
+  ]}).errors[0].includes("duplicate"), "duplicate id rejected");
+  ok(validateBacklog({ meta: { schema_version: 1 }, items: [{ id: "a", title: "A", kind: "task", status: "open" }] })
+    .errors[0].includes("kind"), "bad kind rejected");
+  ok(validateBacklog({ meta: { schema_version: 1 }, items: [{ id: "a", title: "A", kind: "bug", status: "started" }] })
+    .errors[0].includes("status"), "bad status rejected");
+  ok(validateBacklog({ meta: {}, items: [] }).errors[0].includes("schema_version"), "missing schema_version rejected");
+  const w = validateBacklog({ meta: { schema_version: 1 }, items: [{ id: "a", title: "A", kind: "bug", status: "promoted" }] });
+  ok(w.warnings[0].includes("promoted_to"), "promoted without back-link warns");
+});
+
+// WHY: auto-ids must never collide with existing captures (a reused id silently merges two
+// items' histories), and comment preservation is the whole reason mutations use the Document API.
+test("addItem auto-generates the next bN id and preserves comments; setItemFields honors the allow-list", () => {
+  const y = `meta:\n  schema_version: 1\nitems:\n  # keep this comment\n  - { id: b3, title: Old, kind: chore, status: open }\n`;
+  const doc = parseDocument(y);
+  const r = addItem(doc, { title: "New thing", kind: "bug" });
+  eq(r.added, "b4", "next free bN after b3");
+  validateBacklogDocOrThrow(doc);
+  ok(doc.toString().includes("# keep this comment"), "comment survives the edit");
+  throws(() => addItem(doc, { title: "dup", id: "b3" }), "already exists", "explicit dup id rejected");
+  const s = setItemFields(doc, { id: "b4", fields: { status: "in_progress", priority: { tier: "P0" }, prompt: "go" } });
+  eq(s.fields, ["status", "priority", "prompt"], "allowed fields set");
+  throws(() => setItemFields(doc, { id: "b4", fields: { id: "sneaky" } }), "not settable", "id is immutable");
+  setItemFields(doc, { id: "b4", fields: { status: "nope" } });
+  throws(() => validateBacklogDocOrThrow(doc), "status", "pre-write gate catches a bad status");
+});
+
+// WHY: BACKLOG.md is the human triage view — items must group by tier with untriaged last,
+// or a P0 buried under untriaged noise never gets picked up.
+test("renderBacklogMarkdown groups open items by tier (untriaged last) and lists closed/promoted separately", () => {
+  const md = renderBacklogMarkdown({ meta: { schema_version: 1 }, items: [
+    { id: "n1", title: "No tier", kind: "idea", status: "open" },
+    { id: "p0", title: "Urgent", kind: "urgent", status: "open", priority: { tier: "P0", weight: 90, reason: "prod" } },
+    { id: "p2", title: "Later", kind: "chore", status: "open", priority: { tier: "P2" } },
+    { id: "pr", title: "Moved", kind: "followup", status: "promoted", promoted_to: "auth/s9" },
+    { id: "dn", title: "Done", kind: "bug", status: "done", prs: ["#12"], completed_on: "2026-07-01" },
+  ]});
+  const iP0 = md.indexOf("## P0"), iP2 = md.indexOf("## P2"), iUn = md.indexOf("## Untriaged");
+  ok(iP0 >= 0 && iP2 > iP0 && iUn > iP2, "tier sections in order, untriaged last");
+  ok(md.includes("3 open item(s)"), "open count in the header");
+  ok(md.includes("`auth/s9`"), "promoted back-link shown");
+  ok(md.includes("| `dn` | Done | done | #12 | 2026-07-01 |"), "closed row with PR + date");
+  ok(md.includes("_(prod)_"), "priority reason surfaces in the row");
+});
+
+// WHY: grab reuses the fanout machinery via this adapter — a wrong branch/worktree shape
+// would collide a backlog session with a sprint worktree or break synthesizeBrief.
+test("backlogItemToNode yields branch backlog/<id>, worktree <root>/backlog-<id>, and a brief-ready node", () => {
+  const item = { id: "fix-y", title: "Fix Y", kind: "bug", status: "open", touches: ["src/y.ts"],
+    prompt: "do it carefully", gate: "default", source: { note: "start from the failing test" } };
+  const node = backlogItemToNode(item);
+  const g = { meta: { schema_version: 1, program: "T", default_gate: "npm test", worktree_root: "/wt" } };
+  eq(branchFor(node, g), "backlog/fix-y", "branch under the backlog/ namespace");
+  eq(worktreeFor(node, g), "/wt/backlog-fix-y", "worktree beside the sprint worktrees");
+  const brief = synthesizeBrief(node, g);
+  ok(brief.includes("## 0.5 Author instructions (verbatim)\ndo it carefully"), "item prompt embedded");
+  ok(brief.includes("npm test"), "default gate inherited from the roadmap");
+  ok(brief.includes("start from the failing test"), "source note becomes the next action");
+});
+
+// WHY: `roadmap next` is the pickup entry point — it must pick the highest priority across
+// BOTH trackers, let the roadmap win ties (planned work outranks erratic work), and return
+// null (not crash) when there's nothing to do.
+test("pickNext picks the highest-priority ready thing across roadmap + backlog; roadmap wins ties", () => {
+  const g = { pis: [{ id: "a", title: "A", status: "active", sprints: [
+    sp("s1", { invoke: "planned", priority: { tier: "P1" } }),
+  ]}]};
+  const backlog = (tier) => ({ meta: { schema_version: 1 }, items: [
+    { id: "err", title: "Erratic", kind: "urgent", status: "open", ...(tier ? { priority: { tier } } : {}) },
+  ]});
+  eq(pickNext(g, backlog("P0")).type, "backlog", "P0 backlog beats P1 slice");
+  eq(pickNext(g, backlog("P1")).type, "slice", "tie → roadmap wins");
+  eq(pickNext(g, backlog(null)).type, "slice", "untriaged backlog loses to a prioritized slice");
+  eq(pickNext(g, null).type, "slice", "no backlog file → roadmap only");
+  eq(pickNext({ pis: [] }, backlog("P2")).type, "backlog", "empty roadmap → backlog");
+  eq(pickNext({ pis: [] }, null), null, "nothing anywhere → null");
+});
+
+// WHY: equal-priority items must keep capture order (stable sort) or triage lists reshuffle
+// on every render; and backlog_list must not explode when no backlog.yaml exists yet.
+test("sortByPriority is stable for equal priorities; readBacklogList handles a missing backlog", () => {
+  const items = [{ id: "first" }, { id: "second" }, { id: "third", priority: { tier: "P0" } }];
+  eq(sortByPriority(items).map((i) => i.id), ["third", "first", "second"], "P0 first, capture order preserved");
+  ok(readBacklogList(null).note.includes("backlog_add"), "missing file → friendly note, not a throw");
+  const l = readBacklogList({ meta: { schema_version: 1 }, items: [
+    { id: "a", title: "A", kind: "bug", status: "open" }, { id: "b", title: "B", kind: "bug", status: "done" },
+  ]});
+  eq(l.items.length, 1, "default list = open only");
+  eq(openCount({ items: [{ status: "open" }, { status: "in_progress" }, { status: "done" }] }), 2, "open = open + in_progress");
+});
+
+// WHY: the SLICES.md pointer is how a roadmap reader discovers the backlog exists — but a
+// backlog-free repo must render byte-identically (the render backward-compat guarantee).
+test("renderMarkdown emits the backlog pointer only when opts.backlog is given", () => {
+  const g = { meta: { schema_version: 1, program: "T" }, pis: [{ id: "a", title: "A", status: "active", sprints: [
+    { id: "s1", title: "S", status: "active", invoke: "x", what: "w" }] }] };
+  ok(renderMarkdown(g, { backlog: { open: 4 } }).includes("**Backlog:** 4 open item(s)"), "pointer with count");
+  ok(!renderMarkdown(g).includes("**Backlog:**"), "no opts → no pointer line");
+});
+
+// ── promote: backlog item → roadmap sprint ────────────────────────────────────
+// WHY: promote spans two files — a promoted sprint that drops the prompt/priority loses the
+// author's context, and a missing back-link orphans the item's history. Both must carry.
+test("performPromotion creates a scheduled sprint carrying prompt/priority/touches and back-links promoted_to", () => {
+  const rDoc = parseDocument(`meta:\n  schema_version: 1\n  program: T\npis:\n  - id: auth\n    title: Auth\n    status: active\n    sprints:\n      - { id: s2, title: Old, status: complete, invoke: old }\n`);
+  const bDoc = parseDocument(`meta:\n  schema_version: 1\nitems:\n  - id: fix-x\n    title: Fix X\n    kind: bug\n    status: open\n    priority: { tier: P1, weight: 70 }\n    touches: [src/x.ts]\n    est_sessions: 0.5\n    prompt: repro then fix\n`);
+  const r = performPromotion(rDoc, bDoc, { id: "fix-x", pi: "auth" });
+  eq(r, { promoted: "fix-x", to: "auth/s3" }, "auto sprint id = next free sN");
+  validateDocOrThrow(rDoc);
+  validateBacklogDocOrThrow(bDoc);
+  const sp3 = rDoc.toJS().pis[0].sprints[1];
+  eq(sp3.invoke, "fix-x", "item id becomes the invoke key");
+  eq(sp3.status, "scheduled", "lands scheduled, not active");
+  eq(sp3.prompt, "repro then fix", "prompt carries");
+  eq(sp3.priority.tier, "P1", "priority carries");
+  eq(sp3.touches, ["src/x.ts"], "touches carry");
+  const item = bDoc.toJS().items[0];
+  eq(item.status, "promoted", "item marked promoted");
+  eq(item.promoted_to, "auth/s3", "back-link recorded");
+});
+
+// WHY: the item id becomes the invoke key — a collision with an existing slice would make
+// /slice ambiguous; the pre-write gate must reject it so neither file is written.
+test("performPromotion is rejected by the pre-write gate when the item id collides with an existing invoke", () => {
+  const rDoc = parseDocument(`meta:\n  schema_version: 1\n  program: T\npis:\n  - id: auth\n    title: Auth\n    status: active\n    sprints:\n      - { id: s1, title: A, status: active, invoke: fix-x }\n`);
+  const bDoc = parseDocument(`meta:\n  schema_version: 1\nitems:\n  - { id: fix-x, title: Fix X, kind: bug, status: open }\n`);
+  performPromotion(rDoc, bDoc, { id: "fix-x", pi: "auth" });
+  throws(() => validateDocOrThrow(rDoc), "duplicate invoke", "gate rejects the collision (mutateBoth writes nothing)");
+  throws(() => performPromotion(parseDocument("meta:\n  schema_version: 1\nitems: []"), bDoc, { id: "nope", pi: "auth" }),
+    "no backlog item", "unknown item rejected");
+  const doneB = parseDocument(`meta:\n  schema_version: 1\nitems:\n  - { id: d1, title: D, kind: bug, status: done }\n`);
+  throws(() => performPromotion(rDoc, doneB, { id: "d1", pi: "auth" }), "only open/in_progress", "closed items don't promote");
+});
+
+// WHY: the MCP registry is the agent-facing contract — every backlog tool must be listed
+// with a schema or agents can't call it, and the combined registry must stay well-formed.
+test("BACKLOG_TOOLS registry is well-formed and covers list/add/set/promote", () => {
+  const names = BACKLOG_TOOLS.map((t) => t.name);
+  eq(names, ["backlog_list", "backlog_add", "backlog_set", "backlog_promote"], "all four tools");
+  for (const t of BACKLOG_TOOLS) {
+    ok(t.description && t.inputSchema && t.inputSchema.type === "object", `${t.name} has description + object schema`);
+  }
+  const combined = [...TOOLS.map((t) => t.name), ...names];
+  eq(new Set(combined).size, combined.length, "no name collisions with the roadmap tools");
+  ok(combined.length >= 14, "14+ tools after the expansion");
+});
+
+// ── disk ceiling ──────────────────────────────────────────────────────────────
+// WHY: a fanout that exceeds free disk fails mid-checkout with worktrees half-created.
+// The ceiling must bind when it's the smallest, report cap 0 as the hard-block signal
+// (while recommended stays >= 1 for the soft path), and vanish entirely when unprobeable.
+test("disk is a fifth ceiling: binds when smallest, cap 0 signals hard-block, null skips it", () => {
+  const bigSys = { sys: { cores: 64, totalGb: 256, freeGb: 256, platform: "linux" }, reviewCeiling: 50 };
+  const bound = recommendConcurrency(recoReady, recoGraph, { ...bigSys, disk: { perWorktreeGb: 2, freeGb: 6 } });
+  eq(bound.recommended, 2, "floor((6-2 reserve)/2) = 2 binds");
+  ok(bound.binding.why.startsWith("disk"), "bound by disk");
+  ok(/need ~2\.0GB\/worktree, 6\.0GB free/.test(bound.binding.why), "why names the numbers");
+  eq(bound.disk.cap, 2, "cap surfaced for callers");
+  const full = recommendConcurrency(recoReady, recoGraph, { ...bigSys, disk: { perWorktreeGb: 5, freeGb: 3 } });
+  eq(full.disk.cap, 0, "cap 0 = even one worktree won't fit (the hard-block signal)");
+  eq(full.recommended, 1, "recommended stays >= 1 — hard-blocking is the launcher's job");
+  const skipped = recommendConcurrency(recoReady, recoGraph, { ...bigSys, disk: null });
+  eq(skipped.candidates.length, 4, "no disk → four ceilings, unchanged");
+  eq(skipped.disk, null, "no disk info surfaced");
+});
+
+// WHY: meta.worktree_gb is the calibration knob for repos whose gates install per-worktree —
+// when set it must win over the ls-tree estimate; and probeDisk must degrade to null (never
+// throw) so an unprobeable environment just loses the ceiling, not the whole plan.
+test("probeDisk honors the meta.worktree_gb override and never throws", () => {
+  const probed = probeDisk({ meta: { worktree_gb: 2.5 } });
+  if (probed) {
+    eq(probed.perWorktreeGb, 2.5, "explicit worktree_gb wins over the estimate");
+    ok(probed.freeGb > 0, "free space detected");
+  }
+  // no-git cwd → estimate path fails → null, not a throw
+  eq(probeDisk({ meta: {} }, "/nonexistent-dir-for-roadmap-test"), null, "unprobeable → null");
+});
+
+// ── store.mjs: the file-write-ordering / rollback guarantees (fs-backed) ──────
+// WHY: store.mjs is the one place with data-loss blast radius — every mutating surface
+// routes through it. If a thrown validation still wrote a file, or promote wrote one file
+// of two, the "validate before write" contract is a lie the unit tests above can't catch.
+function tempRepo() {
+  const root = mkdtempSync(join(tmpdir(), "roadmap-store-test-"));
+  mkdirSync(join(root, "docs", "roadmap"), { recursive: true });
+  writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"),
+    `meta:\n  schema_version: 1\n  program: T\npis:\n  - id: a\n    title: A\n    status: active\n    sprints:\n      - { id: s1, title: S, status: active, invoke: taken }\n`, "utf8");
+  return root;
+}
+
+test("mutateRoadmap leaves roadmap.yaml byte-identical when the mutation or gate throws", () => {
+  const root = tempRepo();
+  const yamlPath = join(root, "docs", "roadmap", "roadmap.yaml");
+  const before = readFileSync(yamlPath, "utf8");
+  throws(() => mutateRoadmap(root, () => { throw new Error("boom"); }), "boom", "fn throw propagates");
+  eq(readFileSync(yamlPath, "utf8"), before, "fn throw → file untouched");
+  throws(() => mutateRoadmap(root, (doc) => setFields(doc, { invoke: "taken", fields: { priority: { tier: "NOPE" } } })),
+    "priority.tier", "pre-write gate throw propagates");
+  eq(readFileSync(yamlPath, "utf8"), before, "gate throw → file untouched, no SLICES rendered");
+  ok(!existsSync(join(root, "docs", "SLICES.md")), "no SLICES.md written on failure");
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("mutateBoth writes NEITHER file when the second validation throws (promote collision)", () => {
+  const root = tempRepo();
+  const rPath = join(root, "docs", "roadmap", "roadmap.yaml");
+  const bPath = join(root, "docs", "roadmap", "backlog.yaml");
+  // an item whose id collides with the existing invoke "taken" → roadmap gate rejects
+  writeFileSync(bPath, `meta:\n  schema_version: 1\nitems:\n  - { id: taken, title: Collides, kind: bug, status: open }\n`, "utf8");
+  const rBefore = readFileSync(rPath, "utf8");
+  const bBefore = readFileSync(bPath, "utf8");
+  throws(() => mutateBoth(root, (rDoc, bDoc) => performPromotion(rDoc, bDoc, { id: "taken", pi: "a" })),
+    "duplicate invoke", "collision rejected");
+  eq(readFileSync(rPath, "utf8"), rBefore, "roadmap.yaml untouched");
+  eq(readFileSync(bPath, "utf8"), bBefore, "backlog.yaml untouched (validated-both-before-either held)");
+  // and the success path writes both + both renders
+  const r = mutateBoth(root, (rDoc, bDoc) => {
+    addItem(bDoc, { title: "ok item", id: "okid", kind: "chore" });
+    return performPromotion(rDoc, bDoc, { id: "okid", pi: "a" });
+  });
+  eq(r.to, "a/s2", "promoted into the next free sprint id");
+  ok(readFileSync(rPath, "utf8").includes("okid"), "roadmap gained the sprint");
+  ok(existsSync(join(root, "docs", "BACKLOG.md")) && existsSync(join(root, "docs", "SLICES.md")), "both views rendered");
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("mutateBacklog createIfMissing bootstraps a block-style backlog.yaml and the SLICES pointer", () => {
+  const root = tempRepo();
+  const bPath = join(root, "docs", "roadmap", "backlog.yaml");
+  throws(() => mutateBacklog(root, (doc) => addItem(doc, { title: "x" })), "no docs/roadmap/backlog.yaml",
+    "without createIfMissing a missing file is an error, not a silent create");
+  const r = mutateBacklog(root, (doc) => addItem(doc, { title: "first capture", kind: "bug" }), { createIfMissing: true });
+  eq(r.added, "b1", "auto-id from an empty file");
+  const src = readFileSync(bPath, "utf8");
+  ok(/items:\n  - id: b1/.test(src), "block style from birth (not flow)");
+  ok(readFileSync(join(root, "docs", "SLICES.md"), "utf8").includes("**Backlog:** 1 open item(s)"),
+    "backlog mutation refreshes the SLICES.md open-count pointer");
+  rmSync(root, { recursive: true, force: true });
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

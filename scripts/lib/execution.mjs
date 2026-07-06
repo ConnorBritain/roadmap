@@ -1,4 +1,4 @@
-// slice-roadmap — execution strategy brain (PURE).
+// roadmap — execution strategy brain (PURE).
 // A per-slice `execution:` block declares HOW to staff the slice: the fan-out topology
 // (solo / subagents / dynamic-workflow / agent-team), a suggested LIVE worker count, a
 // floor, and the team composition. Agents chronically under-parallelize (a lone subagent

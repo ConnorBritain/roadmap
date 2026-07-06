@@ -1,4 +1,4 @@
-// slice-roadmap — kickoff-brief synthesizer.
+// roadmap — kickoff-brief synthesizer.
 // Turns a sprint node into the self-contained brief a launched session reads to
 // "just start". Mirrors the 6-part subagent-handoff contract (target/scope, reference,
 // gate+commands, branch/commit/PR, DO NOT MERGE, report-back) so an autonomous or
@@ -26,7 +26,7 @@ export function worktreeFor(node, graph) {
 }
 
 // The prompt each launched session starts with. SELF-CONTAINED: it reads the kickoff brief
-// written into the worktree, so it works whether or not the slice-roadmap plugin/skill is
+// written into the worktree, so it works whether or not the roadmap plugin/skill is
 // installed in the spawned session. ASCII + no quote chars (it's embedded in shell quotes).
 export function launchPrompt(node) {
   // Steers to research -> plan -> WAIT -> implement. Combined with a permissive --worker-mode
@@ -57,6 +57,15 @@ ${execLines.join("\n")}
 `
     : "";
 
+  // Author-stashed pickup instructions, carried VERBATIM (only when the slice declares one —
+  // a slice without a prompt gets a byte-identical brief).
+  const promptSection = node.prompt
+    ? `## 0.5 Author instructions (verbatim)
+${String(node.prompt).trimEnd()}
+
+`
+    : "";
+
   return `# Kickoff — ${node.invoke}  (${node.programLabel} · ${node.id.toUpperCase()})
 
 > Uncommitted brief for this fanout session. You own the atomic sequence
@@ -65,7 +74,7 @@ ${execLines.join("\n")}
 **Slice:** \`${node.invoke}\`  ·  **Branch:** \`${branch}\`
 **What:** ${node.what || node.title}
 
-${execSection}## 1. Scope / target
+${execSection}${promptSection}## 1. Scope / target
 ${owns.length ? owns.map((f) => `- \`${f}\``).join("\n") : "- (scope to this slice only; see read-order)"}
 
 ## 2. Read-order (orient first — paths are relative to \`docs/\`; you're at the repo root, so e.g. \`sprints/...\` = \`docs/sprints/...\`, and \`../STATUS.md\` = \`STATUS.md\`)
@@ -85,5 +94,6 @@ ${gate}
 
 ## 6. Report back
 LOC delta · file inventory · gate result (pass/fail with output) · commit SHA · PR # · 2–3 line retro.
+Leftovers: before opening the PR, file anything left hanging (follow-ups, discovered bugs, deferred work) on the backlog — the \`backlog_add\` MCP tool if available, else \`roadmap backlog add "<title>" -k followup --slice ${node.invoke}\`, else list each under a **Leftovers** heading in the PR body (the lead's /sync harvests it).
 `;
 }

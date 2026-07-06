@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// slice-roadmap — PR-watch monitor. Polls `gh pr list` for this roadmap's fanout branches and
+// roadmap — PR-watch monitor. Polls `gh pr list` for this roadmap's fanout branches and
 // prints one line per PR phase transition (draft -> ready, checks -> green, open -> merged, ...).
 // Bundled as a plugin monitor (monitors/monitors.json): each printed line becomes a notification
 // to the lead session. Also runnable as `roadmap watch` in a pane.
