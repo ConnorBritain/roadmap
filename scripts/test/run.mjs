@@ -35,14 +35,27 @@ import {
   issueDescription, machineFooter, buildPushPlan, buildPullProposals, validateLinearConfig,
 } from "../lib/linear-core.mjs";
 import { addPi } from "../lib/mcp-core.mjs";
+import { runSync, readCursor } from "../linear.mjs";
 import { parseDocument } from "yaml";
 import { join, resolve } from "node:path";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 
 let passed = 0, failed = 0;
+const pending = [];   // async tests settle before the summary (see the await at the bottom)
 function test(name, fn) {
-  try { fn(); passed++; console.log(`  ✓ ${name}`); }
+  try {
+    const r = fn();
+    if (r && typeof r.then === "function") {
+      // an async test that threw would otherwise count as a vacuous pass — await it
+      pending.push(r.then(
+        () => { passed++; console.log(`  ✓ ${name}`); },
+        (e) => { failed++; console.error(`  ✗ ${name}\n      ${e.message}`); },
+      ));
+      return;
+    }
+    passed++; console.log(`  ✓ ${name}`);
+  }
   catch (e) { failed++; console.error(`  ✗ ${name}\n      ${e.message}`); }
 }
 function eq(actual, expected, msg) {
@@ -1417,5 +1430,103 @@ test("branchFor {linear} token: autolinkable with an id, clean without", () => {
   eq(branchFor({ piId: "platform", id: "s1", linear: null }, g), "platform/s1", "no id → no residue");
 });
 
+// ── linear.mjs: mocked-transport sync (never hits the network) ────────────────
+function linearRepo() {
+  const root = mkdtempSync(join(tmpdir(), "roadmap-linear-test-"));
+  mkdirSync(join(root, "docs", "roadmap"), { recursive: true });
+  writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"),
+    `meta:\n  schema_version: 1\n  program: T\n  linear:\n    team: ENG\n    pull: propose\n    watch:\n      - { team: PUB, project: Submit an issue, kind: bug, priority: {tier: P3} }\npis:\n  - id: auth\n    title: Authentication\n    status: active\n    sprints:\n      - { id: s1, title: Login, status: active, invoke: auth-login }\n`, "utf8");
+  return root;
+}
+function fakeLinear({ failOn = null } = {}) {
+  const calls = [];
+  let created = 0;
+  const fetchImpl = async (url, { body }) => {
+    const { query, variables } = JSON.parse(body);
+    calls.push({ query, variables });
+    const respond = (data) => ({ ok: true, json: async () => ({ data }) });
+    if (query.includes("teams(filter")) return respond({ teams: { nodes: [{ id: "team-1", key: "ENG", name: "Eng",
+      states: { nodes: [
+        { id: "st-b", name: "Backlog", type: "backlog", position: 0 },
+        { id: "st-s", name: "In Progress", type: "started", position: 1 },
+        { id: "st-c", name: "Done", type: "completed", position: 2 },
+      ] },
+      projects: { nodes: [] } }] } });
+    if (query.includes("issue(id:")) {   // snapshot aliases — nothing exists in Linear yet
+      const data = {};
+      (query.match(/i\d+:/g) || []).forEach((_, j) => { data[`i${j}`] = null; });
+      return respond(data);
+    }
+    if (query.includes("projectCreate")) return respond({ projectCreate: { project: { id: "proj-new" } } });
+    if (query.includes("issueCreate")) {
+      if (failOn === "issueCreate") throw new Error("simulated transport failure");
+      created += 1;
+      return respond({ issueCreate: { issue: { id: `uuid-${created}`, identifier: `ENG-${100 + created}` } } });
+    }
+    if (query.includes("issueUpdate")) return respond({ issueUpdate: { issue: { id: "x" } } });
+    if (query.includes("issues(filter")) {
+      const team = variables.filter.team.key.eq;
+      return respond({ issues: { nodes: team === "PUB" ? [
+        { identifier: "PUB-42", title: "Crash on empty config", priority: 1, updatedAt: "2026-07-06T00:00:00Z",
+          state: { name: "Backlog", type: "backlog" }, team: { key: "PUB" }, project: { name: "Submit an issue" } },
+      ] : [] } });
+    }
+    throw new Error(`fake transport: unexpected query ${query.slice(0, 60)}`);
+  };
+  return { fetchImpl, calls };
+}
+
+// WHY: this is the end-to-end contract — a sync must create the missing project+issue, write
+// the ids back INTO the YAML (the mapping's source of truth), surface inbound work as
+// proposals without mutating anything, hold the cursor while proposals are unhandled, and
+// be a no-op on the second run (idempotency is what makes /sync safe to run repeatedly).
+test("runSync (mocked transport): pushes, writes ids back, proposes inbound, idempotent second run", async () => {
+  const root = linearRepo();
+  const fake = fakeLinear();
+  const r1 = await runSync(root, { fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-06T12:00:00Z" });
+  const yaml = readFileSync(join(root, "docs", "roadmap", "roadmap.yaml"), "utf8");
+  ok(yaml.includes("project: proj-new"), "PI project id written back");
+  ok(yaml.includes("linear: ENG-101"), "issue identifier written back onto the sprint");
+  eq(r1.proposals.newItems.length, 1, "inbound PUB issue proposed");
+  eq(r1.proposals.newItems[0].source.linear.team, "PUB", "source demarcation carried");
+  ok(!existsSync(join(root, "docs", "roadmap", "backlog.yaml")), "propose mode captured NOTHING (no silent mutation)");
+  eq(r1.cursorAdvanced, false, "cursor held while the inbox is unhandled");
+  eq(readCursor(root), null, "no cursor file yet");
+  const r2 = await runSync(root, { fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-06T13:00:00Z" });
+  eq(r2.pushed, [], "second run pushes nothing (idempotent)");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: a transport failure mid-push must not lose the ids Linear already assigned (or the
+// next sync duplicates those issues), and must not advance the cursor (or inbound work in
+// that window vanishes forever).
+test("runSync flushes write-backs on a mid-push throw and leaves the cursor untouched", async () => {
+  const root = linearRepo();
+  const fake = fakeLinear({ failOn: "issueCreate" });
+  let threw = false;
+  try { await runSync(root, { fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" } }); }
+  catch (e) { threw = true; ok(e.message.includes("simulated transport failure"), "the transport error surfaces"); }
+  ok(threw, "sync propagated the failure");
+  const yaml = readFileSync(join(root, "docs", "roadmap", "roadmap.yaml"), "utf8");
+  ok(yaml.includes("project: proj-new"), "the project created BEFORE the failure kept its write-back");
+  ok(!yaml.includes("ENG-10"), "the failed issue wrote nothing back");
+  eq(readCursor(root), null, "cursor untouched on failure");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: unconfigured/unauthed must be actionable errors, not stack traces — these are the
+// messages the /sync skill and a bare CLI user act on.
+test("runSync errors are the setup-guidance contract", async () => {
+  const root = tempRepo();   // no meta.linear
+  await runSync(root, { env: {} }).then(() => { throw new Error("should have thrown"); },
+    (e) => ok(e.message.includes("roadmap linear setup"), "unconfigured names the fix"));
+  const lroot = linearRepo();
+  await runSync(lroot, { env: {} }).then(() => { throw new Error("should have thrown"); },
+    (e) => ok(e.message.includes("LINEAR_API_KEY"), "unauthed names the env var"));
+  rmSync(root, { recursive: true, force: true });
+  rmSync(lroot, { recursive: true, force: true });
+});
+
+await Promise.all(pending);
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
