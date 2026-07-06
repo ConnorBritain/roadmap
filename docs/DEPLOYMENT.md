@@ -135,7 +135,42 @@ roadmap linear sync              # projects the roadmap; /sync now includes the 
 | Configured, no key | One advisory line; everything else works; sync errors with the fix |
 | Wired | `/sync` runs the Linear phase; hook reports team/pull/last-sync |
 
-## 5 · Jira (planned — not yet implemented)
+## 5 · Cloud dispatch (Claude Code Routines)
+
+`roadmap dispatch <key>` / `roadmap fan --cloud` fire **Claude Code cloud sessions** directly via the Routines API — no Linear plan required, no local worktrees, bounded only by the firing account's Claude plan (Pro/Max/Team). ⚠ The fire endpoint is **beta** (`experimental-cc-routine-2026-04-01`); shapes may change.
+
+**One-time routine setup (per claude.ai account, per repo):**
+
+1. On claude.ai → **Code → Routines** (claude.ai/code/routines) → New routine.
+2. Point it at the target **GitHub repo** (must be pushed/connected). Saved prompt — keep it generic; the dispatch capsule arrives as the fired text:
+   > You are a roadmap dispatch worker. The trigger message contains a machine capsule naming a slice — follow it exactly: read docs/SLICES.md and docs/roadmap/roadmap.yaml for the named slice, honor its gate, open a PR, never merge, leftovers to the backlog only.
+3. Add an **API trigger** → copy the trigger id (`trig_…`) and bearer token (`sk-ant-oat01-…`).
+
+**Single-account:** put them in env — `CLAUDE_ROUTINE_TRIGGER` + `CLAUDE_ROUTINE_TOKEN`. Done.
+
+**Multi-account on one workstation** (people swapping `claude /login` on the same OS user): each person creates the same routine under *their own* claude.ai account, and the pairs live in a machine-local **`~/.claude-routines.json`** (never committed; same trust level as env — override the path with `CLAUDE_ROUTINES_FILE`):
+
+```json
+{
+  "connor": {
+    "account": "connor@example.com",
+    "routines": {
+      "default":        { "trigger": "trig_aaa", "token": "sk-ant-oat01-..." },
+      "acme/webapp":    { "trigger": "trig_bbb", "token": "sk-ant-oat01-..." }
+    }
+  },
+  "sam": {
+    "account": "sam@example.com",
+    "routines": { "default": { "trigger": "trig_ccc", "token": "sk-ant-oat01-..." } }
+  }
+}
+```
+
+**Resolution order (the hot-swap):** the env pair wins outright (CI/override) → `CLAUDE_ROUTINE_PROFILE=<name>` pins a profile explicitly → otherwise dispatch reads the **currently-authed claude.ai account** from the CLI's own config (`~/.claude.json → oauthAccount.emailAddress`) and matches it to a profile's `account`. Swap people with `claude /login`; the next dispatch fires on the new person's limits with zero config changes. Within a profile, the repo-specific routine (keyed `owner/repo` from the git remote) wins over `default`. Every miss is an actionable error naming the fix.
+
+When the dispatched slice is also Linear-mapped and `LINEAR_API_KEY` is set, dispatch comments the session URL onto the issue — the board links to the live session. Best-effort: a comment failure never fails the dispatch.
+
+## 6 · Jira (planned — not yet implemented)
 
 Jira support is the designed follow-up and will mirror this layout exactly, so nothing about your deployment changes shape:
 
@@ -151,7 +186,7 @@ with secrets in `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` (Atlassian API t
 
 **Why direct APIs instead of the Linear/Atlassian MCP servers?** The sync is a deterministic batch program (diffing, batching, cursors, idempotent re-runs) that must run headless from CLI/CI — MCP tools are built for a model in the loop, and the hosted servers authenticate with the *same* credential anyway, so routing through them adds a protocol layer without removing the key. Interactive agent work (chatting about issues, agent delegation from Linear/Jira) is exactly what those hosted MCP servers are for — pushed issues carry a machine footer so agents dispatched from them self-orient with one command.
 
-## 6 · Troubleshooting
+## 7 · Troubleshooting
 
 - `roadmap linear status` tells you which of the three states you're in and the exact next command.
 - Plugin tools missing in a session → `/mcp` to reconnect, or restart the session after install.

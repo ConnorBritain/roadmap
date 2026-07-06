@@ -39,7 +39,7 @@ import {
 } from "../lib/linear-core.mjs";
 import { addPi } from "../lib/mcp-core.mjs";
 import { runSync, runProvision, readCursor } from "../linear.mjs";
-import { runDispatch } from "../dispatch.mjs";
+import { runDispatch, resolveRoutine, fireRoutine } from "../dispatch.mjs";
 import { graphDiff, backlogDiff, reviewDigest, pisInFlight } from "../lib/review-core.mjs";
 import { parseDocument } from "yaml";
 import { join, resolve } from "node:path";
@@ -1948,9 +1948,9 @@ test("runProvision skips views that already exist", async () => {
 test("runDispatch push-maps an unmapped slice, then comments the capsule with the footer", async () => {
   const root = linearRepo();
   const fake = fakeLinear();
-  const r = await runDispatch(root, "auth-login", { fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" } });
+  const r = await runDispatch(root, "auth-login", { to: "claude", fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" } });
   eq(r.pushed, true, "pushed before commenting");
-  eq(r.agent, "@Claude", "default agent");
+  eq(r.agent, "@Claude", "mention agent");
   const createIdx = fake.calls.findIndex((c) => c.query.includes("issueCreate"));
   const commentIdx = fake.calls.findIndex((c) => c.query.includes("commentCreate"));
   ok(createIdx >= 0 && commentIdx > createIdx, "issueCreate strictly before commentCreate");
@@ -1966,13 +1966,86 @@ test("runDispatch push-maps an unmapped slice, then comments the capsule with th
 test("runDispatch failure names both stages when commentCreate is rejected", async () => {
   const root = linearRepo();
   const fake = fakeLinear({ failOn: "commentCreate" });
-  await runDispatch(root, "auth-login", { fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" } }).then(
+  await runDispatch(root, "auth-login", { to: "claude", fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" } }).then(
     () => { throw new Error("should have thrown"); },
     (e) => {
       ok(e.message.includes("push-map (pushed"), "names the stage that worked");
       ok(e.message.includes("commentCreate") && e.message.includes("simulated comment failure"), "names the stage that failed");
       ok(e.message.includes("not attempted (unverified)"), "delegate-field honesty");
     });
+  rmSync(root, { recursive: true, force: true });
+});
+
+// ── claude-cloud transport ────────────────────────────────────────────────────
+const PROFILES = {
+  connor: { account: "connor@x.com", routines: {
+    default: { trigger: "trig_c_def", token: "tok_c_def" },
+    "acme/app": { trigger: "trig_c_app", token: "tok_c_app" },
+  }},
+  alex: { account: "alex@y.com", routines: { default: { trigger: "trig_a", token: "tok_a" } } },
+};
+
+// WHY: the whole multi-account promise is "fires on whoever is authed" — a wrong precedence
+// order silently burns the other person's usage limits. Env override > explicit pin >
+// authed-account match; repo-bound routine > default; every miss is an actionable error.
+test("resolveRoutine precedence: env > profile pin > authed account; repo routine > default", () => {
+  eq(resolveRoutine({ env: { CLAUDE_ROUTINE_TRIGGER: "t", CLAUDE_ROUTINE_TOKEN: "k" }, profiles: PROFILES }).source, "env", "env pair wins outright");
+  const pinned = resolveRoutine({ env: { CLAUDE_ROUTINE_PROFILE: "alex" }, profiles: PROFILES, accountEmail: "connor@x.com" });
+  eq(pinned.trigger, "trig_a", "explicit pin beats the authed account");
+  const hot = resolveRoutine({ profiles: PROFILES, accountEmail: "CONNOR@X.COM", repoSlug: "acme/app" });
+  eq(hot.trigger, "trig_c_app", "authed-account match (case-insensitive) + repo-bound routine");
+  eq(hot.account, "connor@x.com", "resolved identity surfaced");
+  eq(resolveRoutine({ profiles: PROFILES, accountEmail: "connor@x.com", repoSlug: "other/repo" }).trigger, "trig_c_def", "unknown repo falls back to default");
+  throws(() => resolveRoutine({ profiles: PROFILES, accountEmail: "nobody@z.com" }), "no routines profile matches", "unmatched account is actionable");
+  throws(() => resolveRoutine({ env: { CLAUDE_ROUTINE_PROFILE: "ghost" }, profiles: PROFILES }), 'not in the routines file', "bad pin is actionable");
+  throws(() => resolveRoutine({ profiles: null }), "no claude-cloud routine configured", "nothing configured is actionable");
+  throws(() => resolveRoutine({ profiles: { p: { account: "a@b.c", routines: {} } }, accountEmail: "a@b.c", repoSlug: "x/y" }), "no routine for x/y", "empty profile is actionable");
+});
+
+// WHY: claude-cloud is the Linear-FREE transport — it must dispatch from a repo with no
+// meta.linear at all, hit the beta endpoint with the exact headers, and carry the capsule.
+test("runDispatch --to claude-cloud fires the routine without any Linear config", async () => {
+  const root = tempRepo();   // fixture has NO meta.linear
+  const fires = [];
+  const fakeFetch = async (url, init) => {
+    fires.push({ url, init });
+    return { ok: true, json: async () => ({ claude_code_session_id: "sess_1", claude_code_session_url: "https://claude.ai/code/sess_1" }) };
+  };
+  const r = await runDispatch(root, "taken", {
+    to: "claude-cloud", fetchImpl: fakeFetch, env: {},
+    profiles: PROFILES, accountEmail: "connor@x.com", repoSlug: "other/repo",
+  });
+  eq(r.transport, "claude-cloud", "cloud transport");
+  eq(r.sessionUrl, "https://claude.ai/code/sess_1", "session url returned");
+  eq(fires.length, 1, "exactly one network call — no Linear traffic");
+  ok(fires[0].url.includes("/claude_code/routines/trig_c_def/fire"), "fires the resolved trigger");
+  eq(fires[0].init.headers["anthropic-beta"], "experimental-cc-routine-2026-04-01", "beta header");
+  eq(fires[0].init.headers.Authorization, "Bearer tok_c_def", "bearer token");
+  const body = JSON.parse(fires[0].init.body);
+  ok(body.text.includes("roadmap: slice=taken") && body.text.includes("NEVER merge"), "capsule carries footer + contract");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: a failed fire must be actionable (beta API — 401/404 have specific meanings), and a
+// mapped-issue dispatch should link the session on the board WITHOUT depending on it.
+test("fireRoutine errors are actionable; a mapped dispatch comments the session link best-effort", async () => {
+  await fireRoutine({ trigger: "t", token: "k" }, "x", async () => ({ ok: false, status: 401 })).then(
+    () => { throw new Error("should have thrown"); },
+    (e) => ok(e.message.includes("401") && e.message.includes("token invalid"), "401 names the fix"));
+  const root = linearRepo();   // Linear-configured fixture
+  const yamlPath = join(root, "docs", "roadmap", "roadmap.yaml");
+  writeFileSync(yamlPath, readFileSync(yamlPath, "utf8").replace("invoke: auth-login }", "invoke: auth-login, linear: ENG-1 }"), "utf8");
+  const linearFake = fakeLinear({ snapshot: { "ENG-1": { id: "uuid-1", identifier: "ENG-1", title: "Login", description: "", priority: 0, state: { id: "st-s" }, labels: { nodes: [] } } } });
+  const routedFetch = async (url, init) => url.includes("anthropic.com")
+    ? { ok: true, json: async () => ({ claude_code_session_id: "s2", claude_code_session_url: "https://claude.ai/code/s2" }) }
+    : linearFake.fetchImpl(url, init);
+  const r = await runDispatch(root, "auth-login", {
+    to: "claude-cloud", fetchImpl: routedFetch, env: { LINEAR_API_KEY: "k" },
+    profiles: PROFILES, accountEmail: "alex@y.com", repoSlug: null,
+  });
+  eq(r.linearComment, "ENG-1", "session link commented on the mapped issue");
+  const comment = linearFake.calls.find((c) => c.query.includes("commentCreate"));
+  ok(comment.variables.input.body.includes("https://claude.ai/code/s2"), "comment carries the session url");
   rmSync(root, { recursive: true, force: true });
 });
 

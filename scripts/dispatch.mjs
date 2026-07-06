@@ -1,14 +1,22 @@
 #!/usr/bin/env node
-// roadmap dispatch <key> [--to claude] — send a slice/backlog item to a CLOUD agent via its
-// Linear issue, instead of a local worktree. The wave-scale version is `roadmap fan --cloud`.
+// roadmap dispatch <key> [--to claude-cloud|claude|codex|oz] — send a slice/backlog item to a
+// CLOUD agent instead of a local worktree. The wave-scale version is `roadmap fan --cloud`.
 //
-// v0.5 STUB — PENDING LIVE VERIFICATION with the user's next test key. commentCreate's
-// signature is verified against a live workspace; whether an @-mention actually summons the
-// delegate agent is NOT, and the delegate-field mutation is NOT attempted at all. This
-// command therefore does the one verified transport (an @-mention comment carrying the
-// dispatch capsule) and reports exactly what it tried.
+// Two transports:
+//   claude-cloud (RECOMMENDED) — fires a Claude Code cloud session directly via the Routines
+//     API (code.claude.com/docs/en/routines). Needs NO Linear at all; runs on the CURRENTLY
+//     AUTHED claude.ai account's plan limits (multi-account hot-swap via ~/.claude-routines.json
+//     keyed by account email — see docs/DEPLOYMENT.md § Cloud dispatch). BETA API: the fire
+//     endpoint ships under an experimental header and may change.
+//   claude|codex|oz — posts an @-mention capsule comment on the mapped Linear issue. The
+//     comment is live-verified; whether the mention SUMMONS an agent requires the agent's
+//     integration installed in the Linear workspace (Linear's native coding sessions are
+//     paid-plan-gated; the delegate-field mutation remains unverified).
 
-import { resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { resolve, join } from "node:path";
+import { homedir } from "node:os";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { loadGraph, flatten } from "./lib/graph.mjs";
 import { loadBacklog, roadmapPaths } from "./lib/store.mjs";
@@ -17,10 +25,83 @@ import { linearState, linearStatusLine, machineFooter } from "./lib/linear-core.
 
 export const DISPATCH_AGENTS = { claude: "@Claude", codex: "@Codex", oz: "@Oz" };
 
+// ── claude-cloud transport ────────────────────────────────────────────────────
+// Resolve WHICH routine to fire (PURE — inputs injected). Precedence:
+//   1. CLAUDE_ROUTINE_TRIGGER + CLAUDE_ROUTINE_TOKEN env (explicit single-account / CI override)
+//   2. CLAUDE_ROUTINE_PROFILE env naming a profile in the routines file (manual pin)
+//   3. the profile whose `account` matches the CURRENTLY AUTHED claude.ai account email —
+//      this is the multi-account hot-swap: `claude /login` as someone else, next dispatch
+//      fires on their limits, no config change.
+// Within a profile: routines[<owner/repo>] wins over routines.default (routines are repo-bound).
+export function resolveRoutine({ env = {}, profiles = null, accountEmail = null, repoSlug = null } = {}) {
+  if (env.CLAUDE_ROUTINE_TRIGGER && env.CLAUDE_ROUTINE_TOKEN) {
+    return { trigger: env.CLAUDE_ROUTINE_TRIGGER, token: env.CLAUDE_ROUTINE_TOKEN, source: "env" };
+  }
+  if (!profiles || !Object.keys(profiles).length) {
+    throw new Error("no claude-cloud routine configured — set CLAUDE_ROUTINE_TRIGGER + CLAUDE_ROUTINE_TOKEN, or create ~/.claude-routines.json (docs/DEPLOYMENT.md § Cloud dispatch)");
+  }
+  let label = env.CLAUDE_ROUTINE_PROFILE || null;
+  let entry = label ? profiles[label] : null;
+  if (label && !entry) throw new Error(`CLAUDE_ROUTINE_PROFILE "${label}" not in the routines file (profiles: ${Object.keys(profiles).join(", ")})`);
+  if (!entry) {
+    if (!accountEmail) throw new Error("couldn't detect the current claude.ai account (is the Claude CLI logged in?) — set CLAUDE_ROUTINE_PROFILE to pin a profile explicitly");
+    const found = Object.entries(profiles).find(([, p]) => p.account && String(p.account).toLowerCase() === accountEmail.toLowerCase());
+    if (!found) throw new Error(`no routines profile matches the authed claude.ai account ${accountEmail} (profiles: ${Object.keys(profiles).join(", ")}) — add one or set CLAUDE_ROUTINE_PROFILE`);
+    [label, entry] = found;
+  }
+  const routines = entry.routines || {};
+  const r = (repoSlug && routines[repoSlug]) || routines.default;
+  if (!r || !r.trigger || !r.token) {
+    throw new Error(`profile "${label}" has no routine for ${repoSlug || "(unknown repo)"} and no default — add routines["${repoSlug || "owner/repo"}"] or routines.default { trigger, token }`);
+  }
+  return { trigger: r.trigger, token: r.token, source: `profile:${label}${repoSlug && routines[repoSlug] ? `:${repoSlug}` : ":default"}`, account: entry.account };
+}
+
+// The currently AUTHED claude.ai account email (from the CLI's own config) — the hot-swap key.
+export function currentClaudeAccount(home = homedir()) {
+  try {
+    const j = JSON.parse(readFileSync(join(home, ".claude.json"), "utf8"));
+    return (j.oauthAccount && j.oauthAccount.emailAddress) || null;
+  } catch { return null; }
+}
+
+export function loadRoutineProfiles(env = process.env, home = homedir()) {
+  const p = env.CLAUDE_ROUTINES_FILE || join(home, ".claude-routines.json");
+  try { return JSON.parse(readFileSync(p, "utf8")); } catch { return null; }
+}
+
+// owner/repo from the git remote — routines are repo-bound, so this keys the per-repo lookup.
+export function repoSlugOf(root) {
+  try {
+    const r = spawnSync("git", ["remote", "get-url", "origin"], { cwd: root, encoding: "utf8" });
+    const m = /github\.com[:/]([^/]+)\/([^/\s]+?)(?:\.git)?\s*$/.exec(r.stdout || "");
+    return m ? `${m[1]}/${m[2]}` : null;
+  } catch { return null; }
+}
+
+// Fire the routine (BETA endpoint — experimental header, shapes may change).
+export async function fireRoutine(routine, text, fetchImpl = fetch) {
+  const res = await fetchImpl(`https://api.anthropic.com/v1/claude_code/routines/${routine.trigger}/fire`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${routine.token}`,
+      "anthropic-beta": "experimental-cc-routine-2026-04-01",
+      "anthropic-version": "2023-06-01",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ text }),
+  });
+  if (!res.ok) {
+    const hint = res.status === 401 ? " — routine token invalid/expired (re-create the API trigger)"
+      : res.status === 404 ? " — trigger id wrong, routine deleted, or the beta shape changed" : "";
+    throw new Error(`routine fire HTTP ${res.status}${hint} (beta API — check code.claude.com/docs/en/routines)`);
+  }
+  return await res.json();   // { claude_code_session_id, claude_code_session_url }
+}
+
 export async function runDispatch(root, key, opts = {}) {
   const env = opts.env || process.env;
-  const agent = DISPATCH_AGENTS[(opts.to || "claude").toLowerCase()];
-  if (!agent) throw new Error(`unknown dispatch agent "${opts.to}" (${Object.keys(DISPATCH_AGENTS).join("|")})`);
+  const to = (opts.to || "claude-cloud").toLowerCase();
   const io = { apiKey: env.LINEAR_API_KEY, fetchImpl: opts.fetchImpl || fetch };
 
   const find = () => {
@@ -34,6 +115,39 @@ export async function runDispatch(root, key, opts = {}) {
 
   let found = find();
   if (!found) throw new Error(`no slice or backlog item "${key}"`);
+
+  // ── claude-cloud: fire a Claude Code cloud session directly (NO Linear required) ──
+  if (to === "claude-cloud") {
+    const routine = resolveRoutine({
+      env,
+      profiles: opts.profiles !== undefined ? opts.profiles : loadRoutineProfiles(env),
+      accountEmail: opts.accountEmail !== undefined ? opts.accountEmail : currentClaudeAccount(),
+      repoSlug: opts.repoSlug !== undefined ? opts.repoSlug : repoSlugOf(root),
+    });
+    const text = [
+      machineFooter({ type: found.type, key }, null),
+      "",
+      "This is a roadmap cloud dispatch. The repo is cloned for you. Open docs/SLICES.md#" + key +
+      " and the entry (including its prompt) in docs/roadmap/roadmap.yaml — the YAML is canonical." +
+      " Honor the verification gate before committing, open a PR, NEVER merge." +
+      " Leftovers go to the BACKLOG ONLY — never new sprints or PIs (YAGNI applies to captures).",
+    ].join("\n");
+    const fired = await fireRoutine(routine, text, opts.fetchImpl || fetch);
+    const result = { dispatched: key, transport: "claude-cloud", routine: routine.source,
+      sessionId: fired.claude_code_session_id, sessionUrl: fired.claude_code_session_url };
+    // Board loop: when the node is Linear-mapped and we're authed, link the session on the
+    // issue. Best-effort — a failure here never fails the dispatch.
+    if (found.identifier && linearState({ meta: found.graph.meta, env }).authed) {
+      try {
+        await postDispatchComment(found.identifier, `Claude Code cloud session started for \`${key}\`: ${result.sessionUrl}`, io);
+        result.linearComment = found.identifier;
+      } catch { /* board link is a bonus, not a dependency */ }
+    }
+    return result;
+  }
+
+  const agent = DISPATCH_AGENTS[to];
+  if (!agent) throw new Error(`unknown dispatch target "${opts.to}" (claude-cloud | ${Object.keys(DISPATCH_AGENTS).join(" | ")})`);
   const state = linearState({ meta: found.graph.meta, env });
   if (!state.configured || !state.authed) throw new Error(linearStatusLine(state));
 
@@ -70,16 +184,23 @@ if (isMain) {
   const val = (n) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : undefined; };
   const key = args.find((a) => !a.startsWith("-"));
   if (!key) {
-    console.error(`usage: roadmap dispatch <slice-invoke|backlog-id> [--to ${Object.keys(DISPATCH_AGENTS).join("|")}]`);
+    console.error(`usage: roadmap dispatch <slice-invoke|backlog-id> [--to claude-cloud|${Object.keys(DISPATCH_AGENTS).join("|")}]   (default claude-cloud)`);
     process.exit(2);
   }
   try {
     const r = await runDispatch(process.cwd(), key, { to: val("--to") });
-    console.log(`dispatched ${r.dispatched} → ${r.identifier} via ${r.agent} @-mention comment.`);
-    console.log(`VERIFY the agent picked it up. Live-tested finding: the comment posts fine, but summoning requires the agent's`);
-    console.log(`integration to be INSTALLED in the Linear workspace (Settings → Integrations — e.g. the Claude/coding-sessions`);
-    console.log(`agent); without it there is nothing to summon. If installed and nothing happens, delegate by hand — the capsule`);
-    console.log(`comment is already on the issue to orient the agent.`);
+    if (r.transport === "claude-cloud") {
+      console.log(`dispatched ${r.dispatched} → Claude Code cloud session (${r.routine}).`);
+      console.log(`session: ${r.sessionUrl}`);
+      if (r.linearComment) console.log(`board:   session link commented on ${r.linearComment}`);
+      console.log(`(beta Routines API — if shapes change, check code.claude.com/docs/en/routines)`);
+    } else {
+      console.log(`dispatched ${r.dispatched} → ${r.identifier} via ${r.agent} @-mention comment.`);
+      console.log(`VERIFY the agent picked it up. Live-tested finding: the comment posts fine, but summoning requires the agent's`);
+      console.log(`integration to be INSTALLED in the Linear workspace (Linear's native coding sessions are paid-plan-gated);`);
+      console.log(`without it there is nothing to summon. If installed and nothing happens, delegate by hand — the capsule`);
+      console.log(`comment is already on the issue to orient the agent.`);
+    }
   } catch (e) {
     console.error(`✗ ${e.message}`);
     process.exit(1);

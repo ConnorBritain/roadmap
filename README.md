@@ -337,9 +337,11 @@ The recommended workspace shape at agent scale: **one team per actively-managed 
 
 `roadmap linear provision` shapes the workspace idempotently: creates the labels the graph already knows (`roadmap` marker on every synced issue, `kind:*` for backlog items, `track:*` for the lanes actually present), attempts the five standard views (**Ready wave · In flight · Held on human · Backlog triage · Recently shipped** — the visibility layer; if the view API rejects, it prints a 60-second manual checklist instead), and prints two guidance texts: the workspace agent guidance and the **repo dispatch contract** to paste into `CLAUDE.md`/`AGENTS.md` — the block any cloud-delegated agent reads to self-orient (footer parse → YAML canonical → gate → PR, never merge → backlog-only leftovers). Projects carry PI theme + exit criteria as their descriptions.
 
-### Cloud dispatch (v0.5 seam — pending live verification)
+### Cloud dispatch
 
-`roadmap dispatch <key> [--to claude|codex|oz]` sends one slice/backlog item to a **cloud agent** via its Linear issue: push-maps it if needed, then posts an @-mention comment carrying the dispatch capsule. `roadmap fan --cloud` does it for a whole wave — **no worktrees, no disk ceiling**; the machine stops being the bottleneck and the cap defaults to the review ceiling (a human still merges). The @-mention-summons-the-agent mechanics and the delegate-field API are unverified against a live workspace — the command does the verified transport and tells you exactly what to check.
+`roadmap dispatch <key>` sends one slice/backlog item to a **Claude Code cloud session** — the default `claude-cloud` transport fires the Routines API directly (**no Linear plan required, no worktrees, no disk ceiling**; bounded only by the firing account's Claude plan). Multi-account workstations hot-swap automatically: routine credentials live in `~/.claude-routines.json` keyed by account email, and dispatch fires as **whoever is currently `claude /login`'d** (see [DEPLOYMENT.md § Cloud dispatch](docs/DEPLOYMENT.md)). When the slice is also Linear-mapped, the session URL is commented onto the issue — the board links to the live session. ⚠ Routines fire is a beta API.
+
+`roadmap fan --cloud` does it for a whole wave; the cap defaults to the review ceiling (machine ceilings vanish, but a human still merges). The alternative `--to claude|codex|oz` transport posts an @-mention capsule comment on the Linear issue instead — useful when the workspace has that agent's integration installed (Linear's native coding sessions are paid-plan-gated).
 
 ---
 
