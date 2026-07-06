@@ -12,7 +12,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadGraph, flatten } from "./lib/graph.mjs";
 import { loadBacklog, roadmapPaths } from "./lib/store.mjs";
-import { gql, runSync } from "./linear.mjs";
+import { runSync, postDispatchComment } from "./linear.mjs";
 import { linearState, linearStatusLine, machineFooter } from "./lib/linear-core.mjs";
 
 export const DISPATCH_AGENTS = { claude: "@Claude", codex: "@Codex", oz: "@Oz" };
@@ -47,10 +47,6 @@ export async function runDispatch(root, key, opts = {}) {
     }
   }
 
-  // Resolve the issue uuid — comments write against the id, not the identifier.
-  const d = await gql(`query { issue(id: "${found.identifier}") { id identifier } }`, {}, io);
-  if (!d.issue) throw new Error(`mapped issue ${found.identifier} not found in Linear (deleted?)`);
-
   const body = [
     `${agent} please work this issue.`,
     "",
@@ -60,8 +56,7 @@ export async function runDispatch(root, key, opts = {}) {
   ].join("\n");
 
   try {
-    await gql(`mutation($input: CommentCreateInput!) { commentCreate(input: $input) { comment { id } } }`,
-      { input: { issueId: d.issue.id, body } }, io);
+    await postDispatchComment(found.identifier, body, io);
   } catch (e) {
     throw new Error(`dispatch failed — tried: push-map (${pushed ? "pushed" : "already mapped"} → ${found.identifier}), commentCreate on ${found.identifier} (${e.message}). Delegate-field mutation not attempted (unverified).`);
   }

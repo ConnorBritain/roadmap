@@ -26,8 +26,9 @@ import {
 const ENDPOINT = "https://api.linear.app/graphql";
 const CURSOR_FILE = ".roadmap-linear-state.json";
 
-// ── transport (injectable) ────────────────────────────────────────────────────
-export async function gql(query, variables, { apiKey, fetchImpl = fetch }) {
+// ── transport (injectable; deliberately NOT exported — every consumer goes through the
+// run* operations so this stays the only file that talks to the API) ──────────────────
+async function gql(query, variables, { apiKey, fetchImpl = fetch }) {
   const res = await fetchImpl(ENDPOINT, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: apiKey },   // personal key: bare, no Bearer
@@ -209,6 +210,15 @@ export async function runSync(root, opts = {}) {
     if (cfg.pull === "off" || cfg.pull === "auto" || inboxEmpty) { writeCursor(root, now); result.cursorAdvanced = true; }
   }
   return result;
+}
+
+// ── dispatch transport (the only-network-file rule: dispatch.mjs owns the capsule, this
+// owns the wire) — resolve the issue uuid and post the @-mention comment.
+export async function postDispatchComment(identifier, body, io) {
+  const d = await gql(`query { issue(id: "${identifier}") { id identifier } }`, {}, io);
+  if (!d.issue) throw new Error(`mapped issue ${identifier} not found in Linear (deleted?)`);
+  await gql(`mutation($input: CommentCreateInput!) { commentCreate(input: $input) { comment { id } } }`,
+    { input: { issueId: d.issue.id, body } }, io);
 }
 
 // ── provision: shape the workspace (idempotent) ───────────────────────────────
