@@ -77,6 +77,7 @@ export function flatten(graph) {
         track: sp.track || null,            // optional lane label for the three-track partition (--track)
         priority: sp.priority || null,      // optional { tier, weight, reason } (see lib/priority.mjs)
         prompt: sp.prompt || null,          // optional author-stashed pickup instructions
+        linear: sp.linear || null,          // optional Linear issue identifier (see lib/linear-core.mjs)
         readOrder: sp.read_order || [],
         resumeAction: sp.resume_action || "",
         kickoffBrief: sp.kickoff_brief || "brief",

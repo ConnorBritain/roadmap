@@ -15,7 +15,7 @@ const SLUG = /^[a-z0-9][a-z0-9-]*$/;
 // Fields a caller may set on an item via backlog_set (id is structural, set only at add).
 const ITEM_SETTABLE = new Set([
   "title", "kind", "status", "priority", "source", "refs", "touches",
-  "est_sessions", "gate", "prompt", "prs", "completed_on", "promoted_to",
+  "est_sessions", "gate", "prompt", "prs", "completed_on", "promoted_to", "linear",
 ]);
 
 // ── validation (plain object) ───────────────────────────────────────────────
@@ -70,7 +70,7 @@ export function addItem(doc, args) {
   const id = args.id || nextAutoId(doc);
   if (itemLocById(doc, id) >= 0) throw new Error(`backlog item "${id}" already exists`);
   const node = { id, title: args.title, kind: args.kind || "chore", status: args.status || "open" };
-  for (const k of ["priority", "source", "refs", "touches", "est_sessions", "gate", "prompt"]) {
+  for (const k of ["priority", "source", "refs", "touches", "est_sessions", "gate", "prompt", "linear"]) {
     if (args[k] != null) node[k] = args[k];
   }
   // createNode: addIn stores a plain object un-wrapped, which breaks later AST reads (.get)
@@ -282,9 +282,10 @@ export const BACKLOG_TOOLS = [
     inputSchema: { type: "object", required: ["title"], properties: {
       title: { type: "string" }, id: { type: "string" }, kind: { enum: KINDS },
       priority: PRIORITY_SCHEMA,
-      source: { type: "object", properties: { slice: { type: "string" }, date: { type: "string" }, note: { type: "string" } } },
+      source: { type: "object", properties: { slice: { type: "string" }, date: { type: "string" }, note: { type: "string" },
+        linear: { type: "object", properties: { team: { type: "string" }, project: { type: "string" }, issue: { type: "string" } } } } },
       refs: { type: "array", items: { type: "string" } }, touches: { type: "array", items: { type: "string" } },
-      est_sessions: { type: "number" }, gate: { type: "string" }, prompt: { type: "string" } } } },
+      est_sessions: { type: "number" }, gate: { type: "string" }, prompt: { type: "string" }, linear: { type: "string" } } } },
   { name: "backlog_set", description: "Set allowed fields on a backlog item (by id). null value deletes a field. Re-renders BACKLOG.md.",
     inputSchema: { type: "object", required: ["id", "fields"], properties: {
       id: { type: "string" }, fields: { type: "object" } } } },

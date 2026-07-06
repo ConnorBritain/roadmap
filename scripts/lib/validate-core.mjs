@@ -5,6 +5,7 @@
 import { flatten, detectCycle, STATUS } from "./graph.mjs";
 import { validateExecution } from "./execution.mjs";
 import { validatePriority } from "./priority.mjs";
+import { validateLinearConfig } from "./linear-core.mjs";
 
 const isDone = (s) => !!(STATUS[s] && STATUS[s].done);
 
@@ -20,6 +21,11 @@ export function validateGraph(graph) {
   if (meta.terminal && !["warp", "wt", "tmux", "iterm", "background", "print"].includes(meta.terminal)) {
     err(`meta.terminal "${meta.terminal}" is not a known adapter`);
   }
+
+  // Optional meta.linear + per-PI overrides + sprint linear fields. Absent → no-op.
+  const lin = validateLinearConfig(graph);
+  for (const e of lin.errors) err(e);
+  for (const w of lin.warnings) warn(w);
 
   const validStatus = new Set(Object.keys(STATUS));
   const seenPiIds = new Set();

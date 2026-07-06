@@ -15,7 +15,16 @@ export const baseRefOf = (graph) => `${remoteOf(graph)}/${baseBranchOf(graph)}`;
 
 export function branchFor(node, graph) {
   const conv = (graph.meta && graph.meta.branch_convention) || "{pi}/{sprint}";
-  return conv.replace("{pi}", node.piId).replace("{sprint}", node.id);
+  let br = conv.replace("{pi}", node.piId).replace("{sprint}", node.id);
+  // {linear} = the node's Linear issue identifier, lowercased — a branch containing it is
+  // auto-linked to the issue by Linear. Cleanup runs ONLY when the token was used, so
+  // conventions without it stay byte-identical; a node without an id degrades gracefully
+  // ({pi}/{linear}-{sprint} -> platform/s1, no "/-" or "--" residue).
+  if (conv.includes("{linear}")) {
+    br = br.replace("{linear}", String(node.linear || "").toLowerCase())
+      .replace(/--+/g, "-").replace(/\/-/g, "/").replace(/-+$/, "");
+  }
+  return br;
 }
 
 // Launch-command template for INTERACTIVE worker/lead sessions. meta.agent_cmd swaps the

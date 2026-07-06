@@ -29,6 +29,12 @@ import {
 } from "../lib/backlog-core.mjs";
 import { validateGraph } from "../lib/validate-core.mjs";
 import { mutateRoadmap, mutateBacklog, mutateBoth } from "../lib/store.mjs";
+import {
+  normalizeLinearConfig, effectiveGranularity, linearState, checkPiOverrideAck,
+  resolvePushState, pullStatusFor, priorityToLinear, LINEAR_TO_PRIORITY,
+  issueDescription, machineFooter, buildPushPlan, buildPullProposals, validateLinearConfig,
+} from "../lib/linear-core.mjs";
+import { addPi } from "../lib/mcp-core.mjs";
 import { parseDocument } from "yaml";
 import { join, resolve } from "node:path";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
@@ -1231,6 +1237,184 @@ test("agentCmdFor default byte-equals the current claude command; custom templat
   const codex = { meta: { agent_cmd: "codex exec --sandbox {mode} {prompt}" } };
   eq(agentCmdFor(codex, { prompt: "go", mode: "plan", quote: "'" }),
     `codex exec --sandbox plan 'go'`, "custom agent template substitutes mode + quoted prompt");
+});
+
+// ── linear-core: detection + config + backward compat ────────────────────────
+const L_STATES = [
+  { id: "st-b", name: "Backlog", type: "backlog", position: 0 },
+  { id: "st-u", name: "Todo", type: "unstarted", position: 1 },
+  { id: "st-s", name: "In Progress", type: "started", position: 2 },
+  { id: "st-s2", name: "Blocked", type: "started", position: 3 },
+  { id: "st-c", name: "Done", type: "completed", position: 4 },
+  { id: "st-x", name: "Canceled", type: "canceled", position: 5 },
+];
+const L_CFG = normalizeLinearConfig({ linear: { team: "ENG" } });
+
+// WHY: a repo without meta.linear must behave byte-identically to v0.2 — a Linear feature
+// that leaks into unconfigured repos (a probe, a branch change, a render diff) breaks everyone.
+test("linear off by default: no config → null, unauthed state, branchFor untouched without the token", () => {
+  eq(normalizeLinearConfig({}), null, "no meta.linear → null (all behavior off)");
+  eq(normalizeLinearConfig({ linear: { granularity: "pis" } }), null, "teamless block → still off");
+  const st = linearState({ meta: {}, env: {} });
+  eq([st.configured, st.authed, st.lastSync], [false, false, null], "unconfigured + unauthed");
+  const wired = linearState({ meta: { linear: { team: "ENG" } }, env: { LINEAR_API_KEY: "k" }, cursor: { lastSync: "2026-07-01" } });
+  eq([wired.configured, wired.authed, wired.lastSync], [true, true, "2026-07-01"], "wired state");
+  // a node WITH a linear id but a convention WITHOUT the token → branch byte-identical
+  const g = { meta: {} };
+  eq(branchFor({ piId: "a", id: "s1", linear: "ABC-123" }, g), "a/s1", "no {linear} token → unchanged");
+});
+
+// WHY: a wrong state mapping silently mis-files work on the team's board — the type
+// defaults must hold, a name override must win, and an unresolvable name must fail loudly
+// naming what IS available (not push to a random state).
+test("resolvePushState maps by type, honors status_map by name, and errors naming available states", () => {
+  eq(resolvePushState("scheduled", L_CFG, L_STATES).id, "st-b", "scheduled → backlog type");
+  eq(resolvePushState("active", L_CFG, L_STATES).id, "st-s", "active → first started state");
+  eq(resolvePushState("blocked", L_CFG, L_STATES).id, "st-s", "blocked stays started (roadmap is the richer truth)");
+  eq(resolvePushState("complete", L_CFG, L_STATES).id, "st-c", "complete → completed");
+  const mapped = normalizeLinearConfig({ linear: { team: "ENG", status_map: { blocked: "Blocked" } } });
+  eq(resolvePushState("blocked", mapped, L_STATES).id, "st-s2", "status_map name override wins");
+  const bad = normalizeLinearConfig({ linear: { team: "ENG", status_map: { active: "Doing" } } });
+  throws(() => resolvePushState("active", bad, L_STATES), "available: Backlog, Todo", "unresolvable name lists the real states");
+  eq(pullStatusFor("unstarted"), "next", "pull inverse");
+  eq(priorityToLinear({ tier: "P0" }), 1, "P0 → Urgent(1)");
+  eq(priorityToLinear(null), 0, "no priority → 0");
+  eq(LINEAR_TO_PRIORITY[4], "P3", "Low(4) → P3");
+});
+
+// WHY: the footer is the machine contract any agent dispatched from Linear parses to
+// orient; and copying read-order/prompt into Linear is exactly the duplication this
+// integration promises not to create.
+test("issueDescription: verbosity levers, footer always last, prompt/read-order never leak", () => {
+  const node = { invoke: "auth-sessions", title: "Session tokens", what: "Wire JWT refresh",
+    gate: "default", estSessions: 3, priority: { tier: "P1", weight: 60, reason: "launch blocker" },
+    prompt: "SECRET-INSTRUCTIONS", readOrder: ["docs/auth.md"], linear: null };
+  const brief = issueDescription(node, L_CFG, { docsUrl: "https://github.com/x/y/blob/main" });
+  ok(brief.endsWith(machineFooter({ type: "slice", key: "auth-sessions" }, "https://github.com/x/y/blob/main")), "footer last");
+  ok(brief.includes("Wire JWT refresh") && brief.includes("Est: ~3"), "brief carries what + est");
+  ok(!brief.includes("SECRET-INSTRUCTIONS") && !brief.includes("docs/auth.md"), "prompt/read-order never leak");
+  ok(!brief.includes("launch blocker"), "brief verbosity omits the priority reason");
+  const titleOnly = issueDescription(node, normalizeLinearConfig({ linear: { team: "ENG", verbosity: "title" } }), {});
+  eq(titleOnly, machineFooter({ type: "slice", key: "auth-sessions" }, null), "title verbosity = footer only");
+  const full = issueDescription(node, normalizeLinearConfig({ linear: { team: "ENG", verbosity: "full" } }), {});
+  ok(full.includes("P1 · weight 60 — launch blocker"), "full verbosity carries the priority reason");
+  ok(machineFooter({ type: "backlog", key: "b7" }, null).includes("roadmap grab b7"), "backlog footer says grab");
+});
+
+// ── linear-core: push plan ────────────────────────────────────────────────────
+const pushGraph = (over = {}) => ({
+  meta: { schema_version: 1, program: "T", linear: { team: "ENG", ...over } },
+  pis: [
+    { id: "auth", title: "Authentication", status: "active", linear: { project: "proj-1" }, sprints: [
+      { id: "s1", title: "Login", status: "active", invoke: "auth-login", linear: "ENG-1" },
+      { id: "s2", title: "Tokens", status: "scheduled", invoke: "auth-tokens" },
+      { id: "s3", title: "Old", status: "complete", invoke: "auth-old" },
+    ]},
+  ],
+});
+const SNAP = (loginOverrides = {}) => ({
+  projects: { "proj-1": { id: "proj-1", name: "Authentication" } },
+  issues: { "ENG-1": { id: "uuid-1", title: "Login",
+    description: issueDescription({ invoke: "auth-login", title: "Login", what: "Login", gate: "default", estSessions: null, priority: null }, L_CFG, { target: { type: "slice", key: "auth-login" } }),
+    priority: 0, stateId: "st-s", ...loginOverrides } },
+});
+
+// WHY: a non-idempotent push spams duplicate issues/updates on every /sync — a matching
+// snapshot must produce ZERO ops, and one changed field exactly one update.
+test("buildPushPlan is idempotent: matching snapshot → only the missing-issue create; changed title → one update", () => {
+  const cfg = normalizeLinearConfig(pushGraph().meta);
+  const plan = buildPushPlan({ graph: pushGraph(), backlog: null, cfg, teamStates: L_STATES, existing: SNAP() });
+  eq(plan.ops.map((o) => o.op), ["createIssue"], "only the unmapped not-done sprint creates (complete unmapped skipped, mapped unchanged)");
+  eq(plan.ops[0].writeBack, { kind: "sprint", invoke: "auth-tokens" }, "create writes the id back to the sprint");
+  const drifted = buildPushPlan({ graph: pushGraph(), backlog: null, cfg, teamStates: L_STATES, existing: SNAP({ title: "Login (old name)" }) });
+  const upd = drifted.ops.find((o) => o.op === "updateIssue");
+  eq(upd.payload, { title: "Login" }, "only the drifted field is sent");
+  eq(upd.id, "uuid-1", "update targets the Linear uuid");
+});
+
+// WHY: granularity is the leak-control lever — 'pis' must emit NO issues, and a per-PI
+// override must flip only that PI, or a public Linear team sees work it shouldn't.
+test("granularity gates issue ops globally and per-PI", () => {
+  const pisOnly = pushGraph({ granularity: "pis" });
+  const plan = buildPushPlan({ graph: pisOnly, backlog: null, cfg: normalizeLinearConfig(pisOnly.meta), teamStates: L_STATES, existing: SNAP() });
+  eq(plan.ops.filter((o) => o.op.includes("Issue")).length, 0, "pis granularity → projects only");
+  const overridden = pushGraph();
+  overridden.pis[0].linear.granularity = "pis";   // per-PI override on a slices-global roadmap
+  const plan2 = buildPushPlan({ graph: overridden, backlog: null, cfg: normalizeLinearConfig(overridden.meta), teamStates: L_STATES, existing: SNAP() });
+  eq(plan2.ops.filter((o) => o.op.includes("Issue")).length, 0, "override suppresses that PI's issues");
+  const withBacklog = pushGraph({ granularity: "slices+backlog" });
+  const backlog = { meta: { schema_version: 1 }, items: [
+    { id: "b1", title: "Fix", kind: "bug", status: "open" },
+    { id: "b2", title: "Moved", kind: "chore", status: "promoted", promoted_to: "auth/s9" },
+  ]};
+  const plan3 = buildPushPlan({ graph: withBacklog, backlog, cfg: normalizeLinearConfig(withBacklog.meta), teamStates: L_STATES, existing: SNAP() });
+  const itemOps = plan3.ops.filter((o) => o.writeBack && o.writeBack.kind === "item");
+  eq(itemOps.length, 1, "open item pushes; promoted item skipped (its sprint carries it)");
+});
+
+// WHY: an unacked per-PI override silently reshapes what the whole team sees in Linear;
+// the ack must gate the mutation BEFORE anything is written, with the exact actionable message.
+test("addPi rejects a conflicting linear override without the ack, exact message; ack or match passes", () => {
+  const y = `meta:\n  schema_version: 1\n  program: T\n  linear:\n    team: ENG\npis:\n  - id: a\n    title: A\n    status: active\n    sprints:\n      - { id: s1, title: S, status: active, invoke: x }\n`;
+  throws(() => addPi(parseDocument(y), { id: "platform", title: "P", linear: { granularity: "pis" } }),
+    `PI "platform" overrides Linear granularity ("pis") against the global meta.linear.granularity ("slices")`,
+    "conflict without ack throws the exact message");
+  const doc = parseDocument(y);
+  addPi(doc, { id: "platform", title: "P", linear: { granularity: "pis" }, yes_linear_override: true });
+  ok(String(doc.getIn(["pis", 1, "linear", "granularity"])) === "pis", "acked override written");
+  addPi(doc, { id: "match", title: "M", linear: { granularity: "slices" } });  // matches global → no ack needed
+  // checkPiOverrideAck standalone: no global config → never throws
+  checkPiOverrideAck(null, { granularity: "pis" }, false, "x");
+});
+
+// ── linear-core: pull proposals ───────────────────────────────────────────────
+// WHY: pull must not re-import the same issue forever (double captures) and inbound edits
+// must be PROPOSALS, never silent mutations — the human confirms what enters the graph.
+test("buildPullProposals dedupes known identifiers, captures watch issues with source demarcation, proposes deltas", () => {
+  const cfg = normalizeLinearConfig({ linear: { team: "ENG", pull: "propose",
+    watch: [{ team: "PUB", project: "Submit an issue", kind: "bug", priority: { tier: "P3" } }] } });
+  const graph = pushGraph();
+  const backlog = { meta: { schema_version: 1 }, items: [{ id: "pub-9", title: "Known", kind: "bug", status: "open", linear: "PUB-9" }] };
+  const inbound = [
+    { identifier: "PUB-9", title: "Known", priority: 0, state: { type: "backlog" }, team: "PUB", project: "Submit an issue" },   // known item, state backlog→scheduled? (item: no delta for open)
+    { identifier: "PUB-42", title: "Crash on empty config", priority: 1, state: { type: "backlog" }, team: "PUB", project: "Submit an issue" },
+    { identifier: "PUB-43", title: "Watched but off-project", priority: 0, state: { type: "backlog" }, team: "PUB", project: "Other" },
+    { identifier: "ENG-1", title: "Login", priority: 2, state: { type: "completed" }, team: "ENG", project: null },
+  ];
+  const { newItems, deltas } = buildPullProposals({ cfg, inbound, graph, backlog });
+  eq(newItems.length, 1, "known + off-watch identifiers skipped; one genuine capture");
+  const it = newItems[0];
+  eq(it.id, "pub-42", "stable id = lowercased identifier (the cross-machine dedupe key)");
+  eq(it.source.linear, { team: "PUB", project: "Submit an issue", issue: "PUB-42" }, "origin demarcation carried");
+  eq(it.priority, { tier: "P0" }, "the issue's own Urgent(1) outranks the watch default P3");
+  eq(it.kind, "bug", "watch default kind applied");
+  const statusDelta = deltas.find((d) => d.key === "auth-login" && d.field === "status");
+  eq([statusDelta.from, statusDelta.to], ["active", "complete"], "mapped-issue completion is a PROPOSAL, not a mutation");
+  const priDelta = deltas.find((d) => d.key === "auth-login" && d.field === "priority.tier");
+  eq([priDelta.from, priDelta.to], [null, "P1"], "priority edit proposed");
+});
+
+// WHY: validate is the only net for hand-edited YAML — bad enums and non-string ids must
+// error, and a stored PI override must at least warn so the mismatch is never invisible.
+test("validateLinearConfig: enum/team errors, PI-mismatch warning, non-string sprint linear", () => {
+  ok(validateLinearConfig({ meta: {}, pis: [] }).errors.length === 0, "absent → clean");
+  ok(validateLinearConfig({ meta: { linear: { granularity: "slices" } }, pis: [] }).errors[0].includes("team is required"), "teamless errors");
+  ok(validateLinearConfig({ meta: { linear: { team: "E", pull: "always" } }, pis: [] }).errors[0].includes("pull"), "bad enum errors");
+  ok(validateLinearConfig({ meta: { linear: { team: "E", watch: [{ project: "X" }] } }, pis: [] }).errors[0].includes("needs a team"), "watch without team errors");
+  const g = { meta: { linear: { team: "E", granularity: "slices" } }, pis: [
+    { id: "p", title: "P", status: "active", linear: { granularity: "pis" }, sprints: [{ id: "s1", title: "S", status: "active", invoke: "x", linear: 123 }] },
+  ]};
+  const r = validateLinearConfig(g);
+  ok(r.warnings.some((w) => w.includes("per-PI override in effect")), "stored mismatch warns");
+  ok(r.errors.some((e) => e.includes("must be a string issue identifier")), "non-string sprint linear errors");
+});
+
+// WHY: a malformed {linear} branch breaks worktree creation mid-fanout — the token must
+// produce a Linear-autolinkable branch with an id and degrade cleanly without one.
+test("branchFor {linear} token: autolinkable with an id, clean without", () => {
+  const g = { meta: { branch_convention: "{pi}/{linear}-{sprint}" } };
+  eq(branchFor({ piId: "platform", id: "s1", linear: "ABC-123" }, g), "platform/abc-123-s1", "id lowercased into the branch");
+  eq(branchFor({ piId: "platform", id: "s1", linear: null }, g), "platform/s1", "no id → no residue");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
