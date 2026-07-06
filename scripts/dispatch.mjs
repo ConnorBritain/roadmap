@@ -80,8 +80,18 @@ export function repoSlugOf(root) {
 }
 
 // Fire the routine (BETA endpoint — experimental header, shapes may change).
+// `trigger` accepts either the bare trig_… id OR the full endpoint URL exactly as
+// claude.ai's API-trigger modal shows it (the modal displays a URL, never a labeled id).
+export function routineEndpoint(trigger) {
+  if (/^https?:\/\//.test(trigger)) {
+    const t = trigger.replace(/\/+$/, "");
+    return t.endsWith("/fire") ? t : `${t}/fire`;
+  }
+  return `https://api.anthropic.com/v1/claude_code/routines/${trigger}/fire`;
+}
+
 export async function fireRoutine(routine, text, fetchImpl = fetch) {
-  const res = await fetchImpl(`https://api.anthropic.com/v1/claude_code/routines/${routine.trigger}/fire`, {
+  const res = await fetchImpl(routineEndpoint(routine.trigger), {
     method: "POST",
     headers: {
       Authorization: `Bearer ${routine.token}`,

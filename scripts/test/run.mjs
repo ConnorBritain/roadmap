@@ -39,7 +39,7 @@ import {
 } from "../lib/linear-core.mjs";
 import { addPi } from "../lib/mcp-core.mjs";
 import { runSync, runProvision, readCursor } from "../linear.mjs";
-import { runDispatch, resolveRoutine, fireRoutine } from "../dispatch.mjs";
+import { runDispatch, resolveRoutine, fireRoutine, routineEndpoint } from "../dispatch.mjs";
 import { graphDiff, backlogDiff, reviewDigest, pisInFlight } from "../lib/review-core.mjs";
 import { parseDocument } from "yaml";
 import { join, resolve } from "node:path";
@@ -2024,6 +2024,14 @@ test("runDispatch --to claude-cloud fires the routine without any Linear config"
   const body = JSON.parse(fires[0].init.body);
   ok(body.text.includes("roadmap: slice=taken") && body.text.includes("NEVER merge"), "capsule carries footer + contract");
   rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: the API-trigger modal shows a URL, never a labeled trigger id — users will paste
+// whatever they copied. Both forms must resolve to the same /fire endpoint.
+test("routineEndpoint accepts a bare trig id or the full modal URL", () => {
+  eq(routineEndpoint("trig_01ABC"), "https://api.anthropic.com/v1/claude_code/routines/trig_01ABC/fire", "bare id");
+  eq(routineEndpoint("https://api.anthropic.com/v1/claude_code/routines/trig_01ABC/fire"), "https://api.anthropic.com/v1/claude_code/routines/trig_01ABC/fire", "full fire URL verbatim");
+  eq(routineEndpoint("https://api.anthropic.com/v1/claude_code/routines/trig_01ABC/"), "https://api.anthropic.com/v1/claude_code/routines/trig_01ABC/fire", "URL without /fire gains it");
 });
 
 // WHY: a failed fire must be actionable (beta API — 401/404 have specific meanings), and a

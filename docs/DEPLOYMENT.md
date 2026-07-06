@@ -144,7 +144,7 @@ roadmap linear sync              # projects the roadmap; /sync now includes the 
 1. On claude.ai → **Code → Routines** (claude.ai/code/routines) → New routine.
 2. Point it at the target **GitHub repo** (must be pushed/connected). Saved prompt — keep it generic; the dispatch capsule arrives as the fired text:
    > You are a roadmap dispatch worker. The trigger message contains a machine capsule naming a slice — follow it exactly: read docs/SLICES.md and docs/roadmap/roadmap.yaml for the named slice, honor its gate, open a PR, never merge, leftovers to the backlog only.
-3. Add an **API trigger** → copy the trigger id (`trig_…`) and bearer token (`sk-ant-oat01-…`).
+3. Add an **API trigger** (save the routine first — the endpoint is generated after saving). The modal shows a **URL** (the `trig_…` id is embedded in it, never labeled separately) and a **Generate token** button — the token (`sk-ant-oat01-…`) is shown ONCE; copy it immediately. Use the whole URL as the `trigger` value — the tool accepts either the full URL or the bare `trig_…` id.
 
 **Single-account:** put them in env — `CLAUDE_ROUTINE_TRIGGER` + `CLAUDE_ROUTINE_TOKEN`. Done.
 
