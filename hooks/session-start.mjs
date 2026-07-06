@@ -42,7 +42,7 @@ try {
   const g = graph.loadGraph(join(root, "docs", "roadmap", "roadmap.yaml"));
   const model = graph.flatten(g);
   const cap = (g.meta && g.meta.default_concurrency) || 3;
-  const { waves, held } = graph.computeWaves(model, cap);
+  const { waves, held } = graph.computeWaves(model, cap, { coherence: graph.coherenceEnabled(g.meta) });
   const ready = (waves[0] || []).map((n) => n.invoke);
   const onHuman = held.onHuman.map((n) => n.invoke);
 

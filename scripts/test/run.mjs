@@ -5,8 +5,9 @@
 // real-world collision, not a cosmetic bug. Run: node scripts/test/run.mjs  (or npm test).
 
 import {
-  flatten, detectCycle, computeWaves, execPlan, sessionsRemaining, resolveGate, isDone, readyNodes,
+  flatten, detectCycle, computeWaves, execPlan, sessionsRemaining, resolveGate, isDone, readyNodes, coherenceEnabled,
 } from "../lib/graph.mjs";
+import { buildPlan } from "../lib/plan.mjs";
 import { nodeWeight, recommendConcurrency, probeDisk } from "../lib/recommend.mjs";
 import { synthesizeBrief, branchFor, worktreeFor, baseRefOf, baseBranchOf, remoteOf, launchPrompt, agentCmdFor, DEFAULT_AGENT_CMD } from "../lib/brief.mjs";
 import { route, classify, buildArgs, findRepoRoot, missingRoadmapHelp, expandShort, REL } from "../lib/cli-core.mjs";
@@ -15,7 +16,7 @@ import { terminalChoices, moveSelection, parseCap, buildFanArgs, autoOutName } f
 import { TOOLS, addSprint, setStatus, setFields, bulkSet, prune, validateDocOrThrow, readValidate, serialize } from "../lib/mcp-core.mjs";
 import { parseAssignments } from "../lib/cli-core.mjs";
 import { diffPrStates, matchesRoadmapBranches, checksOf } from "../lib/pr-watch-core.mjs";
-import { findUnrecordedMerges, reconcileNudge, underParallelizedWarnings } from "../lib/sync-core.mjs";
+import { findUnrecordedMerges, reconcileNudge, underParallelizedWarnings, sprawlWarnings, captureRatio } from "../lib/sync-core.mjs";
 import {
   validateExecution, suggestedConcurrency, executionDirectiveLines, normalizeExecution,
   teamSize, filterByTrack, dirClusters, EXEC_MODES, EXEC_ROLES,
@@ -1560,6 +1561,114 @@ test("runSync errors are the setup-guidance contract", async () => {
     (e) => ok(e.message.includes("LINEAR_API_KEY"), "unauthed names the env var"));
   rmSync(root, { recursive: true, force: true });
   rmSync(lroot, { recursive: true, force: true });
+});
+
+// ── sprawl guardrail ──────────────────────────────────────────────────────────
+// WHY: unchecked capture growth is how a roadmap silently doubles between reviews — the
+// ratio must fire above threshold, stay quiet at/below it, and never fire on an empty window.
+test("sprawlWarnings: ratio fires above threshold, quiet at it, quiet on an empty window", () => {
+  const hot = sprawlWarnings({ completed: 2, captured: 5, addedSprints: 2 });
+  eq(hot.length, 1, "one ratio warning");
+  eq(hot[0], `sprawl: 7 captured (5 item(s) + 2 sprint(s)) vs 2 completed since the last review — ratio 3.5 exceeds capture_ratio 2; scope is growing faster than it ships. Triage before adding more.`, "exact wording");
+  eq(sprawlWarnings({ completed: 3, captured: 5, addedSprints: 1 }), [], "ratio exactly 2.0 stays quiet (threshold is exceeded, not met)");
+  eq(sprawlWarnings({ completed: 0, captured: 0 }), [], "empty window → no noise");
+  eq(sprawlWarnings({ completed: 1, captured: 5, ratioThreshold: 10 }), [], "meta.discipline knob raises the bar");
+  eq(captureRatio({ discipline: { capture_ratio: 5 } }), 5, "captureRatio reads the knob");
+  eq(captureRatio({}), 2, "default 2");
+});
+
+// WHY: a PI added by an agent reshapes strategy without a human decision — it must warn
+// even when the capture ratio is perfectly healthy.
+test("sprawlWarnings: an added PI flags regardless of ratio", () => {
+  const w = sprawlWarnings({ completed: 5, captured: 1, addedPis: ["billing"] });
+  eq(w.length, 1, "PI flag fires with a clean ratio");
+  eq(w[0], `sprawl: PI "billing" added since the last review — new PIs are strategic scope; confirm this was a human decision, not an agent capture.`, "exact wording");
+});
+
+// WHY: an invalid capture_ratio would silently disable the guardrail; the review anchor
+// must be structurally sound or /debrief diffs against garbage.
+test("validateGraph checks meta.discipline and meta.last_review shapes", () => {
+  const base = (meta) => ({ meta: { schema_version: 1, program: "T", ...meta }, pis: [
+    { id: "a", title: "A", status: "active", sprints: [{ id: "s1", title: "S", status: "active", invoke: "x", est_sessions: 1 }] }] });
+  eq(validateGraph(base({ discipline: { capture_ratio: 3, coherence: false } })).errors, [], "valid knobs pass");
+  ok(validateGraph(base({ discipline: { capture_ratio: 0 } })).errors[0].includes("capture_ratio"), "zero ratio rejected");
+  ok(validateGraph(base({ discipline: [] })).errors[0].includes("mapping"), "array discipline rejected");
+  ok(validateGraph(base({ discipline: { coherence: "yes" } })).errors[0].includes("coherence"), "non-boolean coherence rejected");
+  eq(validateGraph(base({ last_review: { date: "2026-07-06", commit: "abc123" } })).errors, [], "valid anchor passes");
+  ok(validateGraph(base({ last_review: { date: "2026-07-06" } })).errors[0].includes("last_review"), "anchor missing commit rejected");
+});
+
+// WHY: the brief is the only channel to a worker session — if it doesn't forbid sprint/PI
+// creation, every helpful agent files follow-up scope and the roadmap doubles.
+test("synthesizeBrief carries the temperance contract", () => {
+  const g = { meta: { schema_version: 1, program: "T", default_gate: "npm test" },
+    pis: [{ id: "a", title: "A", status: "active", sprints: [sp("s1", { status: "active", invoke: "x" })] }] };
+  const b = synthesizeBrief(flatten(g).nodes[0], g);
+  ok(b.includes("BACKLOG ONLY"), "backlog-only rule present");
+  ok(b.includes("NEVER add sprints or PIs"), "scope prohibition present");
+  ok(b.includes("YAGNI applies to captures too"), "temperance line present");
+});
+
+// ── wave-packing coherence ────────────────────────────────────────────────────
+// WHY: a capped wave that takes one slice from each of N PIs leaves every PI half-open —
+// coherence must prefer finishing started PIs, but NEVER outrank a declared priority
+// (a P0 in a fresh PI still wins), and single-PI graphs must be untouched.
+test("computeWaves coherence: started/closest-to-done PIs win equal-priority cap slots; priority still outranks; opt-out restores old order", () => {
+  const g = (opts = {}) => ({ meta: opts.meta || {}, pis: [
+    { id: "started", title: "S", status: "active", sprints: [
+      { id: "s1", title: "done", status: "complete", invoke: "started-done" },
+      { id: "s2", title: "next", status: "next", invoke: "started-next", touches: ["f1"] },
+    ]},
+    { id: "fresh", title: "F", status: "next", sprints: [
+      { id: "s1", title: "aaa", status: "next", invoke: "aaa-fresh", touches: ["f2"], ...(opts.freshPriority ? { priority: { tier: "P0" } } : {}) },
+    ]},
+  ]});
+  // equal priority: the started PI's slice beats the alphabetically-earlier fresh one
+  const m1 = flatten(g());
+  eq(computeWaves(m1, 1).waves[0].map((n) => n.invoke), ["started-next"], "started PI wins the single slot");
+  // declared priority overrides coherence — no overweighting
+  const m2 = flatten(g({ freshPriority: true }));
+  eq(computeWaves(m2, 1).waves[0].map((n) => n.invoke), ["aaa-fresh"], "P0 in a fresh PI still wins");
+  // opt-out restores the old status/est/alpha order
+  eq(computeWaves(m1, 1, { coherence: false }).waves[0].map((n) => n.invoke), ["aaa-fresh"], "coherence:false → alphabetical again");
+  eq(coherenceEnabled({}), true, "default on");
+  eq(coherenceEnabled({ discipline: { coherence: false } }), false, "meta opt-out");
+});
+
+// WHY: among two started PIs, the one closer to done should close first — otherwise the
+// scheduler keeps N PIs perpetually at 80%.
+test("computeWaves coherence: closest-to-done started PI outranks a bigger started PI", () => {
+  const g = { meta: {}, pis: [
+    { id: "big", title: "B", status: "active", sprints: [
+      { id: "s1", title: "d", status: "complete", invoke: "big-done" },
+      { id: "s2", title: "a", status: "next", invoke: "aaa-big", touches: ["f1"] },
+      { id: "s3", title: "b", status: "next", invoke: "bbb-big", touches: ["f2"] },
+      { id: "s4", title: "c", status: "next", invoke: "ccc-big", touches: ["f3"] },
+    ]},
+    { id: "small", title: "S", status: "active", sprints: [
+      { id: "s1", title: "d", status: "complete", invoke: "small-done" },
+      { id: "s2", title: "z", status: "next", invoke: "zzz-small", touches: ["f4"] },
+    ]},
+  ]};
+  eq(computeWaves(flatten(g), 1).waves[0].map((n) => n.invoke), ["zzz-small"], "one-remaining PI closes before the three-remaining PI");
+});
+
+// WHY: the plan's closes annotation is the coherence read-out — a wave that finishes a PI
+// must say so, and one that doesn't must not.
+test("buildPlan waveCloses names the PIs a wave finishes", () => {
+  const g = { meta: { schema_version: 1, program: "T" }, pis: [
+    { id: "a", title: "A", status: "active", sprints: [
+      { id: "s1", title: "d", status: "complete", invoke: "a-done" },
+      { id: "s2", title: "last", status: "next", invoke: "a-last", touches: ["f1"], est_sessions: 1 },
+    ]},
+    { id: "b", title: "B", status: "active", sprints: [
+      { id: "s1", title: "one", status: "next", invoke: "b-one", touches: ["f2"], est_sessions: 1 },
+      { id: "s2", title: "two", status: "next", invoke: "b-two", touches: ["f2"], est_sessions: 1 },  // same file → later wave
+    ]},
+  ]};
+  const plan = buildPlan(g, { cap: 3, disk: null });
+  eq(plan.waveCloses[0], ["a"], "wave 1 closes PI a (b still has contended work)");
+  ok(plan.waveCloses[plan.waves.length - 1].includes("b"), "the final wave closes b");
 });
 
 await Promise.all(pending);

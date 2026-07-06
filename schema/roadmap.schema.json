@@ -72,6 +72,23 @@
             }
           }
         },
+        "discipline": {
+          "type": "object", "additionalProperties": false,
+          "description": "Scope-discipline knobs read by the /sync and /debrief guardrails and the wave scheduler",
+          "properties": {
+            "capture_ratio": { "type": "number", "exclusiveMinimum": 0, "default": 2, "description": "Max (captured backlog items + added sprints) per completed slice per review window before the sprawl warning fires" },
+            "coherence": { "type": "boolean", "default": true, "description": "Wave-packing coherence: prefer finishing started PIs over opening fresh ones (strictly below declared priority). false restores pure priority/status/est ordering." }
+          }
+        },
+        "last_review": {
+          "type": "object", "additionalProperties": false,
+          "required": ["date", "commit"],
+          "description": "The /debrief / /retro anchor: when the human last reviewed, and the roadmap.yaml git rev AT that review (captured before the review's own edits). Written by the skills via Edit+validate.",
+          "properties": {
+            "date": { "type": "string", "description": "ISO date the review closed" },
+            "commit": { "type": "string", "description": "git rev of the previous review's roadmap.yaml state" }
+          }
+        },
         "links": {
           "type": "object", "additionalProperties": true,
           "description": "Optional repo cross-references the renderer links from (all optional; omitted ones are skipped)",

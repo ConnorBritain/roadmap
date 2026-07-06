@@ -17,7 +17,7 @@ import { writeFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import os from "node:os";
 import { join } from "node:path";
-import { loadGraph, flatten, computeWaves, readyNodes } from "./lib/graph.mjs";
+import { loadGraph, flatten, computeWaves, readyNodes, coherenceEnabled } from "./lib/graph.mjs";
 import { recommendConcurrency, probeDisk } from "./lib/recommend.mjs";
 import { synthesizeBrief, branchFor, worktreeFor, launchPrompt, baseRefOf, remoteOf, agentCmdFor } from "./lib/brief.mjs";
 import { launchDecision, bashWorktreeLines, pwshWorktreeLines, diskBlockLines } from "./lib/fanout-core.mjs";
@@ -62,7 +62,7 @@ if (rec.disk && rec.disk.cap < 1) {
 const cap = has("--cap") ? Number(val("--cap", rec.recommended)) : rec.recommended;
 
 let waves;
-try { ({ waves } = computeWaves(model, cap)); }
+try { ({ waves } = computeWaves(model, cap, { coherence: coherenceEnabled(graph.meta) })); }
 catch (e) { console.error(`✗ ${e.message}`); process.exit(1); }
 
 const fullWave = waves[waveIdx - 1] || [];

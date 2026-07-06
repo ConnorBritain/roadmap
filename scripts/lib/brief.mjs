@@ -115,6 +115,6 @@ ${gate}
 
 ## 6. Report back
 LOC delta · file inventory · gate result (pass/fail with output) · commit SHA · PR # · 2–3 line retro.
-Leftovers: before opening the PR, file anything left hanging (follow-ups, discovered bugs, deferred work) on the backlog — the \`backlog_add\` MCP tool if available, else \`roadmap backlog add "<title>" -k followup --slice ${node.invoke}\`, else list each under a **Leftovers** heading in the PR body (the lead's /sync harvests it).
+Leftovers: before opening the PR, file anything that genuinely blocks or follows this slice (discovered bugs, broken contracts, deferred gate items) to the BACKLOG ONLY — the \`backlog_add\` MCP tool if available, else \`roadmap backlog add "<title>" -k followup --slice ${node.invoke}\`, else a **Leftovers** heading in the PR body (the lead's /sync harvests it). NEVER add sprints or PIs from this session — scope decisions belong to the human. Skip speculative ideas entirely (YAGNI applies to captures too).
 `;
 }

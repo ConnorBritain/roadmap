@@ -32,14 +32,14 @@ export const TOOLS = [
     inputSchema: { type: "object", required: ["invoke"], properties: { invoke: { type: "string" } } } },
   { name: "validate", description: "Structural + dependency + cycle checks. Returns { ok, errors, warnings }. Read-only.",
     inputSchema: { type: "object", properties: {} } },
-  { name: "add_pi", description: "Append a new PI (program increment). Validates and re-renders SLICES.md. A linear.granularity that conflicts with the global meta.linear.granularity requires yes_linear_override: true.",
+  { name: "add_pi", description: "Append a new PI (program increment). Validates and re-renders SLICES.md. A linear.granularity that conflicts with the global meta.linear.granularity requires yes_linear_override: true. Scope discipline: a PI is strategic scope — add one only when the user explicitly asked for it; follow-up work goes to backlog_add.",
     inputSchema: { type: "object", required: ["id", "title"], properties: {
       id: { type: "string" }, title: { type: "string" }, status: { enum: STATUSES },
       theme: { type: "string" }, program_label: { type: "string" }, estimate_weeks: { type: "string" },
       exit_criteria: { type: "string" }, deps: { type: "array", items: { type: "string" } },
       linear: { type: "object", properties: { granularity: { enum: ["pis", "slices", "slices+backlog"] }, project: { type: "string" } } },
       yes_linear_override: { type: "boolean" } } } },
-  { name: "add_sprint", description: "Append a sprint to an existing PI. Validates and re-renders SLICES.md.",
+  { name: "add_sprint", description: "Append a sprint to an existing PI. Validates and re-renders SLICES.md. Scope discipline: scope decisions belong to the human — prefer backlog_add for follow-up work discovered mid-session; add sprints only when the user asked for them.",
     inputSchema: { type: "object", required: ["pi", "id", "title", "invoke"], properties: {
       pi: { type: "string" }, id: { type: "string" }, title: { type: "string" }, invoke: { type: "string" },
       status: { enum: STATUSES }, what: { type: "string" }, est_sessions: { type: "number" },

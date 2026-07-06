@@ -26,6 +26,24 @@ export function validateGraph(graph) {
   // letting someone believe it syncs (docs/DEPLOYMENT.md documents the planned shape).
   if (meta.jira != null) warn("meta.jira is not implemented yet (Linear is the only tracker today) — the block is ignored");
 
+  // Scope-discipline knobs + the review anchor. Absent → no-op.
+  if (meta.discipline != null) {
+    if (typeof meta.discipline !== "object" || Array.isArray(meta.discipline)) err("meta.discipline must be a mapping");
+    else {
+      if (meta.discipline.capture_ratio != null && !(typeof meta.discipline.capture_ratio === "number" && meta.discipline.capture_ratio > 0)) {
+        err("meta.discipline.capture_ratio must be a number > 0");
+      }
+      if (meta.discipline.coherence != null && typeof meta.discipline.coherence !== "boolean") {
+        err("meta.discipline.coherence must be a boolean");
+      }
+    }
+  }
+  if (meta.last_review != null) {
+    if (typeof meta.last_review !== "object" || Array.isArray(meta.last_review) || typeof meta.last_review.date !== "string" || typeof meta.last_review.commit !== "string") {
+      err("meta.last_review must be a mapping with string date + commit");
+    }
+  }
+
   // Optional meta.linear + per-PI overrides + sprint linear fields. Absent → no-op.
   const lin = validateLinearConfig(graph);
   for (const e of lin.errors) err(e);
