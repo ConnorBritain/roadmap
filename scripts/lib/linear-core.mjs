@@ -196,6 +196,58 @@ export function projectDescription(pi) {
     .filter(Boolean).join("\n\n");
 }
 
+// ── provisioning (the "Linear as the board" layer) ───────────────────────────
+// Standard views. The filter hints are HUMAN instructions — customViewCreate's input shape
+// is UNVERIFIED against a live workspace, so provision attempts each and degrades to the
+// manual checklist below on the first rejection.
+export const STANDARD_VIEWS = [
+  { name: "Ready wave", hint: "issues in unstarted states, label roadmap, sorted by priority — what fanout/dispatch launches next" },
+  { name: "In flight", hint: "issues in started states, label roadmap — the live wave" },
+  { name: "Held on human", hint: "label roadmap in started states that aren't moving — review by hand against SLICES.md's held-on-human list" },
+  { name: "Backlog triage", hint: "backlog-state issues labeled kind:* — the /prioritize queue" },
+  { name: "Recently shipped", hint: "completed in the last 14 days, label roadmap" },
+];
+
+export function provisionPlan({ graph, teamLabels }) {
+  const have = new Set(Object.keys(teamLabels || {}));
+  const tracks = new Set(flatten(graph).nodes.map((n) => n.track).filter(Boolean));
+  const wanted = [MARKER_LABEL, ...KIND_LABELS, ...[...tracks].sort().map((t) => `track:${t}`)];
+  return {
+    createLabels: wanted.filter((n) => !have.has(n)),
+    existingLabels: wanted.filter((n) => have.has(n)),
+    views: STANDARD_VIEWS,
+  };
+}
+
+export function manualViewChecklist(views = STANDARD_VIEWS) {
+  return views.map((v) => `  □ New view "${v.name}" — ${v.hint}`).join("\n");
+}
+
+// Workspace-level guidance (paste into Linear's agent-guidance setting).
+export function agentGuidanceText(cfg) {
+  return [
+    `This workspace is managed by the roadmap tool. Issues labeled "${MARKER_LABEL}" are PROJECTIONS`,
+    `of a repo's canonical docs/roadmap/roadmap.yaml + backlog.yaml — the YAML is the source of`,
+    `truth; edit status/priority here and the repo's /sync proposes it back. Each managed issue's`,
+    `description ends with a machine footer (roadmap: slice=<key> · pick up: ...) that names the`,
+    `slice and the pickup command. kind:* labels bucket backlog captures; track:* labels are fanout`,
+    `lanes; Linear priority IS the roadmap tier (Urgent=P0 … Low=P3).`,
+  ].join("\n");
+}
+
+// The repo-side dispatch contract — paste into CLAUDE.md / AGENTS.md / skills.md so any
+// agent delegated a Linear issue (Claude Code coding session, Codex, Oz, …) self-orients.
+export function dispatchGuidance() {
+  return [
+    "## Working a roadmap-dispatched Linear issue",
+    "1. Read the issue's roadmap footer (`roadmap: slice=<key>` or `backlog=<key>`) — it is the machine contract.",
+    "2. Open docs/SLICES.md#<key> and the slice's entry (including its `prompt`) in docs/roadmap/roadmap.yaml. The YAML is canonical; the Linear issue is a projection.",
+    "3. Honor the slice's verification gate before committing.",
+    "4. Open a PR. NEVER merge — the lead merges.",
+    "5. Leftovers go to the BACKLOG ONLY (`roadmap backlog add \"<title>\" -k followup --slice <key>`, or a **Leftovers** heading in the PR body). Never add sprints or PIs; skip speculative ideas (YAGNI applies to captures too).",
+  ].join("\n");
+}
+
 // ── push plan (diff-based, idempotent) ────────────────────────────────────────
 // existing: the fetched Linear snapshot — { issues: { [identifier]: { id, title, description,
 // priority, stateId } }, projects: { [projectId]: { id, name } } }. Ops reference projects

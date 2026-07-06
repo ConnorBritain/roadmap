@@ -6,7 +6,9 @@
 //   roadmap linear status [--probe] [--json]   state check (probe = one networked viewer query)
 //   roadmap linear auth                        how to set LINEAR_API_KEY (never stored in files)
 //   roadmap linear setup --team KEY [...]      write meta.linear (queries your teams first)
+//   roadmap linear provision                   shape the workspace: labels, views, guidance texts
 //   roadmap linear sync [--dry] [--push-only] [--pull-only]
+//   roadmap linear post-update --pi <id> --body <text|@file>   digest → Linear project update
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -17,7 +19,8 @@ import { setFields } from "./lib/mcp-core.mjs";
 import { addItem, setItemFields } from "./lib/backlog-core.mjs";
 import { mutateRoadmap, mutateBacklog, loadBacklog, roadmapPaths } from "./lib/store.mjs";
 import {
-  normalizeLinearConfig, linearState, buildPushPlan, buildPullProposals, holdsFor,
+  normalizeLinearConfig, linearState, linearStatusLine, buildPushPlan, buildPullProposals, holdsFor,
+  provisionPlan, manualViewChecklist, agentGuidanceText, dispatchGuidance,
 } from "./lib/linear-core.mjs";
 
 const ENDPOINT = "https://api.linear.app/graphql";
@@ -208,6 +211,44 @@ export async function runSync(root, opts = {}) {
   return result;
 }
 
+// ── provision: shape the workspace (idempotent) ───────────────────────────────
+export async function runProvision(root, opts = {}) {
+  const env = opts.env || process.env;
+  const graph = loadGraph(roadmapPaths(root).yaml);
+  const state = linearState({ meta: graph.meta, env });
+  if (!state.configured || !state.authed) throw new Error(linearStatusLine(state));
+  const io = { apiKey: env.LINEAR_API_KEY, fetchImpl: opts.fetchImpl || fetch };
+  const team = await fetchTeamBundle(state.cfg.team, io);
+
+  const plan = provisionPlan({ graph, teamLabels: team.labels });
+  const result = { labelsCreated: [], labelsExisting: plan.existingLabels, views: [], viewChecklist: null };
+
+  for (const name of plan.createLabels) {
+    try {
+      await gql(`mutation($input: IssueLabelCreateInput!) { issueLabelCreate(input: $input) { issueLabel { id name } } }`,
+        { input: { name, teamId: team.id } }, io);
+      result.labelsCreated.push(name);
+    } catch (e) {
+      if (/already exists|duplicate/i.test(e.message)) result.labelsExisting.push(name);   // creation race
+      else throw e;
+    }
+  }
+
+  // Views: customViewCreate's input shape is UNVERIFIED — attempt each; first rejection
+  // degrades to the manual checklist (the designed fallback, not a failure).
+  for (const v of plan.views) {
+    try {
+      await gql(`mutation($input: CustomViewCreateInput!) { customViewCreate(input: $input) { customView { id } } }`,
+        { input: { name: v.name, teamId: team.id, description: v.hint } }, io);
+      result.views.push(v.name);
+    } catch (e) {
+      result.viewChecklist = { rejected: e.message, checklist: manualViewChecklist(plan.views.filter((x) => !result.views.includes(x.name))) };
+      break;
+    }
+  }
+  return result;
+}
+
 function collectIdentifiers(graph, backlog) {
   const ids = [];
   for (const pi of graph.pis || []) for (const sp of pi.sprints || []) if (sp.linear) ids.push(sp.linear);
@@ -287,6 +328,32 @@ if (isMain) {
       console.log(`  Add to .gitignore: ${CURSOR_FILE}`);
       console.log(`  Optional: branch_convention: "{pi}/{linear}-{sprint}" makes Linear auto-link fanout PRs.`);
       console.log(`  Then: roadmap linear sync --dry`);
+    } else if (sub === "provision") {
+      const r = await runProvision(root);
+      console.log(`labels: ${r.labelsCreated.length ? `created ${r.labelsCreated.join(", ")}` : "all present"}${r.labelsExisting.length ? ` (existing: ${r.labelsExisting.join(", ")})` : ""}`);
+      if (r.views.length) console.log(`views created: ${r.views.join(", ")}`);
+      if (r.viewChecklist) {
+        console.log(`customViewCreate rejected (${r.viewChecklist.rejected}) — pending live verification; manual checklist (~60s in Linear):`);
+        console.log(r.viewChecklist.checklist);
+      }
+      console.log(`\n── Workspace agent guidance (paste into Linear's agent-guidance setting) ──\n${agentGuidanceText()}`);
+      console.log(`\n── Repo dispatch guidance (paste into CLAUDE.md, AGENTS.md, or a skills.md your dispatch agents read) ──\n${dispatchGuidance()}`);
+    } else if (sub === "post-update") {
+      const pi = val("--pi");
+      const bodyArg = val("--body");
+      if (!pi || !bodyArg) { console.error("usage: roadmap linear post-update --pi <id> --body <text|@file>"); process.exit(2); }
+      const graph = loadGraph(roadmapPaths(root).yaml);
+      const piObj = (graph.pis || []).find((p) => p.id === pi);
+      if (!piObj || !piObj.linear || !piObj.linear.project) { console.error(`✗ PI "${pi}" has no linear.project mapping — push first ('roadmap linear sync').`); process.exit(1); }
+      const body = bodyArg.startsWith("@") ? readFileSync(bodyArg.slice(1), "utf8") : bodyArg;
+      try {
+        await gql(`mutation($input: ProjectUpdateCreateInput!) { projectUpdateCreate(input: $input) { projectUpdate { id } } }`,
+          { input: { projectId: piObj.linear.project, body } }, { apiKey: process.env.LINEAR_API_KEY });
+        console.log(`✓ posted a project update on ${pi}.`);
+      } catch (e) {
+        // Designed degradation: the mutation shape is unverified; a rejection is a skip, not a failure.
+        console.log(`projectUpdateCreate rejected (${e.message}) — digest not posted; pending live verification.`);
+      }
     } else if (sub === "sync") {
       const r = await runSync(root, { dry: has("--dry"), pushOnly: has("--push-only"), pullOnly: has("--pull-only") });
       if (r.pushPlan) {
@@ -313,7 +380,7 @@ if (isMain) {
       }
       console.log(r.cursorAdvanced ? `cursor advanced.` : `cursor unchanged${r.dry ? " (dry)" : " (inbox pending)"}.`);
     } else {
-      console.error(`roadmap linear: unknown subcommand "${sub}" (status | auth | setup | sync)`);
+      console.error(`roadmap linear: unknown subcommand "${sub}" (status | auth | setup | provision | sync | post-update)`);
       process.exit(2);
     }
   } catch (e) {

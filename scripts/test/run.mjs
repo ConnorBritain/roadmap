@@ -35,9 +35,10 @@ import {
   resolvePushState, pullStatusFor, priorityToLinear, LINEAR_TO_PRIORITY,
   issueDescription, machineFooter, buildPushPlan, buildPullProposals, validateLinearConfig, holdsFor,
   desiredLabels, projectDescription, MARKER_LABEL,
+  provisionPlan, manualViewChecklist, dispatchGuidance, STANDARD_VIEWS,
 } from "../lib/linear-core.mjs";
 import { addPi } from "../lib/mcp-core.mjs";
-import { runSync, readCursor } from "../linear.mjs";
+import { runSync, runProvision, readCursor } from "../linear.mjs";
 import { graphDiff, backlogDiff, reviewDigest, pisInFlight } from "../lib/review-core.mjs";
 import { parseDocument } from "yaml";
 import { join, resolve } from "node:path";
@@ -1859,6 +1860,49 @@ test("runSync forwards labelIds from the team's labels to issueCreate", async ()
   const create = fake.calls.find((c) => c.query.includes("issueCreate"));
   eq(create.variables.input.labelIds, ["l-mark"], "marker label id on the created issue");
   rmSync(root, { recursive: true, force: true });
+});
+
+// ── provision ─────────────────────────────────────────────────────────────────
+// WHY: provisioning must be idempotent or every run duplicates labels; and track labels
+// must come from lanes actually in the graph, not a hardcoded list.
+test("runProvision creates missing labels once (idempotent) with track labels from the graph", async () => {
+  const root = linearRepo();
+  const yamlPath = join(root, "docs", "roadmap", "roadmap.yaml");
+  writeFileSync(yamlPath, readFileSync(yamlPath, "utf8").replace("invoke: auth-login }", "invoke: auth-login, track: infra }"), "utf8");
+  const run1 = fakeLinear();
+  const r1 = await runProvision(root, { fetchImpl: run1.fetchImpl, env: { LINEAR_API_KEY: "k" } });
+  eq(r1.labelsCreated, ["roadmap", "kind:bug", "kind:chore", "kind:followup", "kind:urgent", "kind:idea", "track:infra"], "marker + kinds + graph track");
+  eq(r1.views, STANDARD_VIEWS.map((v) => v.name), "all views created against the permissive fake");
+  const run2 = fakeLinear({ teamLabels: r1.labelsCreated.map((name, i) => ({ id: `l${i}`, name })) });
+  const r2 = await runProvision(root, { fetchImpl: run2.fetchImpl, env: { LINEAR_API_KEY: "k" } });
+  eq(r2.labelsCreated, [], "second run creates nothing");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: customViewCreate is unverified — a rejection must degrade to the manual checklist,
+// never abort the labels that DID provision.
+test("runProvision degrades to the manual checklist when customViewCreate is rejected", async () => {
+  const root = linearRepo();
+  const fake = fakeLinear({ failOn: "customViewCreate" });
+  const r = await runProvision(root, { fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" } });
+  ok(r.labelsCreated.length >= 6, "labels still created");
+  eq(r.views, [], "no views claimed");
+  ok(r.viewChecklist.rejected.includes("simulated view rejection"), "rejection named");
+  ok(r.viewChecklist.checklist.includes('□ New view "Ready wave"'), "checklist lists the manual steps");
+  eq(manualViewChecklist().split("\n").length, STANDARD_VIEWS.length, "one line per view");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: dispatchGuidance is the contract every cloud-delegated agent reads — losing the
+// merge prohibition or the temperance rule turns delegation into drift.
+test("dispatchGuidance carries the dispatch contract", () => {
+  const g = dispatchGuidance();
+  ok(g.includes("NEVER merge"), "merge prohibition");
+  ok(g.includes("BACKLOG ONLY"), "temperance rule");
+  ok(g.includes("roadmap: slice=<key>"), "footer parse instruction");
+  ok(g.includes("YAML is canonical"), "canonicality stated");
+  const plan = provisionPlan({ graph: { pis: [] }, teamLabels: { roadmap: "x" } });
+  ok(!plan.createLabels.includes("roadmap") && plan.existingLabels.includes("roadmap"), "provisionPlan respects existing labels");
 });
 
 await Promise.all(pending);

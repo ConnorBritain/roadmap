@@ -33,7 +33,7 @@ COMMANDS
   mcp             run the MCP server (stdio); read + mutate tools over JSON-RPC
   watch           watch fanout PRs and print a line as each lands (lead notifications)
   review          date-anchored review digest: what shipped vs what grew since meta.last_review
-  linear          optional Linear sync: status [--probe] | auth | setup --team KEY | sync [--dry]
+  linear          optional Linear sync: status [--probe] | auth | setup --team KEY | provision | sync [--dry] | post-update
   sync | init     (plugin skills) reconcile+re-render / PM-interview bootstrap
   help            this help
 
