@@ -7,37 +7,29 @@
 //
 // Bundled in the plugin via .mcp.json; also runnable as `roadmap mcp` for debugging.
 
-import { readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { createInterface } from "node:readline";
-import YAML from "yaml";
 import { findRepoRoot, REL } from "./lib/cli-core.mjs";
 import { loadGraph } from "./lib/graph.mjs";
-import { renderMarkdown } from "./lib/render-core.mjs";
-import { TOOLS, READ_HANDLERS, MUTATION_HANDLERS, validateDocOrThrow, serialize } from "./lib/mcp-core.mjs";
+import { mutateRoadmap, roadmapPaths } from "./lib/store.mjs";
+import { TOOLS, READ_HANDLERS, MUTATION_HANDLERS } from "./lib/mcp-core.mjs";
 
 const PROTOCOL_VERSION = "2024-11-05";
 const SERVER_INFO = { name: "graph", version: "0.2.0" };
 
-function paths() {
+function repoRoot() {
   const root = findRepoRoot(process.env.CODEX_PROJECT_DIR || process.env.CLAUDE_PROJECT_DIR || process.cwd());
   if (!root) throw new Error(`no ${REL.join("/")} found at or above the project directory`);
-  return { yaml: join(root, ...REL), slices: join(root, "docs", "SLICES.md") };
+  return root;
 }
 
 function callTool(name, args) {
   if (READ_HANDLERS[name]) {
-    const graph = loadGraph(paths().yaml);
+    const graph = loadGraph(roadmapPaths(repoRoot()).yaml);
     return READ_HANDLERS[name](graph, args || {});
   }
   if (MUTATION_HANDLERS[name]) {
-    const p = paths();
-    const doc = YAML.parseDocument(readFileSync(p.yaml, "utf8"));
-    const summary = MUTATION_HANDLERS[name](doc, args || {});
-    const graph = validateDocOrThrow(doc);          // throws -> caught below, file untouched
-    writeFileSync(p.yaml, serialize(doc), "utf8");
-    writeFileSync(p.slices, renderMarkdown(graph), "utf8");
-    return { ...summary, rerendered: "docs/SLICES.md" };
+    // mutateRoadmap = read → mutate → validate → write → re-render; a throw leaves files untouched.
+    return mutateRoadmap(repoRoot(), (doc) => MUTATION_HANDLERS[name](doc, args || {}));
   }
   throw new Error(`unknown tool "${name}"`);
 }

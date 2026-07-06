@@ -53,6 +53,10 @@ export const TOOLS = [
   { name: "set_fields", description: "Set one or more allowed fields on a slice (by invoke). null value deletes a field. Re-renders.",
     inputSchema: { type: "object", required: ["invoke", "fields"], properties: {
       invoke: { type: "string" }, fields: { type: "object" } } } },
+  { name: "bulk_set", description: "Set allowed fields on MANY slices in one atomic edit (one validate, one write, one re-render — all-or-nothing). Each update mirrors set_fields: { invoke, fields }, null value deletes a field.",
+    inputSchema: { type: "object", required: ["updates"], properties: {
+      updates: { type: "array", minItems: 1, items: { type: "object", required: ["invoke", "fields"], properties: {
+        invoke: { type: "string" }, fields: { type: "object" } } } } } } },
   { name: "prune", description: "Remove a slice (by invoke), a whole PI (by pi id), or every complete slice (scope='completed'). Re-renders SLICES.md. Validated before writing: the removal is rejected with no change made if it would orphan a dependency, duplicate an invoke key, or otherwise break the graph.",
     inputSchema: { type: "object", properties: {
       invoke: { type: "string" }, pi: { type: "string" }, scope: { enum: ["completed"] } } } },
@@ -162,6 +166,17 @@ export function setFields(doc, args) {
   return { updated: args.invoke, fields: changed };
 }
 
+// Atomicity is the caller's single write: every update mutates the same Document, one
+// validateDocOrThrow gates the write, so a bad field in update N leaves updates 1..N-1 unwritten.
+export function bulkSet(doc, args) {
+  if (!args || !Array.isArray(args.updates) || !args.updates.length) {
+    throw new Error("bulk_set requires updates: [{invoke, fields}, ...]");
+  }
+  const updated = [];
+  for (const u of args.updates) updated.push(setFields(doc, u).updated);
+  return { updated, count: updated.length };
+}
+
 export function prune(doc, args = {}) {
   if (args.invoke) {
     const loc = sprintLocByInvoke(doc, args.invoke);
@@ -193,7 +208,7 @@ export function prune(doc, args = {}) {
   throw new Error("prune requires one of: invoke, pi, or scope='completed'");
 }
 
-export const MUTATION_HANDLERS = { add_pi: addPi, add_sprint: addSprint, set_status: setStatus, set_fields: setFields, prune };
+export const MUTATION_HANDLERS = { add_pi: addPi, add_sprint: addSprint, set_status: setStatus, set_fields: setFields, bulk_set: bulkSet, prune };
 
 // ── pre-write integrity gate ────────────────────────────────────────────────────
 // Throws if the edited Document would corrupt the roadmap (duplicate invoke, unresolved

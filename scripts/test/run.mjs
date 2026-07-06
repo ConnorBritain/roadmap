@@ -12,7 +12,8 @@ import { synthesizeBrief, branchFor, worktreeFor, baseRefOf, baseBranchOf, remot
 import { route, classify, buildArgs, findRepoRoot, missingRoadmapHelp, expandShort, REL } from "../lib/cli-core.mjs";
 import { launchDecision } from "../lib/fanout-core.mjs";
 import { terminalChoices, moveSelection, parseCap, buildFanArgs, autoOutName } from "../lib/wizard-core.mjs";
-import { TOOLS, addSprint, setStatus, setFields, prune, validateDocOrThrow, readValidate, serialize } from "../lib/mcp-core.mjs";
+import { TOOLS, addSprint, setStatus, setFields, bulkSet, prune, validateDocOrThrow, readValidate, serialize } from "../lib/mcp-core.mjs";
+import { parseAssignments } from "../lib/cli-core.mjs";
 import { diffPrStates, matchesRoadmapBranches, checksOf } from "../lib/pr-watch-core.mjs";
 import { findUnrecordedMerges, reconcileNudge, underParallelizedWarnings } from "../lib/sync-core.mjs";
 import {
@@ -922,6 +923,36 @@ test("setFields accepts prompt/kickoff_brief/priority and the pre-write gate rej
   validateDocOrThrow(doc); // must not throw
   setFields(doc, { invoke: "x", fields: { priority: { tier: "NOPE" } } });
   throws(() => validateDocOrThrow(doc), "priority.tier", "bad tier caught before write");
+});
+
+// ── bulk_set: all-or-nothing multi-slice edit ────────────────────────────────
+// WHY: bulk edits exist to retag/reprioritize many slices at once; if update 1 lands while
+// update 2's bad field throws, the roadmap is left half-edited and no error explains which half.
+test("bulkSet applies every update through one gate — a bad field aborts before any write", () => {
+  const y = `meta:\n  schema_version: 1\n  program: T\npis:\n  - id: a\n    title: A\n    status: active\n    sprints:\n      - { id: s1, title: S1, status: active, invoke: one }\n      - { id: s2, title: S2, status: next, invoke: two }\n`;
+  const doc = parseDocument(y);
+  const r = bulkSet(doc, { updates: [
+    { invoke: "one", fields: { track: "A", priority: { tier: "P1" } } },
+    { invoke: "two", fields: { track: "A" } },
+  ]});
+  eq(r.updated, ["one", "two"], "both slices updated");
+  validateDocOrThrow(doc);
+  // a bad field ANYWHERE in the batch throws before the caller ever reaches serialize/write
+  throws(() => bulkSet(parseDocument(y), { updates: [
+    { invoke: "one", fields: { track: "B" } },
+    { invoke: "two", fields: { nope: 1 } },
+  ]}), 'field "nope" is not settable', "bad field in update 2 throws (caller writes nothing)");
+  throws(() => bulkSet(parseDocument(y), { updates: [] }), "bulk_set requires", "empty updates rejected");
+});
+
+// WHY: `roadmap set gate=npm test -- --grep x=y` must keep everything after the FIRST '='
+// as the value, and @file / null must reach set_fields with their special semantics intact.
+test("parseAssignments splits on the first '=', marks @file, and passes null through", () => {
+  const [a, b, c] = parseAssignments(["gate=npm test -- --grep x=y", "prompt=@notes.md", "track=null"]);
+  eq(a, { field: "gate", raw: "npm test -- --grep x=y" }, "value keeps embedded '='");
+  eq(b, { field: "prompt", fromFile: "notes.md" }, "@path marks read-from-file");
+  eq(c, { field: "track", raw: "null" }, "null passes through raw (YAML.parse → delete)");
+  throws(() => parseAssignments(["notanassignment"]), "expected field=value", "missing '=' rejected");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
