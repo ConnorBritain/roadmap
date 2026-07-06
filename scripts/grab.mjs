@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { loadGraph } from "./lib/graph.mjs";
 import { loadBacklog, mutateBacklog } from "./lib/store.mjs";
 import { backlogItemToNode, setItemFields } from "./lib/backlog-core.mjs";
-import { synthesizeBrief, branchFor, worktreeFor, launchPrompt, baseRefOf, remoteOf } from "./lib/brief.mjs";
+import { synthesizeBrief, branchFor, worktreeFor, launchPrompt, baseRefOf, remoteOf, agentCmdFor } from "./lib/brief.mjs";
 import { probeDisk } from "./lib/recommend.mjs";
 import { bashWorktreeLines, pwshWorktreeLines, diskBlockLines } from "./lib/fanout-core.mjs";
 import { terminalChoices } from "./lib/wizard-core.mjs";
@@ -55,7 +55,7 @@ const workerMode = val("--worker-mode", (graph.meta && graph.meta.worker_mode) |
 const wt = worktreeFor(node, graph);
 const br = branchFor(node, graph);
 const brief = synthesizeBrief(node, graph).trimEnd();
-const claudeCmd = (q) => `claude --permission-mode ${workerMode} ${q}${launchPrompt(node)}${q}`;
+const claudeCmd = (q) => agentCmdFor(graph, { prompt: launchPrompt(node), mode: workerMode, quote: q });
 
 let script;
 if (term === "tmux") {

@@ -18,6 +18,18 @@ export function branchFor(node, graph) {
   return conv.replace("{pi}", node.piId).replace("{sprint}", node.id);
 }
 
+// Launch-command template for INTERACTIVE worker/lead sessions. meta.agent_cmd swaps the
+// agent (e.g. a codex invocation) — {mode} = permission mode, {prompt} = the prompt wrapped
+// in the call site's quote char (each shell context picks its own). The default template
+// produces today's claude command byte-for-byte.
+// ponytail: interactive-only lever; autonomous headless launches stay hardcoded to claude —
+// add a second template when someone actually runs a non-claude headless agent.
+export const DEFAULT_AGENT_CMD = "claude --permission-mode {mode} {prompt}";
+export function agentCmdFor(graph, { prompt, mode, quote = '"' }) {
+  const tpl = (graph.meta && graph.meta.agent_cmd) || DEFAULT_AGENT_CMD;
+  return tpl.replace("{mode}", mode).replace("{prompt}", `${quote}${prompt}${quote}`);
+}
+
 export function worktreeFor(node, graph) {
   // Default to an absolute sibling of the repo (<cwd>/../_worktrees) when unset — the CLI
   // runs with cwd = repo root, so this is portable + machine-specific-free in the committed YAML.

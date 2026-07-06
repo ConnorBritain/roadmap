@@ -23,6 +23,7 @@
         "terminal": { "enum": ["warp", "wt", "tmux", "iterm", "background", "print"], "default": "print", "description": "Default terminal adapter for /fanout launches" },
         "default_concurrency": { "type": "integer", "minimum": 1, "default": 3 },
         "worker_mode": { "enum": ["plan", "auto", "acceptEdits", "bypassPermissions"], "default": "plan", "description": "Default --permission-mode for launched worker + lead sessions; --worker-mode overrides. 'auto' = auto-approve tool/bash/MCP with safety checks (NOT a bypass); 'plan' = read-only research that gates edits behind plan approval." },
+        "agent_cmd": { "type": "string", "description": "Launch-command template for INTERACTIVE worker/lead sessions — swap the agent (e.g. a codex invocation). Tokens: {mode} = permission mode, {prompt} = the quoted kickoff prompt. Default: 'claude --permission-mode {mode} {prompt}'. Autonomous headless launches stay claude." },
         "completed_window_days": { "type": "integer", "minimum": 1, "default": 14, "description": "How recently a sprint must have completed to appear in the Recently-completed table" },
         "base_branch": { "type": "string", "default": "main", "description": "Branch worktrees are cut from + PR base" },
         "remote": { "type": "string", "default": "origin", "description": "Git remote name for fetch + worktree base ref" },

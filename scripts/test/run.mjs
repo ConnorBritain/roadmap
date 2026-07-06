@@ -8,7 +8,7 @@ import {
   flatten, detectCycle, computeWaves, execPlan, sessionsRemaining, resolveGate, isDone, readyNodes,
 } from "../lib/graph.mjs";
 import { nodeWeight, recommendConcurrency, probeDisk } from "../lib/recommend.mjs";
-import { synthesizeBrief, branchFor, worktreeFor, baseRefOf, baseBranchOf, remoteOf, launchPrompt } from "../lib/brief.mjs";
+import { synthesizeBrief, branchFor, worktreeFor, baseRefOf, baseBranchOf, remoteOf, launchPrompt, agentCmdFor, DEFAULT_AGENT_CMD } from "../lib/brief.mjs";
 import { route, classify, buildArgs, findRepoRoot, missingRoadmapHelp, expandShort, REL } from "../lib/cli-core.mjs";
 import { launchDecision } from "../lib/fanout-core.mjs";
 import { terminalChoices, moveSelection, parseCap, buildFanArgs, autoOutName } from "../lib/wizard-core.mjs";
@@ -1215,6 +1215,22 @@ test("mutateBacklog createIfMissing bootstraps a block-style backlog.yaml and th
   ok(readFileSync(join(root, "docs", "SLICES.md"), "utf8").includes("**Backlog:** 1 open item(s)"),
     "backlog mutation refreshes the SLICES.md open-count pointer");
   rmSync(root, { recursive: true, force: true });
+});
+
+// ── meta.agent_cmd launch template ────────────────────────────────────────────
+// WHY: the default template MUST reproduce today's claude command byte-for-byte, or every
+// existing roadmap's fanout launches change under people's feet; and a custom template must
+// substitute both tokens or a codex user launches with a literal "{prompt}".
+test("agentCmdFor default byte-equals the current claude command; custom template substitutes both tokens", () => {
+  const bare = { meta: {} };
+  eq(agentCmdFor(bare, { prompt: "do the thing", mode: "plan" }),
+    `claude --permission-mode plan "do the thing"`, "default, double-quoted (bash/wt sites)");
+  eq(agentCmdFor(bare, { prompt: "do the thing", mode: "acceptEdits", quote: "'" }),
+    `claude --permission-mode acceptEdits 'do the thing'`, "default, single-quoted (pwsh sites)");
+  eq(agentCmdFor({ meta: {} }, { prompt: "p", mode: "plan" }), DEFAULT_AGENT_CMD.replace("{mode}", "plan").replace("{prompt}", '"p"'), "exported default is the template in use");
+  const codex = { meta: { agent_cmd: "codex exec --sandbox {mode} {prompt}" } };
+  eq(agentCmdFor(codex, { prompt: "go", mode: "plan", quote: "'" }),
+    `codex exec --sandbox plan 'go'`, "custom agent template substitutes mode + quoted prompt");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
