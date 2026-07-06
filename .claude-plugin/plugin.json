@@ -1,6 +1,6 @@
 {
   "name": "roadmap",
-  "description": "Hierarchical roadmap graph (PIs → sprints, deps, session estimates) + deterministic multi-session fanout. YAML is the source of truth; SLICES.md is generated. Orient with /slice, refresh with /sync, bootstrap with /init, fan out concurrent sessions with /fanout.",
+  "description": "Roadmap + backlog graph (PIs → sprints, deps, priorities, session estimates) with deterministic, disk/CPU/RAM-checked multi-session fanout. YAML is the source of truth; SLICES.md/BACKLOG.md are generated. Orient with /slice, capture erratic work with /backlog, refresh with /sync, bootstrap with /init, fan out concurrent sessions with /fanout.",
   "version": "0.2.0",
   "author": { "name": "Connor England" },
   "homepage": "https://github.com/ConnorBritain/roadmap",

@@ -47,16 +47,16 @@ try {
     }
     console.log(`\nGrab one: roadmap grab <id> · promote one: roadmap promote <id> --pi <pi>`);
   } else if (sub === "add") {
-    const title = rest.find((a) => !a.startsWith("-") && a !== val("-k", "--kind") && a !== val("--id") && a !== val("--tier") && a !== val("--weight") && a !== val("--note") && a !== val("--slice") && a !== val("--est"));
-    if (!title) { console.error(`usage: roadmap backlog add "title" [-k ${KINDS.join("|")}] [--id slug] [--tier P0-P3] [--weight 0-100] [--note s] [--slice invoke] [--est N]`); process.exit(2); }
-    const tier = val("--tier"), weight = val("--weight"), note = val("--note"), slice = val("--slice"), est = val("--est");
+    const title = rest.find((a) => !a.startsWith("-") && a !== val("-k", "--kind") && a !== val("--id") && a !== val("--tier") && a !== val("--weight") && a !== val("--why") && a !== val("--note") && a !== val("--slice") && a !== val("--est"));
+    if (!title) { console.error(`usage: roadmap backlog add "title" [-k ${KINDS.join("|")}] [--id slug] [--tier P0-P3] [--weight 0-100] [--why reason] [--note s] [--slice invoke] [--est N]`); process.exit(2); }
+    const tier = val("--tier"), weight = val("--weight"), why = val("--why"), note = val("--note"), slice = val("--slice"), est = val("--est");
     const item = {
       title,
       id: val("--id"),
       kind: val("-k", "--kind"),
       est_sessions: est != null ? Number(est) : undefined,
     };
-    if (tier || weight) item.priority = { ...(tier ? { tier } : {}), ...(weight != null ? { weight: Number(weight) } : {}) };
+    if (tier || weight || why) item.priority = { ...(tier ? { tier } : {}), ...(weight != null ? { weight: Number(weight) } : {}), ...(why ? { reason: why } : {}) };
     if (note || slice) item.source = { ...(slice ? { slice } : {}), date: new Date().toISOString().slice(0, 10), ...(note ? { note } : {}) };
     else item.source = { date: new Date().toISOString().slice(0, 10) };
     const r = mutateBacklog(process.cwd(), (doc) => addItem(doc, item), { createIfMissing: true });

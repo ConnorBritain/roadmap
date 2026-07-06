@@ -1,13 +1,14 @@
 # Roadmap: scope, manage, and orchestrate AI coding sessions in any repo
 
-`roadmap` is a CLI, MCP server, and Claude Code plugin. It turns one YAML file into your repo's plan of record (a **hierarchical, dependency-aware graph**), then **fans that plan out into parallel coding sessions**, each scoped to a single unit of work in its own git worktree.
+`roadmap` is a CLI, MCP server, and Claude Code plugin. It turns two YAML files into your repo's plan of record — a **hierarchical, dependency-aware roadmap graph** plus a **prioritized backlog** for the work that surfaces erratically — then **fans that plan out into parallel coding sessions**, each scoped to a single unit of work in its own git worktree.
 
-In this Codex environment, the primary surfaces are the CLI, the MCP server, and the repo-level [`AGENTS.md`](C:\Users\connor.england\.codex\worktrees\66df\roadmap\AGENTS.md). The Claude plugin assets are still included for teams already using them.
+In a Codex environment, the primary surfaces are the CLI, the MCP server, and the repo-level [`AGENTS.md`](AGENTS.md). The Claude plugin assets are included for teams using them.
 
-- **One source of truth.** `docs/roadmap/roadmap.yaml` holds the PIs, sprints, deps, file-ownership, session estimates, gates, and kickoff briefs.
-- **Generated view.** `docs/SLICES.md` is *rendered* from the YAML; never hand-edit it.
-- **Derived, never stored.** Per-PI exec-plan lines (`(S0 ∥ S1)→S2→S3`), the cross-PI "ready now" wave map, and "sessions remaining" rollups are all computed from `deps` + `touches` + `status`.
-- **Deterministic fanout.** A scheduler decides which slices can run concurrently under a cap (which it *recommends* from a CPU/RAM and review eval), then launches each in its own worktree and Claude Code session.
+- **One source of truth (each).** `docs/roadmap/roadmap.yaml` holds the PIs, sprints, deps, priorities, file-ownership, session estimates, gates, prompts, and kickoff briefs. `docs/roadmap/backlog.yaml` holds the erratic work: follow-ups, bugs, chores, urgent items.
+- **Generated views.** `docs/SLICES.md` and `docs/BACKLOG.md` are *rendered* from the YAML; never hand-edit them.
+- **Derived, never stored.** Per-PI exec-plan lines (`(S0 ∥ S1)→S2→S3`), the cross-PI "ready now" wave map, "sessions remaining" rollups, and priority ordering are all computed from `deps` + `touches` + `status` + `priority`.
+- **Deterministic fanout with feasibility pre-checks.** A scheduler decides which slices can run concurrently under a cap it *recommends* from five real ceilings — CPU, RAM, independent work, human review, and **free disk for the worktrees** — then launches each in its own worktree and Claude Code session. When even one worktree won't fit on disk, launch is refused before anything is created.
+- **Zero-prompt pickup.** Stash the pickup instructions on the slice itself (`prompt:`); `/slice <key>` or `roadmap grab <id>` is then all a session needs.
 - **Repo-agnostic.** The resource classifier reads the build/test runner command in each sprint's gate (not its language) to size the session. It recognizes the common runners across JS/TS, Python, Java/Kotlin, C/C++, Go, Rust, and Ruby, and `meta.weight_patterns` teaches it anything bespoke. Nothing is hardcoded to one stack.
 
 ---
@@ -22,11 +23,13 @@ In this Codex environment, the primary surfaces are the CLI, the MCP server, and
 | **PI** *(Program Increment)* | A top-level initiative or epic. Groups related sprints; carries a status, dependencies, and exit criteria. |
 | **Sprint** | A unit of work inside a PI (`s1`, `s2`, ...). Carries its deps, the files it `touches`, a session estimate, a verification `gate`, and a kickoff brief. |
 | **Slice** | A sprint *as the thing you act on*, addressed by its stable `invoke` key (e.g. `auth-sessions`): "show me a slice", "fan out this slice." The slice is the atomic, **launchable** unit. |
-| **Wave** | The set of slices that can run **concurrently right now**: mutually dependency-free, sharing no files, under the cap. |
+| **Wave** | The set of slices that can run **concurrently right now**: mutually dependency-free, sharing no files, under the cap. Within a wave, declared `priority` decides who gets a scarce cap slot. |
 | **Fanout** | Launching a wave. One git worktree plus Claude Code session per slice, plus an optional **lead** session that reviews and merges the resulting PRs. |
+| **Backlog** | The tracker beside the roadmap for **erratic work** — follow-ups, bugs, chores, urgent items that surface outside the plan. Items are directly launchable (`roadmap grab <id>`) or promotable into roadmap sprints (`roadmap promote <id> --pi <pi>`), cross-linked both ways. |
+| **Priority** | `{ tier: P0–P3, weight: 0–100, reason }` on any sprint or backlog item. Sort order is derived (tier, then weight), never stored — resorting is just editing the fields. |
 
-> **Roadmap = the whole plan. Slice = one launchable piece of it.**
-> You edit the **roadmap** (the YAML); you launch **slices** (by `invoke` key). `SLICES.md` is the human-readable render of the roadmap, generated and never hand-edited.
+> **Roadmap = the planned feature/value work. Backlog = the erratic work. Slice = one launchable piece of either.**
+> You edit the **YAML**; you launch **slices** (by `invoke` key) and **backlog items** (by id). `SLICES.md` / `BACKLOG.md` are the human-readable renders, generated and never hand-edited.
 
 ---
 
@@ -42,16 +45,22 @@ cd roadmap && npm install && npm link
 # 3) from ANYWHERE inside that repo (root or a subdir; the roadmap is auto-discovered):
 roadmap            # interactive console: pick terminal / wave / cap, then launch
 roadmap plan       # the text plan: recommended cap + what's runnable (no prompts)
-roadmap render     # regenerate docs/SLICES.md
+roadmap next       # the single highest-priority ready thing across roadmap + backlog
+roadmap render     # regenerate docs/SLICES.md (+ docs/BACKLOG.md when a backlog exists)
 roadmap validate   # structural + cycle checks
 roadmap fan -w 1   # spin up wave 1 (lead + slice sessions); add -d to preview first
+
+# and the erratic-work loop:
+roadmap backlog add "wt adapter mangles quotes" -k bug --tier P0 --why "breaks every fanout"
+roadmap grab b1                    # launch that one item in its own worktree + session
+roadmap promote b2 --pi auth       # or fold a bigger one into the roadmap as a sprint
 ```
 
 That's the whole loop: `cd` into a repo, type `roadmap ...`, it finds the roadmap and fires.
 
 ### Using it in Codex
 
-- Codex reads [`AGENTS.md`](C:\Users\connor.england\.codex\worktrees\66df\roadmap\AGENTS.md) from this repo automatically, so repo conventions live there now.
+- Codex reads [`AGENTS.md`](AGENTS.md) from this repo automatically, so repo conventions live there now.
 - You can drive everything from the shared terminal with `npm run plan`, `npm run validate`, `npm run render`, or `node scripts/cli.mjs ...`.
 - `npm run mcp` starts the same MCP server the Claude plugin uses.
 - The fanout launcher still opens `claude` worker sessions today; the rest of the repo is usable from Codex directly.
@@ -72,9 +81,15 @@ Run from anywhere inside a repo. `docs/roadmap/roadmap.yaml` is found by walking
 | Command | What it does |
 |---|---|
 | `roadmap` / `roadmap go` | The **interactive console** (above). Hot-loads this repo's roadmap and walks you through the launch. Worker permission mode isn't asked here; it comes from `meta.worker_mode`. |
-| `roadmap plan [-c N] [--review-ceiling N] [--use-free-ram] [-j]` | **Recommended cap** (and what constrains it), the execution **waves**, and per-node launch commands. Spawns nothing. `-j/--json` emits the plan for tooling. |
-| `roadmap render [-c N] [-s]` | Regenerate `docs/SLICES.md` from the YAML (`-s/--stdout` prints instead of writing). |
+| `roadmap plan [-c N] [--review-ceiling N] [--use-free-ram] [-j]` | **Recommended cap** (and what constrains it — CPU / RAM / work / review / disk), the execution **waves** (priority-ordered), and per-node launch commands. Spawns nothing. `-j/--json` emits the plan for tooling. |
+| `roadmap next` | The **single highest-priority ready thing** across the roadmap AND the backlog, with its pickup brief. Roadmap wins ties. Read-only. |
+| `roadmap show <name>` | One slice's detail: what / priority / stashed prompt / read-order / next / gate / branch. |
+| `roadmap set <name> f=v [...]` | Edit a slice's fields from the shell: YAML-scalar values (`priority='{tier: P1, weight: 60}'`), `f=@file` for multiline (prompts/briefs), `f=null` deletes. Same allow-list + pre-write gate as the MCP tools. |
+| `roadmap render [-c N] [-s]` | Regenerate `docs/SLICES.md` (+ `docs/BACKLOG.md` when a backlog exists) from the YAML (`-s/--stdout` prints SLICES instead of writing). |
 | `roadmap validate` | Structural, dependency, and cycle checks. Non-zero exit on error. |
+| `roadmap backlog [list\|add\|set]` | The erratic-work tracker: `add "title" [-k kind] [--tier PN] [--weight N] [--why reason] [--slice invoke]` (first add creates `backlog.yaml`), `set <id> f=v ...`, bare = priority-sorted open items. |
+| `roadmap grab <id> [-t term] [--dry]` | Launch **one backlog item** in its own worktree (`<root>/backlog-<id>`, branch `backlog/<id>`) with a synthesized kickoff brief (the item's `prompt` embedded). Marks it `in_progress`. |
+| `roadmap promote <id> --pi <pi> [--id sN]` | Promote a backlog item into a roadmap **sprint** (item id becomes the invoke key; title/est/gate/touches/prompt/priority carry; `promoted_to` back-links). Both YAMLs validated before either is written. |
 | `roadmap fan [-t wt\|warp\|tmux\|print\|background] [-c N] [-w N] [--track A] [--lead-claude] [-d] [-o file] [--worker-mode <m>] [--autonomous --yes-spawn-autonomous]` | Launch a wave: a lead pane/tab plus one per slice, each in its own worktree with a synthesized kickoff brief. **Launches by default**; `-d/--dry` or `-o/--out` to preview. `--track <lane>` fans out only the slices in that lane. Worker **and** lead sessions take `--permission-mode` from `meta.worker_mode` (falls back to `plan`); `--worker-mode` overrides per run. Terminal defaults per platform (win32 to `wt`, else `tmux`). |
 | `roadmap cleanup [-r] [-f]` | Prune fanout worktrees merged into the base branch and clean. **Dry by default**; `-r/--remove` acts; `-f/--force` includes unmerged/dirty. Only touches worktrees under the worktree root. |
 | `roadmap mcp` | Run the MCP server (stdio JSON-RPC) directly, for debugging or non-plugin registration. The plugin starts it for you. |
@@ -89,8 +104,8 @@ roadmap plan
 #   Concurrency cap: 5 (recommended)
 #     bound by: review (PR review/merge bottleneck, soft ceiling)
 #     machine:  24 cores, 59.6GB total / 20.6GB free
-#     ceilings: 12 [CPU] · 13 [RAM] · 23 [work] · 5 [review]
-#   Wave 1, 5 concurrent: auth-sessions, billing-invoices, search-index, ...
+#     ceilings: 12 [CPU] · 13 [RAM] · 23 [work] · 5 [review] · 41 [disk]
+#   Wave 1, 5 concurrent: [P0] auth-sessions, billing-invoices, search-index, ...
 
 roadmap fan -w 1                         # launch: lead + one watched session per slice (default)
 roadmap fan -w 1 -d                      # preview the launch script, spawn nothing
@@ -106,11 +121,12 @@ roadmap fan --autonomous --yes-spawn-autonomous   # headless workers that commit
 Install it as a plugin (see [Install](#install)) and the roadmap becomes an *in-session* surface: slash-command **skills**, **agents**, and a startup **hook**.
 
 - **Skills** (`skills/*/SKILL.md`)
-  - `/slice <key>`: orient on one slice (read-only) by its what, read-order, next action, gate, and branch.
-  - `/sync`: reconcile statuses against merged PRs and the tracker, then re-render `SLICES.md`.
+  - `/slice <key>`: orient on one slice (read-only) — what, priority, the stashed `prompt` (relayed verbatim), read-order, next action, gate, branch. With a prompt stashed, this is the whole pickup: slash command + slice name, nothing else.
+  - `/sync`: reconcile statuses against merged PRs and the tracker, harvest PR-body "Leftovers" into proposed backlog captures, then re-render `SLICES.md`.
   - `/init`: a PM-style interview that bootstraps a `roadmap.yaml` (warm-start from existing docs, or cold).
   - `/fanout`: compute the waves and launch (wraps the same scheduler and adapters as the CLI).
-- **Hook** (`hooks/hooks.json`): a `SessionStart` hook injects the at-a-glance plus the current ready-wave, so a fresh session immediately knows what's runnable (and, on first run, installs the `yaml` dep).
+  - `/backlog`: capture + triage erratic work — normalizes your dump into prioritized items, then offers `grab` or `promote` per item.
+- **Hook** (`hooks/hooks.json`): a `SessionStart` hook injects the at-a-glance plus the current ready-wave and the backlog open-count, so a fresh session immediately knows what's runnable (and, on first run, installs the `yaml` dep).
 - **Agents** (`agents/*.md`): four specialized subagents Claude invokes across the roadmap, fanout, and review lifecycle.
 
 | Agent | Role | Read/write | Suggested model |
@@ -124,10 +140,13 @@ The CLI and the plugin share the same scripts: the CLI is your *shell* entry, th
 
 ### 3 · MCP (agent-callable)
 
-The plugin ships its own MCP server (`.mcp.json`, auto-started on install), so an agent drives the roadmap with typed tools instead of shelling out and parsing text:
+The plugin ships its own MCP server — named **`graph`** in `.mcp.json`, auto-started on install (plugin tool ids read `mcp__plugin_roadmap_graph__*`) — so an agent drives the roadmap with typed tools instead of shelling out and parsing text:
 
-- **Read:** `plan`, `ready_wave`, `show`, `validate` return structured JSON.
-- **Mutate:** `add_pi`, `add_sprint`, `set_status`, `set_fields`, `prune` edit `roadmap.yaml` through the YAML Document API (comments preserved), refuse any edit that would corrupt the graph (duplicate invoke key, unresolved dependency, cycle), and re-render `SLICES.md` in the same step. Seed and scaffold a roadmap, flip a slice to complete with its PR, or prune finished work, all schema-safe and atomic.
+- **Read:** `plan`, `ready_wave`, `show`, `validate`, `backlog_list` return structured JSON.
+- **Mutate (roadmap):** `add_pi`, `add_sprint`, `set_status`, `set_fields`, `bulk_set` (atomic multi-slice edit: one validate, one write, one render — all-or-nothing), `prune` edit `roadmap.yaml` through the YAML Document API (comments preserved), refuse any edit that would corrupt the graph (duplicate invoke key, unresolved dependency, cycle, bad priority/execution block), and re-render `SLICES.md` in the same step.
+- **Mutate (backlog):** `backlog_add` (creates `backlog.yaml` on first capture), `backlog_set`, and `backlog_promote` (spans both files: both validated before either is written).
+
+Launched worker sessions are told to file leftovers before opening their PR — `backlog_add` if the MCP is available, `roadmap backlog add` if the CLI is linked, else a **Leftovers** section in the PR body that `/sync` harvests.
 
 Mutators are natural `ask`-list entries in a consuming repo's `.claude/settings.json` (reads can be `allow`-listed). Separately, launched fanout sessions inherit whatever other MCP servers your repo already has wired, so a worker can drive your issue tracker or database while it works its slice.
 
@@ -174,6 +193,13 @@ pis:
           PLUS the session integration tests
         read_order: ["docs/auth.md (the design)"]
         resume_action: Wire JWT issuance + refresh; thread through middleware.
+        priority:                 # optional; sort is derived (tier asc, weight desc), never stored
+          tier: P1
+          weight: 60
+          reason: launch blocker for the pilot
+        prompt: |                 # optional author-stashed pickup instructions — embedded VERBATIM
+          Start from the failing e2e test in tests/session.e2e.ts.   # in the kickoff brief; shown
+          Do not touch the middleware pipeline.                      # by /slice and roadmap show
         track: A                  # optional lane label (forward-compat with the three-track partition)
         execution:                # optional per-slice staffing-strategy hint (see below)
           mode: agent-team
@@ -192,6 +218,8 @@ pis:
 - **`touches`/`owns`** mechanize the two-wave pattern: two ready slices that write the same file never share a wave; a convergence sprint just `deps`-on the divergent ones.
 - **`gated_on: <name>`** marks a human-gated slice. It never auto-schedules; it surfaces under "held on a human."
 - **`worker_mode`** sets the `--permission-mode` launched sessions start in; **`weight`** (`heavy|medium|light`) optionally overrides a sprint's inferred resource class.
+- **`priority`** (`{ tier: P0–P3, weight: 0–100, reason }`, all optional) decides who gets a scarce cap slot within a wave, badges the renders (`[P0]`), and drives `roadmap next`. Two unprioritized slices order exactly as before — an existing roadmap schedules and renders identically.
+- **`prompt`** is the stashed init prompt: `/slice <key>` relays it, the synthesized kickoff brief embeds it verbatim (`## 0.5 Author instructions`), and it's updatable as new info comes in via `roadmap set <key> prompt=@notes.md` or the `set_fields`/`bulk_set` tools.
 - **`execution`** declares HOW to staff the slice (see [Execution strategy hints](#execution-strategy-hints)); **`track`** tags the slice's lane for `--track`.
 
 ### Execution strategy hints
@@ -234,6 +262,45 @@ The block renders as an **imperative directive** at the top of the slice's read-
 
 ---
 
+## The backlog (backlog.yaml)
+
+Roadmap work is planned, feature-driven, value-driven. But there's a second kind of work — follow-ups, necessary chores, trivial fixes, urgent/critical items — that **surfaces erratically** and needs a tracker, not a plan. That's `docs/roadmap/backlog.yaml`, rendered to `docs/BACKLOG.md` (priority-tier sections, untriaged last, in-progress / promoted / recently-closed tables). `SLICES.md` carries a one-line pointer with the open count.
+
+```yaml
+meta:
+  schema_version: 1
+items:
+  - id: fix-wt-quoting            # stable slug; auto b1..bN when omitted at add
+    title: wt adapter mangles prompts containing quotes
+    kind: bug                     # bug | chore | followup | urgent | idea
+    status: open                  # open | in_progress | promoted | done | dropped
+    priority: { tier: P1, weight: 70, reason: breaks every Windows fanout }
+    source: { slice: fanout-adapters, date: 2026-07-06 }   # where it surfaced
+    refs: [fanout-adapters]       # related roadmap slices
+    touches: [scripts/fanout.mjs]
+    est_sessions: 0.5
+    gate: default                 # inherits the roadmap's meta.default_gate
+    prompt: |                     # embedded verbatim in the grab kickoff brief
+      Repro: roadmap fan -t wt with a prompt containing '"'.
+      Fix the wtSafe escaping; add a run.mjs case.
+```
+
+**Capture** anywhere work surfaces: `/backlog` (in-session dump → normalized items), `roadmap backlog add` (shell), `backlog_add` (agents), or automatically at the end of a slice — every kickoff brief tells the worker to file leftovers before opening its PR, and `/sync` harvests any that landed as a PR-body "Leftovers" section instead.
+
+**Consume** by size:
+
+- **Small / self-contained** → `roadmap grab <id>`: its own worktree (`<root>/backlog-<id>`, branch `backlog/<id>`) and session, kickoff brief synthesized from the item (prompt embedded), item marked `in_progress`.
+- **Bigger / belongs in the plan** → `roadmap promote <id> --pi <pi>`: becomes a `scheduled` sprint (the item id becomes the invoke key; title/est/gate/touches/prompt/priority carry over) with a `promoted_to` back-link on the item. Both YAMLs are validated before either is written.
+- **Not sure what's next?** → `roadmap next` picks the single highest-priority ready thing across both trackers (roadmap wins ties) and prints its pickup brief.
+
+---
+
+## Feasibility pre-checks (the disk ceiling)
+
+Fanning out N worktrees costs real disk. `roadmap plan` / `fan` / `grab` estimate the per-worktree cost (the tracked tree's size × 1.3, or `meta.worktree_gb` when your gates install `node_modules`/build artifacts per worktree — that's the calibration knob) and compare it against free space on the volume holding `meta.worktree_root`. Disk joins CPU / RAM / work / review as a **fifth ceiling**: the recommended cap auto-dials down and the plan reports `bound by: disk (need ~X GB/worktree, Y GB free)`. When even **one** worktree won't fit, `fan` and `grab` refuse to launch before creating anything. If the environment can't be probed (no git HEAD, unsupported statfs), the ceiling silently drops out — never blocking a plan on a failed probe.
+
+---
+
 ## Install
 
 ### The `roadmap` CLI
@@ -247,7 +314,7 @@ cd roadmap && npm install && npm link
 
 ### In Codex
 
-No plugin install is required. Open the repo in Codex, use the commands above, and rely on [`AGENTS.md`](C:\Users\connor.england\.codex\worktrees\66df\roadmap\AGENTS.md) for repo-local guidance.
+No plugin install is required. Open the repo in Codex, use the commands above, and rely on [`AGENTS.md`](AGENTS.md) for repo-local guidance.
 
 For MCP usage in agent environments, run:
 
@@ -255,7 +322,7 @@ For MCP usage in agent environments, run:
 npm run mcp
 ```
 
-The checked-in [`.mcp.json`](C:\Users\connor.england\.codex\worktrees\66df\roadmap\.mcp.json) remains the Claude-plugin entrypoint.
+The checked-in [`.mcp.json`](.mcp.json) remains the Claude-plugin entrypoint (server name `graph`).
 
 **Alias fallback (no npm):** drop a shim in your shell profile instead.
 
@@ -281,27 +348,41 @@ claude plugin marketplace add /path/to/roadmap
 claude plugin install roadmap@roadmap   # user scope; --scope project to pin per-repo
 ```
 
-That wires the skills, agents, the SessionStart hook, the PR-watch monitor, and the MCP server in one step (new sessions pick them up; `/mcp` reconnects the current one). The plugin bundles its MCP via `.mcp.json`, so don't also `claude mcp add roadmap` (you would get two servers named `roadmap`).
+That wires the skills, agents, the SessionStart hook, the PR-watch monitor, and the MCP server in one step (new sessions pick them up; `/mcp` reconnects the current one). The plugin bundles its MCP via `.mcp.json` as `graph`, so don't also `claude mcp add` a second copy of the server.
+
+### Upgrading from `slice-roadmap` (≤ 0.1.x)
+
+The plugin, marketplace entry, and npm package were renamed **`slice-roadmap` → `roadmap`** (and the bundled MCP server `roadmap` → `graph`) in 0.2.0. Old installs won't auto-update — migrate once:
+
+- **npm:** `npm unlink -g slice-roadmap`, then `npm link` again from the repo (per Node environment). The `roadmap` bin name itself is unchanged.
+- **Plugin:** `claude plugin uninstall slice-roadmap`, re-add the marketplace, `claude plugin install roadmap@roadmap`.
+- **⚠ Permission allow-lists:** any `settings.json` entries naming `mcp__plugin_slice-roadmap_roadmap__*` tools **silently stop matching** — rewrite them as `mcp__plugin_roadmap_graph__*`.
+- **Skills:** `/slice` is unchanged; `/slice-sync` → `/sync`, `/slice-init` → `/init`, `/slice-fanout` → `/fanout` (plus new `/backlog`).
+- **Env:** the api-lane variable is now `ROADMAP_API_KEY` (was `SLICE_ROADMAP_API_KEY`).
+- **Generated files:** the first `roadmap render` after upgrading rewrites SLICES.md boilerplate with the new skill names — a one-time diff.
 
 ### Recommending it in a consuming repo
 
-Don't commit a device-specific alias into a repo. Point contributors at this tool from your onboarding docs (e.g. a CONTRIBUTING note): *"Drive the roadmap from your shell. Clone `roadmap`, `npm install && npm link`, then run `roadmap` from anywhere in this repo."* A consuming repo only ever carries its own `docs/roadmap/roadmap.yaml` (plus the generated `SLICES.md`).
+Don't commit a device-specific alias into a repo. Point contributors at this tool from your onboarding docs (e.g. a CONTRIBUTING note): *"Drive the roadmap from your shell. Clone `roadmap`, `npm install && npm link`, then run `roadmap` from anywhere in this repo."* A consuming repo only ever carries its own `docs/roadmap/roadmap.yaml` and `backlog.yaml` (plus the generated `SLICES.md` / `BACKLOG.md`).
 
 ---
 
 ## What's built
 
-- **Graph brain** (`graph.mjs`): dependency resolution (sibling / fully-qualified / whole-PI deps), cycle detection, wave scheduling with two-wave file-contention, sessions-remaining and exec-plan derivation.
-- **Renderer** (`render.mjs`): hierarchical `SLICES.md` (per-PI sections, nested sprint tables, derived exec-plan lines, cross-PI wave map, held-on-human).
-- **Scheduler** (`scheduler.mjs`): recommended-cap eval (CPU / RAM / independent-work / review ceiling, reporting which binds) plus the waves.
-- **Fanout** (`fanout.mjs`): `tmux`, `wt`, `warp`, `print`, `background` adapters; per-slice worktree plus synthesized kickoff brief; the interactive console (`wizard.mjs`); guarded launch (`--dry`/`--out` preview, autonomous double-ack); `cleanup.mjs` worktree pruning.
-- **Plugin surface**: four skills (`slice`, `sync`, `init`, `fanout`), four agents, and a `SessionStart` hook.
-- **MCP server** (`mcp.mjs` + `lib/mcp-core.mjs`): a bundled, hand-rolled JSON-RPC stdio server with read tools (plan / ready_wave / show / validate) and comment-preserving, schema-validated mutate tools (add_pi / add_sprint / set_status / set_fields / prune) that re-render `SLICES.md` on every edit.
+- **Graph brain** (`graph.mjs`): dependency resolution (sibling / fully-qualified / whole-PI deps), cycle detection, wave scheduling with two-wave file-contention + priority-first cap packing, sessions-remaining and exec-plan derivation.
+- **Priority** (`lib/priority.mjs`): the shared tier/weight/reason model — validation, the derived comparator, tier badges.
+- **Backlog** (`lib/backlog-core.mjs` + `backlog.mjs`, `grab.mjs`, `promote.mjs`, `next.mjs`): the erratic-work tracker — capture/triage/launch/promote, `BACKLOG.md` rendering, the item→node adapter that reuses the fanout brief machinery, and cross-tracker pick-next.
+- **Renderer** (`render.mjs`): hierarchical `SLICES.md` (per-PI sections, nested sprint tables, priority badges, derived exec-plan lines, cross-PI wave map, held-on-human, backlog pointer) + `BACKLOG.md`.
+- **Scheduler** (`scheduler.mjs`): recommended-cap eval (CPU / RAM / independent-work / review / **disk** ceilings, reporting which binds) plus the waves.
+- **Fanout** (`fanout.mjs`): `tmux`, `wt`, `warp`, `print`, `background` adapters; per-slice worktree plus synthesized kickoff brief (stashed `prompt` embedded, leftover-capture instruction); disk hard-block; the interactive console (`wizard.mjs`); guarded launch (`--dry`/`--out` preview, autonomous double-ack); `cleanup.mjs` worktree pruning.
+- **Shared mutation store** (`lib/store.mjs`): the one read → mutate → validate → write → re-render path under every mutating surface (MCP, `set`, `backlog`, `promote`), including the validate-both-before-writing-either two-file promote.
+- **Plugin surface**: five skills (`slice`, `sync`, `init`, `fanout`, `backlog`), four agents, and a `SessionStart` hook (ready wave + reconcile nudge + backlog count).
+- **MCP server** (`mcp.mjs`, server `graph`): a bundled, hand-rolled JSON-RPC stdio server with read tools (plan / ready_wave / show / validate / backlog_list) and comment-preserving, schema-validated mutate tools (add_pi / add_sprint / set_status / set_fields / bulk_set / prune / backlog_add / backlog_set / backlog_promote) that re-render the generated views on every edit.
 - **PR-watch monitor** (`watch-prs.mjs` + `lib/pr-watch-core.mjs` + `monitors/monitors.json`): polls `gh` for the fanout branches and notifies the lead on each PR phase transition.
-- **Tests**: `npm test` runs the zero-dependency suite over the pure brain (graph, recommender, brief, plan, render, validate, CLI core, wizard core, MCP core, PR-watch core).
+- **Tests**: `npm test` runs the zero-dependency suite over the pure brain (graph, recommender + disk ceiling, priority, backlog, brief, plan, render, validate, CLI core, wizard core, MCP core, PR-watch core).
 
 The resource classifier matches build/test runner commands, not languages. It ships patterns for the common runners (`npm`/`yarn`/`pnpm`, `jest`, `vitest`, `tsc`, `pytest`, `tox`, Maven, Gradle, `make`, CMake/CTest, `go`, `cargo`, and more), ordered by how common they are, and `meta.weight_patterns` teaches it any bespoke runner.
 
 ## Requirements & license
 
-Node 18+ and a one-time `npm install` (for the `yaml` parser). MIT licensed.
+Node 18.15+ (for `fs.statfsSync`, the disk pre-check) and a one-time `npm install` (for the `yaml` parser). MIT licensed.

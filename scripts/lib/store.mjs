@@ -73,10 +73,18 @@ export function mutateBoth(root, fn) {
 export function mutateBacklog(root, fn, { createIfMissing = false } = {}) {
   const p = backlogPaths(root);
   let src;
+  let created = false;
   if (existsSync(p.yaml)) src = readFileSync(p.yaml, "utf8");
-  else if (createIfMissing) src = EMPTY_BACKLOG;
+  else if (createIfMissing) { src = EMPTY_BACKLOG; created = true; }
   else throw new Error(`no ${BACKLOG_REL.join("/")} — capture something first ('roadmap backlog add' or the backlog_add tool creates it)`);
   const doc = YAML.parseDocument(src);
+  if (created) {
+    // Block style from birth — the template's `items: []` is a flow seq, and items added to a
+    // flow collection stay flow (unreadable once prompts go multiline). Existing files keep
+    // whatever style their author chose.
+    const seq = doc.get("items");
+    if (seq) seq.flow = false;
+  }
   const summary = fn(doc);
   const backlog = validateBacklogDocOrThrow(doc);
   writeFileSync(p.yaml, serialize(doc), "utf8");
