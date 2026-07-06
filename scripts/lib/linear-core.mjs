@@ -178,6 +178,24 @@ export function issueDescription(node, cfg, { docsUrl = null, target } = {}) {
   return (lines.length ? lines.join("\n") + "\n\n---\n\n" : "") + footer;
 }
 
+// ── labels + project enrichment ───────────────────────────────────────────────
+// Every synced issue carries the marker label (distinguishes roadmap-managed issues from
+// hand-made ones); backlog items add kind:<kind>, sprints add track:<lane> when tracked.
+// Tier is NOT a label — Linear's native priority already carries it (no duplication).
+export const MARKER_LABEL = "roadmap";
+export const KIND_LABELS = ["bug", "chore", "followup", "urgent", "idea"].map((k) => `kind:${k}`);
+
+export function desiredLabels(target, node) {
+  if (target.type === "backlog") return [MARKER_LABEL, ...(node.kind ? [`kind:${node.kind}`] : [])];
+  return [MARKER_LABEL, ...(node.track ? [`track:${node.track}`] : [])];
+}
+
+// PI theme + exit criteria — the only strategic context a Linear-side viewer gets.
+export function projectDescription(pi) {
+  return [pi.theme || null, pi.exit_criteria ? `Exit: ${oneLine(pi.exit_criteria)}` : null]
+    .filter(Boolean).join("\n\n");
+}
+
 // ── push plan (diff-based, idempotent) ────────────────────────────────────────
 // existing: the fetched Linear snapshot — { issues: { [identifier]: { id, title, description,
 // priority, stateId } }, projects: { [projectId]: { id, name } } }. Ops reference projects
@@ -185,18 +203,26 @@ export function issueDescription(node, cfg, { docsUrl = null, target } = {}) {
 // holds: Set of "IDENTIFIER:field" (field = projection key: priority | stateId) for issues
 // with an OPEN inbound proposal — push skips those fields so a human's Linear edit is never
 // clobbered while the proposal is unresolved (live-verified failure mode).
-export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsUrl = null, holds = new Set() }) {
+// labels: name→id from the team bundle (fresh each sync, no YAML caching). Unresolvable
+// names are dropped from payloads and reported once via missingLabels (fix = provision).
+export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsUrl = null, holds = new Set(), labels = {} }) {
   const ops = [];
+  const missing = new Set();
   const model = flatten(graph);
 
   for (const pi of graph.pis || []) {
     const gran = effectiveGranularity(cfg, pi);
     const projId = pi.linear && pi.linear.project;
+    const desc = projectDescription(pi);
     if (!projId) {
-      ops.push({ op: "createProject", payload: { name: pi.title }, projectRef: pi.id,
+      ops.push({ op: "createProject", payload: { name: pi.title, ...(desc ? { description: desc } : {}) }, projectRef: pi.id,
         writeBack: { kind: "pi", pi: pi.id, field: "project" } });
-    } else if (existing.projects[projId] && existing.projects[projId].name !== pi.title) {
-      ops.push({ op: "updateProject", id: projId, payload: { name: pi.title } });
+    } else if (existing.projects[projId]) {
+      const cur = existing.projects[projId];
+      const changed = {};
+      if (cur.name !== pi.title) changed.name = pi.title;
+      if ((cur.description || "") !== desc) changed.description = desc;
+      if (Object.keys(changed).length) ops.push({ op: "updateProject", id: projId, payload: changed });
     }
     if (gran === "pis") continue;   // projects only — no issue leaks for this PI
 
@@ -213,22 +239,35 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
       if (!it.linear && (it.status === "done" || it.status === "dropped")) continue;
       const node = { invoke: it.id, title: it.title, what: it.title, gate: it.gate || null,
         estSessions: it.est_sessions ?? null, priority: it.priority || null, source: it.source || null,
-        linear: it.linear || null };
+        kind: it.kind, linear: it.linear || null };
       pushIssueOp(node, { type: "backlog", key: it.id }, it.status, resolveItemPushState, null);
     }
   }
-  return { ops };
+  return { ops, missingLabels: [...missing].sort() };
+
+  function labelIdsFor(target, node) {
+    const ids = [];
+    for (const name of desiredLabels(target, node)) {
+      if (labels[name]) ids.push(labels[name]);
+      else missing.add(name);
+    }
+    return ids.sort();
+  }
 
   function pushIssueOp(node, target, status, resolver, projectRef) {
     const state = resolver(status, cfg, teamStates);
+    const labelIds = labelIdsFor(target, node);
     const projection = {
       title: node.title,
       description: issueDescription(node, cfg, { docsUrl, target }),
       priority: priorityToLinear(node.priority),
       stateId: state.id,
+      labelIds,
     };
     if (!node.linear) {
-      ops.push({ op: "createIssue", payload: projection, projectRef,
+      const payload = { ...projection };
+      if (!labelIds.length) delete payload.labelIds;
+      ops.push({ op: "createIssue", payload, projectRef,
         writeBack: target.type === "slice" ? { kind: "sprint", invoke: target.key } : { kind: "item", id: target.key } });
       return;
     }
@@ -238,6 +277,10 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
     for (const k of ["title", "description", "priority", "stateId"]) {
       if (holds.has(`${node.linear}:${k}`)) continue;   // pending inbound proposal owns this field
       if (projection[k] !== cur[k]) changed[k] = projection[k];
+    }
+    // labels compare as SETS (order-insensitive — Linear returns them in its own order)
+    if (labelIds.length && labelIds.join(",") !== [...(cur.labelIds || [])].sort().join(",")) {
+      changed.labelIds = labelIds;
     }
     if (Object.keys(changed).length) ops.push({ op: "updateIssue", id: cur.id, identifier: node.linear, payload: changed });
   }

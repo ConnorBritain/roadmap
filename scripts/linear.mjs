@@ -50,14 +50,16 @@ async function fetchTeamBundle(teamKey, io) {
     `query($key: String!) { teams(filter: { key: { eq: $key } }) { nodes {
        id key name
        states { nodes { id name type position } }
-       projects { nodes { id name } } } } }`,
+       labels { nodes { id name } }
+       projects { nodes { id name description } } } } }`,
     { key: teamKey }, io);
   const team = data.teams.nodes[0];
   if (!team) throw new Error(`no Linear team with key "${teamKey}" (check meta.linear.team)`);
   return {
     id: team.id,
     states: [...team.states.nodes].sort((a, b) => a.position - b.position),
-    projects: Object.fromEntries(team.projects.nodes.map((p) => [p.id, { id: p.id, name: p.name }])),
+    labels: Object.fromEntries(((team.labels && team.labels.nodes) || []).map((l) => [l.name, l.id])),
+    projects: Object.fromEntries(team.projects.nodes.map((p) => [p.id, { id: p.id, name: p.name, description: p.description || "" }])),
   };
 }
 
@@ -66,11 +68,12 @@ async function fetchIssueSnapshot(identifiers, io) {
   const issues = {};
   for (let i = 0; i < identifiers.length; i += 50) {
     const chunk = identifiers.slice(i, i + 50);
-    const q = `query { ${chunk.map((id, j) => `i${j}: issue(id: "${id}") { id identifier title description priority state { id } }`).join(" ")} }`;
+    const q = `query { ${chunk.map((id, j) => `i${j}: issue(id: "${id}") { id identifier title description priority state { id } labels { nodes { id } } }`).join(" ")} }`;
     const data = await gql(q, {}, io);
     chunk.forEach((_, j) => {
       const iss = data[`i${j}`];
-      if (iss) issues[iss.identifier] = { id: iss.id, title: iss.title, description: iss.description || "", priority: iss.priority, stateId: iss.state.id };
+      if (iss) issues[iss.identifier] = { id: iss.id, title: iss.title, description: iss.description || "", priority: iss.priority, stateId: iss.state.id,
+        labelIds: ((iss.labels && iss.labels.nodes) || []).map((l) => l.id) };
     });
   }
   return issues;
@@ -143,7 +146,8 @@ export async function runSync(root, opts = {}) {
 
   // ── push ──
   if (!opts.pullOnly) {
-    const { ops } = buildPushPlan({ graph: pushGraph, backlog: pushBacklog, cfg, teamStates: team.states, existing, docsUrl, holds });
+    const { ops, missingLabels } = buildPushPlan({ graph: pushGraph, backlog: pushBacklog, cfg, teamStates: team.states, existing, docsUrl, holds, labels: team.labels });
+    if (missingLabels.length) result.missingLabels = missingLabels;
     if (opts.dry) {
       result.pushPlan = ops;
     } else if (ops.length) {
@@ -303,6 +307,9 @@ if (isMain) {
           for (const d of deltas) console.log(`  ~ ${d.kind} ${d.key}: ${d.field} ${d.from} → ${d.to ?? `(${d.note})`}`);
           console.log(`  Apply keeps via /sync (it walks this inbox), backlog_add/set tools, or 'roadmap backlog add/set'.`);
         }
+      }
+      if (r.missingLabels && r.missingLabels.length) {
+        console.log(`labels missing in team: ${r.missingLabels.join(", ")} — run 'roadmap linear provision' to create them.`);
       }
       console.log(r.cursorAdvanced ? `cursor advanced.` : `cursor unchanged${r.dry ? " (dry)" : " (inbox pending)"}.`);
     } else {

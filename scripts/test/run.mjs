@@ -34,6 +34,7 @@ import {
   normalizeLinearConfig, effectiveGranularity, linearState, checkPiOverrideAck,
   resolvePushState, pullStatusFor, priorityToLinear, LINEAR_TO_PRIORITY,
   issueDescription, machineFooter, buildPushPlan, buildPullProposals, validateLinearConfig, holdsFor,
+  desiredLabels, projectDescription, MARKER_LABEL,
 } from "../lib/linear-core.mjs";
 import { addPi } from "../lib/mcp-core.mjs";
 import { runSync, readCursor } from "../linear.mjs";
@@ -1451,9 +1452,10 @@ function linearRepo() {
     `meta:\n  schema_version: 1\n  program: T\n  linear:\n    team: ENG\n    pull: propose\n    watch:\n      - { team: PUB, project: Submit an issue, kind: bug, priority: {tier: P3} }\npis:\n  - id: auth\n    title: Authentication\n    status: active\n    sprints:\n      - { id: s1, title: Login, status: active, invoke: auth-login }\n`, "utf8");
   return root;
 }
-function fakeLinear({ failOn = null, snapshot = {}, inboundByTeam = null } = {}) {
+function fakeLinear({ failOn = null, snapshot = {}, inboundByTeam = null, teamLabels = [], teamProjects = [] } = {}) {
   const calls = [];
   let created = 0;
+  let labelsCreated = 0;
   const fetchImpl = async (url, { body }) => {
     const { query, variables } = JSON.parse(body);
     calls.push({ query, variables });
@@ -1464,7 +1466,25 @@ function fakeLinear({ failOn = null, snapshot = {}, inboundByTeam = null } = {})
         { id: "st-s", name: "In Progress", type: "started", position: 1 },
         { id: "st-c", name: "Done", type: "completed", position: 2 },
       ] },
-      projects: { nodes: [] } }] } });
+      labels: { nodes: teamLabels },
+      projects: { nodes: teamProjects } }] } });
+    if (query.includes("issueLabelCreate")) {
+      if (failOn === "issueLabelCreate") throw new Error("simulated label failure");
+      labelsCreated += 1;
+      return respond({ issueLabelCreate: { issueLabel: { id: `lbl-new-${labelsCreated}`, name: variables.input.name } } });
+    }
+    if (query.includes("customViewCreate")) {
+      if (failOn !== "customViewCreate") return respond({ customViewCreate: { customView: { id: `view-${calls.length}` } } });
+      throw new Error("simulated view rejection");
+    }
+    if (query.includes("projectUpdateCreate")) {
+      if (failOn === "projectUpdateCreate") throw new Error("simulated post rejection");
+      return respond({ projectUpdateCreate: { projectUpdate: { id: "pu-1" } } });
+    }
+    if (query.includes("commentCreate")) {
+      if (failOn === "commentCreate") throw new Error("simulated comment failure");
+      return respond({ commentCreate: { comment: { id: "c-1" } } });
+    }
     if (query.includes("issue(id:")) {   // snapshot aliases — configurable per test
       const data = {};
       const ids = [...query.matchAll(/issue\(id: "([^"]+)"\)/g)].map((m) => m[1]);
@@ -1773,6 +1793,71 @@ test("review.mjs end-to-end in a real git repo: --since <sha> diffs old vs new Y
   eq(anchor.commit, sha, "anchor honored");
   eq(digest.shipped.map((s) => s.invoke), ["a-s1"], "shipped detected from the git snapshot");
   eq(digest.captured.sprints.map((s) => s.invoke), ["a-s2"], "added sprint detected");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// ── label sync + project enrichment ───────────────────────────────────────────
+const LBL = { roadmap: "l-mark", "kind:bug": "l-bug", "track:infra": "l-infra" };
+
+// WHY: label CHURN would make every sync noisy — the same label set in a different order
+// must be zero ops; a genuinely missing label exactly one update carrying only labelIds.
+test("label diff is a set compare: reordered → no op; missing one → one labelIds-only update", () => {
+  const g = pushGraph();
+  g.pis[0].sprints[0].track = "infra";
+  const cfg = normalizeLinearConfig(g.meta);
+  const desc = issueDescription({ invoke: "auth-login", title: "Login", what: "Login", gate: "default", estSessions: null, priority: null, track: "infra" }, cfg, { target: { type: "slice", key: "auth-login" } });
+  const snapReordered = { projects: { "proj-1": { id: "proj-1", name: "Authentication", description: "" } },
+    issues: { "ENG-1": { id: "uuid-1", title: "Login", description: desc, priority: 0, stateId: "st-s", labelIds: ["l-infra", "l-mark"] } } };
+  const same = buildPushPlan({ graph: g, backlog: null, cfg, teamStates: L_STATES, existing: snapReordered, labels: LBL });
+  ok(!same.ops.some((o) => o.op === "updateIssue"), "reordered labels → no update");
+  const snapMissing = { ...snapReordered, issues: { "ENG-1": { ...snapReordered.issues["ENG-1"], labelIds: ["l-mark"] } } };
+  const drifted = buildPushPlan({ graph: g, backlog: null, cfg, teamStates: L_STATES, existing: snapMissing, labels: LBL });
+  const upd = drifted.ops.find((o) => o.op === "updateIssue");
+  eq(upd.payload, { labelIds: ["l-infra", "l-mark"] }, "only labelIds sent, sorted");
+});
+
+// WHY: an unprovisioned team (no labels yet) must degrade — no churn, no crash — and name
+// every unresolved label once so provision knows what to create.
+test("empty label map degrades: no label ops, missingLabels names each wanted label", () => {
+  const g = pushGraph();
+  g.pis[0].sprints[0].track = "infra";
+  const cfg = normalizeLinearConfig(g.meta);
+  const plan = buildPushPlan({ graph: g, backlog: null, cfg, teamStates: L_STATES, existing: SNAP(), labels: {} });
+  ok(!plan.ops.some((o) => o.payload && o.payload.labelIds), "no labelIds anywhere");
+  eq(plan.missingLabels, ["roadmap", "track:infra"], "unresolved names reported once, sorted");
+});
+
+// WHY: kind/track routing is the triage contract — the wrong label buckets work into the
+// wrong Linear view and the board lies.
+test("desiredLabels routes marker+kind for items, marker+track for sprints", () => {
+  eq(desiredLabels({ type: "backlog" }, { kind: "bug" }), [MARKER_LABEL, "kind:bug"], "item labels");
+  eq(desiredLabels({ type: "slice" }, { track: "infra" }), [MARKER_LABEL, "track:infra"], "tracked sprint");
+  eq(desiredLabels({ type: "slice" }, { track: null }), [MARKER_LABEL], "untracked sprint = marker only");
+});
+
+// WHY: PI theme/exit_criteria is the only strategic context Linear viewers get — it must
+// land on create, update on drift, and stay quiet when matching (idempotency).
+test("project description: composed on create, updates on drift, idempotent when matching", () => {
+  eq(projectDescription({ theme: "Own the login flow", exit_criteria: "all\nauth e2e green" }),
+    "Own the login flow\n\nExit: all auth e2e green", "theme + one-lined exit");
+  const g = pushGraph();
+  g.pis[0].theme = "Own the login flow";
+  const cfg = normalizeLinearConfig(g.meta);
+  const snap = (desc) => ({ projects: { "proj-1": { id: "proj-1", name: "Authentication", description: desc } }, issues: SNAP().issues });
+  const drift = buildPushPlan({ graph: g, backlog: null, cfg, teamStates: L_STATES, existing: snap(""), labels: {} });
+  eq(drift.ops.find((o) => o.op === "updateProject").payload, { description: "Own the login flow" }, "drifted description alone updates");
+  const match = buildPushPlan({ graph: g, backlog: null, cfg, teamStates: L_STATES, existing: snap("Own the login flow"), labels: {} });
+  ok(!match.ops.some((o) => o.op === "updateProject"), "matching description → no op");
+});
+
+// WHY: the plan is paper until the IO forwards it — the end-to-end must show labelIds
+// reaching the created issue's input.
+test("runSync forwards labelIds from the team's labels to issueCreate", async () => {
+  const root = linearRepo();
+  const fake = fakeLinear({ teamLabels: [{ id: "l-mark", name: "roadmap" }] });
+  await runSync(root, { fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-06T12:00:00Z" });
+  const create = fake.calls.find((c) => c.query.includes("issueCreate"));
+  eq(create.variables.input.labelIds, ["l-mark"], "marker label id on the created issue");
   rmSync(root, { recursive: true, force: true });
 });
 
