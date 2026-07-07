@@ -1135,6 +1135,49 @@ test("performPromotion is rejected by the pre-write gate when the item id collid
   throws(() => performPromotion(rDoc, doneB, { id: "d1", pi: "auth" }), "only open/in_progress", "closed items don't promote");
 });
 
+// WHY: promoting a mapped item must TRANSFER its Linear issue to the sprint — leaving it
+// on the item orphans an open issue on the board and double-maps the identifier.
+test("performPromotion transfers the item's Linear issue to the sprint", () => {
+  const rDoc = parseDocument(`meta:\n  schema_version: 1\n  program: T\npis:\n  - id: auth\n    title: Auth\n    status: active\n    sprints:\n      - { id: s1, title: Old, status: complete, invoke: old }\n`);
+  const bDoc = parseDocument(`meta:\n  schema_version: 1\nitems:\n  - { id: fix-z, title: Fix Z, kind: bug, status: open, linear: PID-42 }\n`);
+  performPromotion(rDoc, bDoc, { id: "fix-z", pi: "auth" });
+  const sprint = rDoc.toJS().pis[0].sprints[1];
+  eq(sprint.linear, "PID-42", "issue identifier rides onto the sprint");
+  const item = bDoc.toJS().items[0];
+  eq(item.linear, undefined, "item releases the mapping");
+  eq(item.promoted_to, "auth/s2", "back-link intact");
+  validateDocOrThrow(rDoc); validateBacklogDocOrThrow(bDoc);
+});
+
+// WHY: the transferred issue must MORPH on the next sync — slice-form description, kind
+// label dropped, and attached to the PI's project — or the board shows a stale backlog card.
+test("buildPushPlan morphs a transferred issue: description + labels + projectId in one update", () => {
+  const g = {
+    meta: { schema_version: 1, program: "T", linear: { team: "ENG" } },
+    pis: [{ id: "auth", title: "Authentication", status: "active", linear: { project: "proj-1" }, sprints: [
+      { id: "s2", title: "Fix Z", status: "scheduled", invoke: "fix-z", linear: "PID-42" },
+    ]}],
+  };
+  const cfg = normalizeLinearConfig(g.meta);
+  const itemForm = { // the issue as it looked while it was a backlog item
+    id: "uuid-42", title: "Fix Z", priority: 0, stateId: "st-b", projectId: null, labelIds: ["l-mark", "l-kindbug"],
+    description: issueDescription({ invoke: "fix-z", title: "Fix Z", what: "Fix Z", kind: "bug" }, cfg, { target: { type: "backlog", key: "fix-z" } }),
+  };
+  const morphStates = [
+    { id: "st-b", name: "Backlog", type: "backlog", position: 0 },
+    { id: "st-s", name: "In Progress", type: "started", position: 1 },
+    { id: "st-c", name: "Done", type: "completed", position: 2 },
+  ];
+  const plan = buildPushPlan({ graph: g, backlog: null, cfg, teamStates: morphStates,
+    existing: { projects: { "proj-1": { id: "proj-1", name: "Authentication", description: "" } }, issues: { "PID-42": itemForm } },
+    labels: { roadmap: "l-mark", "kind:bug": "l-kindbug" } });
+  const upd = plan.ops.find((o) => o.op === "updateIssue");
+  ok(upd, "one morph update");
+  ok(upd.payload.description.includes("roadmap: slice=fix-z"), "description morphs to slice form");
+  eq(upd.payload.labelIds, ["l-mark"], "kind label dropped, marker kept");
+  eq(upd.payload.projectId, "proj-1", "attached to the PI's project");
+});
+
 // WHY: the MCP registry is the agent-facing contract — every backlog tool must be listed
 // with a schema or agents can't call it, and the combined registry must stay well-formed.
 test("BACKLOG_TOOLS registry is well-formed and covers list/add/set/promote", () => {
@@ -1335,7 +1378,7 @@ const SNAP = (loginOverrides = {}) => ({
   projects: { "proj-1": { id: "proj-1", name: "Authentication" } },
   issues: { "ENG-1": { id: "uuid-1", title: "Login",
     description: issueDescription({ invoke: "auth-login", title: "Login", what: "Login", gate: "default", estSessions: null, priority: null }, L_CFG, { target: { type: "slice", key: "auth-login" } }),
-    priority: 0, stateId: "st-s", ...loginOverrides } },
+    priority: 0, stateId: "st-s", projectId: "proj-1", ...loginOverrides } },
 });
 
 // WHY: a non-idempotent push spams duplicate issues/updates on every /sync — a matching
@@ -1504,7 +1547,9 @@ function fakeLinear({ failOn = null, snapshot = {}, inboundByTeam = null, teamLa
       const identifier = `ENG-${100 + created}`;
       createdIssues[identifier] = { id: `uuid-${created}`, identifier, title: variables.input.title,
         description: variables.input.description || "", priority: variables.input.priority ?? 0,
-        state: { id: variables.input.stateId }, labels: { nodes: (variables.input.labelIds || []).map((id) => ({ id })) } };
+        state: { id: variables.input.stateId },
+        project: variables.input.projectId ? { id: variables.input.projectId } : null,   // faithful: real creates persist the project
+        labels: { nodes: (variables.input.labelIds || []).map((id) => ({ id })) } };
       return respond({ issueCreate: { issue: { id: `uuid-${created}`, identifier } } });
     }
     if (query.includes("issueUpdate")) return respond({ issueUpdate: { issue: { id: "x" } } });
@@ -1817,7 +1862,7 @@ test("label diff is a set compare: reordered → no op; missing one → one labe
   const cfg = normalizeLinearConfig(g.meta);
   const desc = issueDescription({ invoke: "auth-login", title: "Login", what: "Login", gate: "default", estSessions: null, priority: null, track: "infra" }, cfg, { target: { type: "slice", key: "auth-login" } });
   const snapReordered = { projects: { "proj-1": { id: "proj-1", name: "Authentication", description: "" } },
-    issues: { "ENG-1": { id: "uuid-1", title: "Login", description: desc, priority: 0, stateId: "st-s", labelIds: ["l-infra", "l-mark"] } } };
+    issues: { "ENG-1": { id: "uuid-1", title: "Login", description: desc, priority: 0, stateId: "st-s", projectId: "proj-1", labelIds: ["l-infra", "l-mark"] } } };
   const same = buildPushPlan({ graph: g, backlog: null, cfg, teamStates: L_STATES, existing: snapReordered, labels: LBL });
   ok(!same.ops.some((o) => o.op === "updateIssue"), "reordered labels → no update");
   const snapMissing = { ...snapReordered, issues: { "ENG-1": { ...snapReordered.issues["ENG-1"], labelIds: ["l-mark"] } } };

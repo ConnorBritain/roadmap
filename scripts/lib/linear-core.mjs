@@ -281,7 +281,7 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
     for (const node of model.nodes.filter((n) => n.piId === pi.id)) {
       // create only not-done work (issues for finished history are noise); always update mapped.
       if (!node.linear && isDone(node.status)) continue;
-      pushIssueOp(node, { type: "slice", key: node.invoke }, node.status, resolvePushState, pi.id);
+      pushIssueOp(node, { type: "slice", key: node.invoke }, node.status, resolvePushState, pi.id, projId || null);
     }
   }
 
@@ -306,7 +306,7 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
     return ids.sort();
   }
 
-  function pushIssueOp(node, target, status, resolver, projectRef) {
+  function pushIssueOp(node, target, status, resolver, projectRef, projectId = null) {
     const state = resolver(status, cfg, teamStates);
     const labelIds = labelIdsFor(target, node);
     const projection = {
@@ -334,6 +334,9 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
     if (labelIds.length && labelIds.join(",") !== [...(cur.labelIds || [])].sort().join(",")) {
       changed.labelIds = labelIds;
     }
+    // project attach — how a transferred issue (backlog item promoted to a sprint) moves
+    // into its PI's project. Only when the project id is already known (post first push).
+    if (projectId && cur.projectId !== projectId) changed.projectId = projectId;
     if (Object.keys(changed).length) ops.push({ op: "updateIssue", id: cur.id, identifier: node.linear, payload: changed });
   }
 }
