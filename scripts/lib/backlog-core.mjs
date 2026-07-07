@@ -266,8 +266,12 @@ export function performPromotion(rDoc, bDoc, { id, pi, sprint_id } = {}) {
   const args = { pi, id: sid, title: item.title, invoke: item.id, status: "scheduled", what: item.title };
   for (const k of ["est_sessions", "gate", "prompt", "priority"]) if (item[k] != null) args[k] = item[k];
   if (Array.isArray(item.touches) && item.touches.length) args.touches = item.touches;
+  // The item's Linear issue TRANSFERS to the sprint (same issue continues life as roadmap
+  // work — next sync morphs its description/labels/project). Leaving it on the item would
+  // orphan an open issue on the board and double-map the identifier.
+  if (item.linear) args.linear = item.linear;
   addSprint(rDoc, args);
-  setItemFields(bDoc, { id, fields: { status: "promoted", promoted_to: `${pi}/${sid}` } });
+  setItemFields(bDoc, { id, fields: { status: "promoted", promoted_to: `${pi}/${sid}`, ...(item.linear ? { linear: null } : {}) } });
   return { promoted: id, to: `${pi}/${sid}` };
 }
 

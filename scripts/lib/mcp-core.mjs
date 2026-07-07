@@ -139,7 +139,7 @@ export function addSprint(doc, args) {
   const pi = piIndexById(doc, args.pi);
   if (pi < 0) throw new Error(`no PI "${args.pi}"`);
   const node = { id: args.id, title: args.title, status: args.status || "scheduled", invoke: args.invoke };
-  for (const k of ["what", "est_sessions", "gate", "weight", "gated_on", "resume_action", "prompt", "priority"]) if (args[k] != null) node[k] = args[k];
+  for (const k of ["what", "est_sessions", "gate", "weight", "gated_on", "resume_action", "prompt", "priority", "linear"]) if (args[k] != null) node[k] = args[k];
   for (const k of ["deps", "touches", "owns", "read_order"]) if (Array.isArray(args[k])) node[k] = args[k];
   const piMap = pisSeq(doc).items[pi];
   if (!piMap.has("sprints") || !piMap.get("sprints")) doc.setIn(["pis", pi, "sprints"], doc.createNode([node]));
