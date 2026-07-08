@@ -22,4 +22,6 @@ You converge the user's priorities into the graph. The output is `priority: { ti
 
 5. **Report** the new order: `roadmap next` to show what now leads, plus the tier table. If Linear is wired, note the tier changes will project as Linear priorities (P0→Urgent … P3→Low) on the next sync.
 
+6. **Offer to load the plate** (only when `meta.plate` exists / Linear is wired). Once the order is set, propose the handful you'll *actually work now* as the batch via the **`plate_set`** MCP tool (`{ keys: [<invoke>…] }`) — or `roadmap plate set <invoke> …`. This projects to Linear's **My Issues** on the next sync (assignee = you). Keep it under `plate_max` — the plate is a hopper for the current batch, not the whole P0/P1 list; active work auto-shows and completed slices auto-drain regardless. Set only what the user confirms is "on my plate now" — intentional, not automatic.
+
 Never set a priority the user didn't confirm, and never delete a reason without replacing it — an unexplained tier is worse than an untriaged item.

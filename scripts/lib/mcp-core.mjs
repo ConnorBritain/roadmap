@@ -9,6 +9,7 @@ import { validateGraph } from "./validate-core.mjs";
 import { normalizeExecution, suggestedConcurrency, validateExecution } from "./execution.mjs";
 import { validatePriority } from "./priority.mjs";
 import { checkPiOverrideAck, normalizeLinearConfig } from "./linear-core.mjs";
+import { setPlateDoc } from "./plate-core.mjs";
 
 const STATUSES = Object.keys(STATUS);
 const VALID_STATUS = new Set(STATUSES);
@@ -63,6 +64,12 @@ export const TOOLS = [
   { name: "prune", description: "Remove a slice (by invoke), a whole PI (by pi id), or every complete slice (scope='completed'). Re-renders SLICES.md. Validated before writing: the removal is rejected with no change made if it would orphan a dependency, duplicate an invoke key, or otherwise break the graph.",
     inputSchema: { type: "object", properties: {
       invoke: { type: "string" }, pi: { type: "string" }, scope: { enum: ["completed"] } } } },
+  { name: "plate_set", description: "Replace the plate (meta.plate) with `keys` — the curated batch you'll work NOW, projected to Linear's My Issues (assignee=you) on the next sync. The intended use from a planning session (/prioritize): load the top-ranked ready slices. Keep it under plate_max — active work auto-shows on top and completed slices auto-drain, so this is just the deliberate 'on my desk' set.",
+    inputSchema: { type: "object", required: ["keys"], properties: { keys: { type: "array", items: { type: "string" }, description: "slice invoke keys / backlog ids" } } } },
+  { name: "plate_add", description: "Add slice invoke keys / backlog ids to the plate (meta.plate) — creates it (enables the plate) if absent. For folding a newly-relevant slice into the current batch without replacing it.",
+    inputSchema: { type: "object", required: ["keys"], properties: { keys: { type: "array", minItems: 1, items: { type: "string" } } } } },
+  { name: "plate_remove", description: "Remove entries from the plate (meta.plate). Completed slices auto-drain on sync; use this to pull something off your plate early.",
+    inputSchema: { type: "object", required: ["keys"], properties: { keys: { type: "array", minItems: 1, items: { type: "string" } } } } },
 ];
 
 // ── read handlers (operate on a plain graph object) ────────────────────────────
@@ -216,7 +223,32 @@ export function prune(doc, args = {}) {
   throw new Error("prune requires one of: invoke, pi, or scope='completed'");
 }
 
-export const MUTATION_HANDLERS = { add_pi: addPi, add_sprint: addSprint, set_status: setStatus, set_fields: setFields, bulk_set: bulkSet, prune };
+// ── plate mutations (meta.plate → Linear My Issues) ── operate on the Document like set_fields;
+// setPlateDoc writes a block-style seq. The read side (plate_list) lives in the server (needs backlog).
+function plateListFromDoc(doc) {
+  const arr = (doc.toJS().meta || {}).plate;   // via the Document (a bare node.toJS() needs the doc passed in)
+  return Array.isArray(arr) ? arr.filter((k) => typeof k === "string") : [];
+}
+export function setPlate(doc, args) {
+  if (!args || !Array.isArray(args.keys)) throw new Error("plate_set requires keys: [string, ...]");
+  const keys = [...new Set(args.keys.filter((k) => typeof k === "string"))];
+  setPlateDoc(doc, keys);
+  return { plate: "set", keys };
+}
+export function addPlate(doc, args) {
+  if (!args || !Array.isArray(args.keys) || !args.keys.length) throw new Error("plate_add requires keys: [string, ...]");
+  const keys = [...new Set([...plateListFromDoc(doc), ...args.keys.filter((k) => typeof k === "string")])];
+  setPlateDoc(doc, keys);
+  return { plate: "add", keys };
+}
+export function removePlate(doc, args) {
+  if (!args || !Array.isArray(args.keys) || !args.keys.length) throw new Error("plate_remove requires keys: [string, ...]");
+  const keys = plateListFromDoc(doc).filter((k) => !args.keys.includes(k));
+  setPlateDoc(doc, keys);
+  return { plate: "remove", keys };
+}
+
+export const MUTATION_HANDLERS = { add_pi: addPi, add_sprint: addSprint, set_status: setStatus, set_fields: setFields, bulk_set: bulkSet, prune, plate_set: setPlate, plate_add: addPlate, plate_remove: removePlate };
 
 // ── pre-write integrity gate ────────────────────────────────────────────────────
 // Throws if the edited Document would corrupt the roadmap (duplicate invoke, unresolved

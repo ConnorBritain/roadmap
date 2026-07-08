@@ -35,11 +35,12 @@ import {
   resolvePushState, pullStatusFor, priorityToLinear, LINEAR_TO_PRIORITY,
   issueDescription, machineFooter, buildPushPlan, buildPullProposals, validateLinearConfig, holdsFor,
   desiredLabels, projectDescription, projectName, projectContent, normalizeLinearMarkdown,
-  projectColorFor, projectIconFor, MARKER_LABEL, LINEAR_PROJECT_NAME_MAX, LINEAR_PROJECT_DESC_MAX,
+  projectColorFor, projectIconFor, MARKER_LABEL, PLATE_LABEL, LINEAR_PROJECT_NAME_MAX, LINEAR_PROJECT_DESC_MAX,
   initiativePlan, initiativeStyle, HELD_STATUSES,
   provisionPlan, manualViewChecklist, dispatchGuidance, STANDARD_VIEWS,
 } from "../lib/linear-core.mjs";
-import { addPi } from "../lib/mcp-core.mjs";
+import { platedKeys, plateDrainKeys, setPlateDoc, validatePlate } from "../lib/plate-core.mjs";
+import { addPi, setPlate, addPlate, removePlate } from "../lib/mcp-core.mjs";
 import { runSync, runProvision, syncInitiatives, readCursor } from "../linear.mjs";
 import { runDispatch, runFanCloud, resolveRoutine, fireRoutine, routineEndpoint } from "../dispatch.mjs";
 import { graphDiff, backlogDiff, reviewDigest, pisInFlight } from "../lib/review-core.mjs";
@@ -1466,6 +1467,131 @@ test("validate warns on a slice whose est_sessions exceeds estimate_max", () => 
   eq(validateLinearConfig(noLinear).warnings.filter((m) => m.includes("estimate_max")).length, 0, "no Linear config → no oversize warning");
 });
 
+// ── the plate (My Issues hopper) ──────────────────────────────────────────────
+// WHY: the plate must be a CURATED subset (signal), never everything, and "what I'm actively working"
+// is always on it. Off without meta.plate (backward-compat). Explicit ∪ active ∪ in_progress.
+test("platedKeys: off without meta.plate; else explicit ∪ active slices ∪ in_progress items", () => {
+  const pis = [{ id: "p", title: "P", status: "active", sprints: [
+    { id: "s1", title: "A", status: "active", invoke: "a" },
+    { id: "s2", title: "B", status: "next", invoke: "b" },
+    { id: "s3", title: "C", status: "complete", invoke: "c" } ]}];
+  eq(platedKeys({ meta: { schema_version: 1 }, pis }, null), null, "no meta.plate → feature off (null)");
+  const bl = { items: [{ id: "x", status: "in_progress" }, { id: "y", status: "open" }] };
+  eq([...platedKeys({ meta: { schema_version: 1, plate: ["b", "z"] }, pis }, bl)].sort(), ["a", "b", "x", "z"],
+    "explicit(b,z) ∪ active(a) ∪ in_progress(x); complete/next/open never auto-added");
+});
+
+// WHY: 'complete only' is the chosen drain breakpoint — a merged slice leaves the hopper, a blocked one
+// STAYS (visible reminder). Draining the wrong status silently loses your batch.
+test("plateDrainKeys: complete-only — drains finished explicit entries, keeps blocked/active", () => {
+  const g = { meta: { plate: ["a", "b", "c", "x", "ghost"] }, pis: [{ id: "p", title: "P", status: "active", sprints: [
+    { id: "s1", title: "A", status: "complete", invoke: "a" },
+    { id: "s2", title: "B", status: "blocked", invoke: "b" },
+    { id: "s3", title: "C", status: "active", invoke: "c" } ]}]};
+  eq(plateDrainKeys(g, { items: [{ id: "x", status: "done" }] }).sort(), ["a", "x"],
+    "complete slice + done item drain; blocked & active stay; unknown key left alone");
+});
+
+// WHY: a malformed meta.plate silently mis-projects My Issues; structure must error and an over-cap list
+// must warn — the whole point is a signal-rich hopper.
+test("validatePlate: structural errors + the plate_max signal cap", () => {
+  eq(validatePlate({ meta: {} }, 7).errors.length, 0, "absent → clean");
+  ok(validatePlate({ meta: { plate: "nope" } }, 7).errors[0].includes("must be a list"), "non-array errors");
+  ok(validatePlate({ meta: { plate: [1, "ok"] } }, 7).errors.some((e) => e.includes("must be strings")), "non-string entry errors");
+  ok(validatePlate({ meta: { plate: ["a", "b", "c"] } }, 2).warnings[0].includes("plate_max"), "over cap warns");
+});
+
+// WHY: meta.plate grows and must stay human-readable — a flow seq [a, b] is the exact unreadability the
+// block-style store guarantees elsewhere.
+test("setPlateDoc writes meta.plate as a block sequence", () => {
+  const doc = parseDocument("meta:\n  schema_version: 1\npis: []\n");
+  setPlateDoc(doc, ["a", "b"]);
+  const out = String(doc);
+  ok(/plate:\n\s+- a\n\s+- b/.test(out), "block seq under meta.plate");
+  ok(!out.includes("[a, b]"), "not a flow seq");
+});
+
+// WHY: the plate assigns YOU a curated subset (assignee) + tags each with the plate label, so My Issues ==
+// your batch. Feature-off must stay byte-identical (no assignee ever), even with a viewer present.
+test("buildPushPlan plate: assigns viewer + plate label on create; off-plate none; feature off inert", () => {
+  const g = (over) => ({ meta: { schema_version: 1, program: "T", linear: { team: "ENG" }, ...over }, pis: [
+    { id: "p", title: "P", status: "active", linear: { project: "proj-1" }, sprints: [
+      { id: "s1", title: "On", status: "next", invoke: "on" },
+      { id: "s2", title: "Off", status: "next", invoke: "off" } ]}]});
+  const existing = { projects: { "proj-1": { id: "proj-1", name: "P" } }, issues: {} };
+  const LBL = { roadmap: "l-mark", plate: "l-plate" };
+  const off = buildPushPlan({ graph: g(), backlog: null, cfg: normalizeLinearConfig(g().meta), teamStates: L_STATES, existing, labels: LBL, viewerId: "me" });
+  ok(off.ops.filter((o) => o.op === "createIssue").every((o) => !("assigneeId" in o.payload)), "feature off → no assignee on any issue");
+  ok(off.ops.filter((o) => o.op === "createIssue").every((o) => !(o.payload.labelIds || []).includes("l-plate")), "feature off → no plate label either");
+  const meta = { plate: ["on", "ghost"] };
+  const on = buildPushPlan({ graph: g(meta), backlog: null, cfg: normalizeLinearConfig(g(meta).meta), teamStates: L_STATES, existing, labels: LBL, viewerId: "me" });
+  const onOp = on.ops.find((o) => o.writeBack && o.writeBack.invoke === "on");
+  const offOp = on.ops.find((o) => o.writeBack && o.writeBack.invoke === "off");
+  eq(onOp.payload.assigneeId, "me", "plated slice → assigned to the viewer");
+  ok(onOp.payload.labelIds.includes("l-plate"), "plated slice → carries the plate label");
+  ok(!("assigneeId" in offOp.payload) && !offOp.payload.labelIds.includes("l-plate"), "off-plate slice → neither assignee nor plate label");
+  eq(on.unmatchedPlate, ["ghost"], "an explicit key matching no slice/item is reported (typo guard)");
+});
+
+// WHY: the safety contract on UPDATE — an issue that fell off the plate is unassigned ONLY if WE plated it
+// (carries the label); a hand-assignment in Linear (no label) is never disturbed.
+test("buildPushPlan plate update: unassigns a fallen-off issue we labeled, spares hand-assignments", () => {
+  const g = { meta: { schema_version: 1, program: "T", linear: { team: "ENG" }, plate: ["keep"] }, pis: [
+    { id: "p", title: "P", status: "active", linear: { project: "proj-1" }, sprints: [
+      { id: "s1", title: "S", status: "next", invoke: "keep", linear: "ENG-1" },
+      { id: "s2", title: "T", status: "next", invoke: "fell", linear: "ENG-2" },
+      { id: "s3", title: "U", status: "next", invoke: "hand", linear: "ENG-3" } ]}]};
+  const LBL = { roadmap: "l-mark", plate: "l-plate" };
+  const mk = (over) => ({ id: "u", title: "x", description: "", priority: 0, stateId: "st-u", projectId: "proj-1", assigneeId: "me", labelIds: ["l-mark"], ...over });
+  const existing = { projects: { "proj-1": { id: "proj-1", name: "P" } }, issues: {
+    "ENG-1": mk({ labelIds: ["l-mark", "l-plate"] }),   // on the plate, already assigned+labeled → no assignee churn
+    "ENG-2": mk({ labelIds: ["l-mark", "l-plate"] }),   // fell off, WE labeled it → unassign
+    "ENG-3": mk({ labelIds: ["l-mark"] }),               // hand-assigned (no plate label) → untouched
+  }};
+  const plan = buildPushPlan({ graph: g, backlog: null, cfg: normalizeLinearConfig(g.meta), teamStates: L_STATES, existing, labels: LBL, viewerId: "me" });
+  const byId = Object.fromEntries(plan.ops.filter((o) => o.op === "updateIssue").map((o) => [o.identifier, o.payload]));
+  ok(!("assigneeId" in (byId["ENG-1"] || {})), "on-plate + already assigned → no assignee churn");
+  eq(byId["ENG-2"].assigneeId, null, "fell off + carries our plate label → unassigned");
+  ok(!("assigneeId" in (byId["ENG-3"] || {})), "hand-assignment (no plate label) → never touched");
+});
+
+// WHY: the stated safety invariant — meta.plate ON but the viewer id unknown (fetch failed) must assign
+// and label NOTHING. A regression dropping the `!!viewerId` guard would silently assign issues to no one.
+test("buildPushPlan plate: viewer unknown → no assignee and no plate label, even on-plate", () => {
+  const g = { meta: { schema_version: 1, program: "T", linear: { team: "ENG" }, plate: ["on"] }, pis: [
+    { id: "p", title: "P", status: "active", linear: { project: "proj-1" }, sprints: [
+      { id: "s1", title: "On", status: "next", invoke: "on" } ]}]};
+  const plan = buildPushPlan({ graph: g, backlog: null, cfg: normalizeLinearConfig(g.meta), teamStates: L_STATES,
+    existing: { projects: { "proj-1": { id: "proj-1", name: "P" } }, issues: {} }, labels: { roadmap: "l-mark", plate: "l-plate" }, viewerId: null });
+  const onOp = plan.ops.find((o) => o.writeBack && o.writeBack.invoke === "on");
+  ok(!("assigneeId" in onOp.payload), "viewer unknown → no assigneeId");
+  ok(!(onOp.payload.labelIds || []).includes("l-plate"), "viewer unknown → no plate label (label never lies)");
+});
+
+// WHY: the plate's safe-unassign depends on the 'plate' label existing — provision must create it when the
+// feature is on, and NOT stamp a stray label on repos that don't use the plate.
+test("provisionPlan includes the plate label only when meta.plate is defined", () => {
+  const base = { meta: { schema_version: 1, program: "T", linear: { team: "ENG" } }, pis: [
+    { id: "p", title: "P", status: "active", sprints: [{ id: "s1", title: "S", status: "active", invoke: "x" }] }] };
+  ok(!provisionPlan({ graph: base, teamLabels: {} }).createLabels.includes("plate"), "no meta.plate → no plate label");
+  ok(provisionPlan({ graph: { ...base, meta: { ...base.meta, plate: [] } }, teamLabels: {} }).createLabels.includes("plate"), "meta.plate present → plate label provisioned");
+});
+
+// WHY: the plate MCP tools are how a planning session (/prioritize) curates My Issues — set replaces, add
+// unions (and enables the feature from absent), remove pulls off. They edit the Document like set_fields.
+test("plate MCP mutations: set replaces, add unions + enables, remove filters", () => {
+  const base = "meta:\n  schema_version: 1\n  program: T\npis:\n  - id: p\n    title: P\n    status: active\n    sprints:\n      - { id: s1, title: A, status: next, invoke: a }\n";
+  const doc = parseDocument(base);
+  eq(setPlate(doc, { keys: ["a", "b", "b"] }).keys, ["a", "b"], "set dedups + returns the new list");
+  eq(doc.toJS().meta.plate, ["a", "b"], "set wrote meta.plate onto the Document");
+  eq(addPlate(doc, { keys: ["b", "c"] }).keys, ["a", "b", "c"], "add unions (dedup), preserves order");
+  eq(removePlate(doc, { keys: ["a"] }).keys, ["b", "c"], "remove filters the given keys");
+  const fresh = parseDocument(base);
+  addPlate(fresh, { keys: ["a"] });
+  eq(fresh.toJS().meta.plate, ["a"], "add on a plate-less roadmap creates meta.plate (enables the feature)");
+  throws(() => setPlate(doc, {}), "requires keys", "set without keys throws");
+});
+
 // WHY: granularity is the leak-control lever — 'pis' must emit NO issues, and a per-PI
 // override must flip only that PI, or a public Linear team sees work it shouldn't.
 test("granularity gates issue ops globally and per-PI", () => {
@@ -1759,6 +1885,7 @@ function fakeLinear({ failOn = null, snapshot = {}, projectSnapshot = {}, inboun
     const { query, variables } = JSON.parse(body);
     calls.push({ query, variables });
     const respond = (data) => ({ ok: true, json: async () => ({ data }) });
+    if (query.includes("viewer {")) return respond({ viewer: { id: "viewer-me" } });   // plate: whose My Issues
     if (query.includes("teams(filter")) return respond({ teams: { nodes: [{ id: "team-1", key: "ENG", name: "Eng",
       states: { nodes: [
         { id: "st-b", name: "Backlog", type: "backlog", position: 0 },
@@ -1860,6 +1987,21 @@ test("runSync (mocked transport): pushes, writes ids back, proposes inbound, ide
   eq(readCursor(root), null, "no cursor file yet");
   const r2 = await runSync(root, { fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-06T13:00:00Z" });
   eq(r2.pushed, [], "second run pushes nothing (idempotent)");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: the drain is a real write-back to the user's roadmap.yaml — a completed slice must leave meta.plate
+// (and thus My Issues) on sync while the rest of the batch stays; a silent miss leaks stale batches.
+test("runSync drains a completed slice from meta.plate (write-back), keeps the rest", async () => {
+  const root = mkdtempSync(join(tmpdir(), "roadmap-plate-drain-"));
+  mkdirSync(join(root, "docs", "roadmap"), { recursive: true });
+  writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"),
+    `meta:\n  schema_version: 1\n  program: T\n  plate: [alpha, beta]\n  linear:\n    team: ENG\npis:\n  - id: p\n    title: P\n    status: active\n    linear: { project: proj-1 }\n    sprints:\n      - { id: s1, title: Alpha, status: complete, invoke: alpha, linear: ENG-1 }\n      - { id: s2, title: Beta, status: active, invoke: beta, linear: ENG-2 }\n`, "utf8");
+  const iss = (idf) => ({ id: `u-${idf}`, identifier: idf, title: "X", description: "", priority: 0, estimate: null, state: { id: "st-s" }, project: { id: "proj-1" }, assignee: null, labels: { nodes: [] } });
+  const fake = fakeLinear({ snapshot: { "ENG-1": iss("ENG-1"), "ENG-2": iss("ENG-2") }, teamLabels: [{ id: "l-mark", name: "roadmap" }, { id: "l-plate", name: "plate" }] });
+  await runSync(root, { fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-08T12:00:00Z" });
+  const doc = parseDocument(readFileSync(join(root, "docs", "roadmap", "roadmap.yaml"), "utf8")).toJS();
+  eq(doc.meta.plate, ["beta"], "completed alpha drained from meta.plate; active beta kept");
   rmSync(root, { recursive: true, force: true });
 });
 

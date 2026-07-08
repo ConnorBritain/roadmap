@@ -6,6 +6,7 @@
 
 import { flatten, isDone, HELD_STATUSES } from "./graph.mjs";
 import { validatePriority } from "./priority.mjs";
+import { platedKeys, validatePlate } from "./plate-core.mjs";
 
 // ── config ────────────────────────────────────────────────────────────────────
 export const GRANULARITIES = ["pis", "slices", "slices+backlog"];
@@ -23,6 +24,7 @@ export function normalizeLinearConfig(meta) {
     pull: raw.pull || "off",
     push_on: raw.push_on || "sync",
     estimate_max: raw.estimate_max != null ? raw.estimate_max : 5,   // Linear estimate scale max (linear=5, extended=7)
+    plate_max: raw.plate_max != null ? raw.plate_max : 7,   // explicit meta.plate cap — My Issues signal
     status_map: raw.status_map || {},
     watch: (raw.watch || []).map((w) => ({
       team: w.team, project: w.project || null, capture: w.capture || "backlog",
@@ -50,6 +52,7 @@ export function validateLinearConfig(graph) {
       if (raw.pull != null && !PULL_MODES.includes(raw.pull)) errors.push(`meta.linear.pull "${raw.pull}" is not one of ${PULL_MODES.join("|")}`);
       if (raw.push_on != null && !["sync", "manual"].includes(raw.push_on)) errors.push(`meta.linear.push_on "${raw.push_on}" is not sync|manual`);
       if (raw.estimate_max != null && !(Number.isInteger(raw.estimate_max) && raw.estimate_max >= 1)) errors.push("meta.linear.estimate_max must be an integer >= 1 (the Linear estimate scale max; default 5)");
+      if (raw.plate_max != null && !(Number.isInteger(raw.plate_max) && raw.plate_max >= 1)) errors.push("meta.linear.plate_max must be an integer >= 1 (the My Issues explicit-plate cap; default 7)");
       for (const w of raw.watch || []) {
         if (!w.team) errors.push("meta.linear.watch: every entry needs a team key");
         if (w.capture != null && w.capture !== "backlog") errors.push(`meta.linear.watch: capture "${w.capture}" is not supported (only "backlog")`);
@@ -74,6 +77,11 @@ export function validateLinearConfig(graph) {
     }
   }
   const cfg = normalizeLinearConfig(graph.meta || {});
+  // meta.plate (the My Issues hopper): structural + cap. Assigns Linear issues, so it's inert without Linear.
+  const plateVal = validatePlate(graph, cfg ? cfg.plate_max : 7);
+  for (const e of plateVal.errors) errors.push(e);
+  for (const w of plateVal.warnings) warnings.push(w);
+  if (graph.meta && graph.meta.plate != null && !cfg) warnings.push("meta.plate is set but Linear isn't configured — the plate assigns Linear issues, so it's a no-op until meta.linear.team is set");
   for (const pi of graph.pis || []) {
     if (pi.linear && pi.linear.granularity != null) {
       if (!GRANULARITIES.includes(pi.linear.granularity)) errors.push(`PI ${pi.id}: linear.granularity "${pi.linear.granularity}" is not one of ${GRANULARITIES.join("|")}`);
@@ -217,14 +225,17 @@ export function issueDescription(node, cfg, { docsUrl = null, target } = {}) {
 // hand-made ones); backlog items add kind:<kind>, sprints add track:<lane> when tracked.
 // Tier is NOT a label — Linear's native priority already carries it (no duplication).
 export const MARKER_LABEL = "roadmap";
+export const PLATE_LABEL = "plate";   // marks an issue WE assigned to you (the plate) — never touch a hand-assignment
 export const KIND_LABELS = ["bug", "chore", "followup", "urgent", "idea"].map((k) => `kind:${k}`);
 
-export function desiredLabels(target, node) {
-  if (target.type === "backlog") return [MARKER_LABEL, ...(node.kind ? [`kind:${node.kind}`] : [])];
+export function desiredLabels(target, node, onPlate = false) {
+  const plate = onPlate ? [PLATE_LABEL] : [];
+  if (target.type === "backlog") return [MARKER_LABEL, ...(node.kind ? [`kind:${node.kind}`] : []), ...plate];
   return [
     MARKER_LABEL,
     ...(node.track ? [`track:${node.track}`] : []),
     ...(HELD_STATUSES.includes(node.status) ? [`status:${node.status}`] : []),   // held distinction on the board
+    ...plate,
   ];
 }
 
@@ -343,6 +354,7 @@ export function provisionPlan({ graph, teamLabels }) {
     MARKER_LABEL, ...KIND_LABELS,
     ...[...tracks].sort().map((t) => `track:${t}`),
     ...heldPresent.map((s) => `status:${s}`),
+    ...(graph.meta && graph.meta.plate != null ? [PLATE_LABEL] : []),   // marks tool-plated issues (safe unassign)
   ];
   return {
     createLabels: wanted.filter((n) => !have.has(n)),
@@ -389,11 +401,15 @@ export function dispatchGuidance() {
 // clobbered while the proposal is unresolved (live-verified failure mode).
 // labels: name→id from the team bundle (fresh each sync, no YAML caching). Unresolvable
 // names are dropped from payloads and reported once via missingLabels (fix = provision).
-export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsUrl = null, holds = new Set(), labels = {} }) {
+export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsUrl = null, holds = new Set(), labels = {}, viewerId = null }) {
   const ops = [];
   const missing = new Set();
   const model = flatten(graph);
   const initiativeOrder = initiativePlan(graph).initiatives;   // first-seen order → stable color/icon index
+  // "the plate" → My Issues (assignee=you). null when the feature is off. plateLabelId lets us tell an
+  // issue WE plated (safe to unassign when it drops off) from one you hand-assigned in Linear (never touch).
+  const plate = platedKeys(graph, backlog);
+  const plateLabelId = labels[PLATE_LABEL] || null;
 
   for (const pi of graph.pis || []) {
     const gran = effectiveGranularity(cfg, pi);
@@ -456,11 +472,18 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
       pushIssueOp(node, { type: "backlog", key: it.id }, it.status, resolveItemPushState, null);
     }
   }
-  return { ops, missingLabels: [...missing].sort() };
+  // Explicit meta.plate keys that match no slice/item at all → typos (active-derived keys always match).
+  let unmatchedPlate = [];
+  if (plate) {
+    const validKeys = new Set([...model.nodes.map((n) => n.invoke), ...((backlog && backlog.items) || []).map((it) => it.id)]);
+    const explicit = Array.isArray(graph.meta && graph.meta.plate) ? graph.meta.plate.filter((k) => typeof k === "string") : [];
+    unmatchedPlate = explicit.filter((k) => !validKeys.has(k));
+  }
+  return { ops, missingLabels: [...missing].sort(), ...(unmatchedPlate.length ? { unmatchedPlate } : {}) };
 
-  function labelIdsFor(target, node) {
+  function labelIdsFor(target, node, onPlate) {
     const ids = [];
-    for (const name of desiredLabels(target, node)) {
+    for (const name of desiredLabels(target, node, onPlate)) {
       if (labels[name]) ids.push(labels[name]);
       else missing.add(name);
     }
@@ -469,7 +492,9 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
 
   function pushIssueOp(node, target, status, resolver, projectRef, projectId = null) {
     const state = resolver(status, cfg, teamStates);
-    const labelIds = labelIdsFor(target, node);
+    const onPlate = plate ? plate.has(target.key) : false;
+    const plated = onPlate && !!viewerId;   // we will actually assign + label (label never lies about assignment)
+    const labelIds = labelIdsFor(target, node, plated);
     // est_sessions → native estimate: rounded to an integer, clamped to the scale max so an oversize
     // slice never pushes an out-of-scale value (validate warns to split it). 0/null → unestimated (no
     // field), never a pushed 0 (which needs the team's allow-zero setting). Use the "linear" scale.
@@ -481,6 +506,7 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
       stateId: state.id,
       labelIds,
       ...(points > 0 ? { estimate: points } : {}),
+      ...(plated ? { assigneeId: viewerId } : {}),
     };
     if (!node.linear) {
       const payload = { ...projection };
@@ -507,6 +533,13 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
     // estimate: only when we have a positive value that differs. A removed est_sessions leaving a
     // stale estimate is acceptable (never clear to 0 — that needs the team's allow-zero setting).
     if (points > 0 && (cur.estimate || 0) !== points) changed.estimate = points;
+    // assignee (the plate → My Issues): assign you when on the plate; unassign ONLY an issue WE plated
+    // (carries the plate label) that has fallen off — a hand-assignment in Linear (no plate label) is
+    // never touched. Skipped entirely when the feature is off (plate null) or the viewer is unknown.
+    if (plate && viewerId) {
+      if (onPlate) { if (cur.assigneeId !== viewerId) changed.assigneeId = viewerId; }
+      else if (plateLabelId && (cur.labelIds || []).includes(plateLabelId) && cur.assigneeId) changed.assigneeId = null;
+    }
     // project attach — how a transferred issue (backlog item promoted to a sprint) moves
     // into its PI's project. Only when the project id is already known (post first push).
     if (projectId && cur.projectId !== projectId) changed.projectId = projectId;

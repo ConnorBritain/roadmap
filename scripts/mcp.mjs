@@ -13,7 +13,8 @@ import { loadGraph } from "./lib/graph.mjs";
 import { mutateRoadmap, mutateBacklog, mutateBoth, loadBacklog, roadmapPaths } from "./lib/store.mjs";
 import { TOOLS, READ_HANDLERS, MUTATION_HANDLERS } from "./lib/mcp-core.mjs";
 import { BACKLOG_TOOLS, BACKLOG_READ_HANDLERS, BACKLOG_MUTATION_HANDLERS, performPromotion } from "./lib/backlog-core.mjs";
-import { linearState, linearStatusLine } from "./lib/linear-core.mjs";
+import { linearState, linearStatusLine, normalizeLinearConfig } from "./lib/linear-core.mjs";
+import { platedKeys } from "./lib/plate-core.mjs";
 import { runSync } from "./linear.mjs";
 import { runDispatch, runFanCloud } from "./dispatch.mjs";
 
@@ -37,6 +38,13 @@ const CLOUD_TOOLS = [
       wave: { type: "integer", minimum: 1, description: "which ready wave (default 1)" },
       cap: { type: "integer", minimum: 1, description: "max slices in the wave (default the review ceiling, 5 — machine limits don't apply to cloud)" },
       confirm: { type: "boolean", description: "false/absent = preview only; true = actually fire the cloud sessions" } } } },
+];
+
+// plate_list is a read that needs the backlog too (in_progress items), so it's handled inline here
+// rather than in mcp-core's graph-only READ_HANDLERS. The plate_set/add/remove mutations live in TOOLS.
+const PLATE_TOOLS = [
+  { name: "plate_list", description: "The current plate — the curated batch projected to Linear's My Issues (assignee=you): explicit meta.plate entries plus auto-included active/in_progress work. Returns { enabled, explicit, plate, plate_max }. Read-only.",
+    inputSchema: { type: "object", properties: {} } },
 ];
 
 const PROTOCOL_VERSION = "2024-11-05";
@@ -88,6 +96,14 @@ function callTool(name, args) {
     // preview unless confirm=true; runFanCloud loops runDispatch over the ready wave.
     return runFanCloud(repoRoot(), args || {});
   }
+  if (name === "plate_list") {
+    const root = repoRoot();
+    const graph = loadGraph(roadmapPaths(root).yaml);
+    const set = platedKeys(graph, loadBacklog(root));
+    const explicit = Array.isArray(graph.meta && graph.meta.plate) ? graph.meta.plate : [];
+    const cfg = normalizeLinearConfig(graph.meta || {});
+    return { enabled: set != null, explicit, plate: set ? [...set] : [], plate_max: cfg ? cfg.plate_max : 7 };
+  }
   throw new Error(`unknown tool "${name}"`);
 }
 
@@ -101,7 +117,7 @@ function handle(msg) {
   if (method === "notifications/initialized" || method === "initialized") return; // notification: no reply
   if (method === "ping") return out({ jsonrpc: "2.0", id, result: {} });
   if (method === "tools/list") {
-    return out({ jsonrpc: "2.0", id, result: { tools: [...TOOLS, ...BACKLOG_TOOLS, ...LINEAR_TOOLS, ...CLOUD_TOOLS] } });
+    return out({ jsonrpc: "2.0", id, result: { tools: [...TOOLS, ...BACKLOG_TOOLS, ...LINEAR_TOOLS, ...CLOUD_TOOLS, ...PLATE_TOOLS] } });
   }
   if (method === "tools/call") {
     const name = params && params.name;
