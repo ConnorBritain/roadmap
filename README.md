@@ -322,7 +322,7 @@ meta:
       - { team: PUB, project: "Submit an issue", kind: bug, priority: { tier: P3 } }
 ```
 
-**Mapping.** PI ↔ Linear **Project** · slice / backlog item ↔ **Issue** · `priority.tier` P0–P3 ↔ Urgent/High/Medium/Low · `status` ↔ workflow state by TYPE (names differ per team; `status_map` overrides by name). Issue ids are written back into the YAML (`linear: ABC-123`) — the mapping's source of truth survives any machine.
+**Mapping.** PI ↔ Linear **Project** (grouped under an **Initiative** when `pi.initiative` is set) · slice / backlog item ↔ **Issue** · `priority.tier` P0–P3 ↔ Urgent/High/Medium/Low · `status` ↔ workflow state by TYPE (`active`→In Progress; `next`/held→Todo; `scheduled`/`optionality`→Backlog; `complete`→Done; `status_map` overrides by name). Issue ids are written back into the YAML (`linear: ABC-123`) — the mapping's source of truth survives any machine.
 
 **Push** (`roadmap linear sync`, or automatically inside `/sync` when authed): diff-based and idempotent — an unchanged roadmap sends zero ops. Descriptions follow the `verbosity` lever, never copy read-order/prompt, and always end with a machine footer (`roadmap: slice=<invoke> · pick up: /slice <invoke>` + a SLICES.md link) — so an agent dispatched *from Linear* (via Linear's own agent delegation or hosted MCP) self-orients in one command. Set `branch_convention: "{pi}/{linear}-{sprint}"` and Linear auto-links every fanout PR to its issue.
 
@@ -336,7 +336,13 @@ meta:
 
 The recommended workspace shape at agent scale: **one team per actively-managed repo** (dispatch routing is deterministic, workflow states and `status_map` compose 1:1, and the issue identifier tells you the repo), **PIs = Projects, slices/items = Issues, native priority = tier**, plus **one shared intake team** (a public "Submit an issue" board) wired as a `watch` source. Repos not under agent management get no team.
 
-`roadmap linear provision` shapes the workspace idempotently: creates the labels the graph already knows (`roadmap` marker on every synced issue, `kind:*` for backlog items, `track:*` for the lanes actually present), attempts the five standard views (**Ready wave · In flight · Held on human · Backlog triage · Recently shipped** — the visibility layer; if the view API rejects, it prints a 60-second manual checklist instead), and prints two guidance texts: the workspace agent guidance and the **repo dispatch contract** to paste into `CLAUDE.md`/`AGENTS.md` — the block any cloud-delegated agent reads to self-orient (footer parse → YAML canonical → gate → PR, never merge → backlog-only leftovers). Projects carry PI theme + exit criteria as their descriptions.
+`roadmap linear provision` shapes the workspace idempotently: creates the labels the graph knows (`roadmap` marker on every synced issue, `kind:*` for backlog items, `track:*` for the lanes present, `status:*` for held work), the standard views (**Ready wave · In flight · Held on human · Backlog triage · Recently shipped** plus a **Track X** view per lane; view API rejection degrades to a manual checklist), and prints two guidance texts — the workspace agent guidance and the **repo dispatch contract** for `CLAUDE.md`/`AGENTS.md`. Projects carry PI theme + exit criteria as descriptions.
+
+**A clean board, not a wall.** The projection is honest and navigable, not a 1:1 dump:
+- **Empty projects are skipped.** A PI whose slices are all shipped doesn't create a bare 0-issue project (already-mapped projects stay in sync).
+- **Project names are the PI headline.** A title authored `Headline — subhead` projects as just **Headline**; the subhead moves into the description. No context lost, no tacky names.
+- **Only `active` shows In Progress.** Held work (`blocked`/`paused`/`gated`) maps to Todo with a `status:<held>` label, so the board's In-Progress count means real live work and the "Held on human" view filters the rest. (The pull inbox also suppresses the round-trip echo, so held slices don't generate false status proposals every sync.)
+- **Initiatives group the projects.** A PI declares `initiative: <name>` and sync creates the Linear Initiative (the tier above projects) and attaches the PI's project — turning a flat wall of projects into a handful of strategic groups you can steer. *(The initiative API is behind graceful degradation, pending live verification.)*
 
 ### Cloud dispatch
 

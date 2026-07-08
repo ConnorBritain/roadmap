@@ -56,6 +56,7 @@ export function validateGraph(graph) {
     if (seenPiIds.has(pi.id)) err(`duplicate PI id "${pi.id}"`);
     seenPiIds.add(pi.id);
     if (!pi.title) err(`PI ${pi.id}: title required`);
+    if (pi.initiative != null && typeof pi.initiative !== "string") err(`PI ${pi.id}: initiative must be a string (the Linear initiative name)`);
     if (!validStatus.has(pi.status)) err(`PI ${pi.id}: status "${pi.status}" invalid`);
     if (!Array.isArray(pi.sprints) || pi.sprints.length === 0) { err(`PI ${pi.id}: needs >=1 sprint`); continue; }
     const seenSprintIds = new Set();

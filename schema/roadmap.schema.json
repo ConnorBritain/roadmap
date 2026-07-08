@@ -136,6 +136,7 @@
         "exit_criteria": { "type": "string" },
         "detail": { "type": "string", "description": "Pointer to the sprint dir / detail doc" },
         "exec_hint": { "type": ["string", "null"], "description": "Optional human override of the derived exec-plan line; rendered alongside the derived line" },
+        "initiative": { "type": "string", "description": "Groups this PI under a Linear Initiative of this name (the tier above projects). Sync creates the initiative and attaches this PI's project. Several PIs sharing a name group together." },
         "linear": {
           "type": "object", "additionalProperties": false,
           "description": "Per-PI Linear override + the pushed-back project id. A granularity conflicting with the global requires the yes_linear_override ack at creation; validate warns on stored mismatches.",

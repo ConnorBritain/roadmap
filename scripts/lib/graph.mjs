@@ -179,7 +179,11 @@ function depsSatisfied(node, sprintIndex) {
   return true;
 }
 
-const READY_BLOCKING = new Set(["gated", "blocked", "paused"]);
+// Held statuses: not-done, not-active — a slice that can't auto-schedule and isn't being
+// worked. The one source of truth (linear-core's held labels + review-core's aging both
+// import this, so a new held-like status is added in exactly one place).
+export const HELD_STATUSES = ["blocked", "paused", "gated"];
+const READY_BLOCKING = new Set(HELD_STATUSES);
 
 // The pool of slices that COULD start now: deps satisfied, not done, not blocked/gated.
 // (Ignores file contention — that's a wave-packing concern, handled in computeWaves.)
