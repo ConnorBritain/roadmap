@@ -34,8 +34,9 @@ import {
   normalizeLinearConfig, effectiveGranularity, linearState, checkPiOverrideAck,
   resolvePushState, pullStatusFor, priorityToLinear, LINEAR_TO_PRIORITY,
   issueDescription, machineFooter, buildPushPlan, buildPullProposals, validateLinearConfig, holdsFor,
-  desiredLabels, projectDescription, projectName, MARKER_LABEL, LINEAR_PROJECT_NAME_MAX, LINEAR_PROJECT_DESC_MAX,
-  initiativePlan, HELD_STATUSES,
+  desiredLabels, projectDescription, projectName, projectContent, normalizeLinearMarkdown,
+  projectColorFor, projectIconFor, MARKER_LABEL, LINEAR_PROJECT_NAME_MAX, LINEAR_PROJECT_DESC_MAX,
+  initiativePlan, initiativeStyle, HELD_STATUSES,
   provisionPlan, manualViewChecklist, dispatchGuidance, STANDARD_VIEWS,
 } from "../lib/linear-core.mjs";
 import { addPi } from "../lib/mcp-core.mjs";
@@ -1355,7 +1356,8 @@ test("issueDescription: verbosity levers, footer always last, prompt/read-order 
     prompt: "SECRET-INSTRUCTIONS", readOrder: ["docs/auth.md"], linear: null };
   const brief = issueDescription(node, L_CFG, { docsUrl: "https://github.com/x/y/blob/main" });
   ok(brief.endsWith(machineFooter({ type: "slice", key: "auth-sessions" }, "https://github.com/x/y/blob/main")), "footer last");
-  ok(brief.includes("Wire JWT refresh") && brief.includes("Est: ~3"), "brief carries what + est");
+  ok(brief.includes("Wire JWT refresh"), "brief carries the what");
+  ok(!brief.includes("Est:"), "est is NOT prose in the description anymore — it rides the native Linear estimate field (no duplication)");
   ok(!brief.includes("SECRET-INSTRUCTIONS") && !brief.includes("docs/auth.md"), "prompt/read-order never leak");
   ok(!brief.includes("launch blocker"), "brief verbosity omits the priority reason");
   const titleOnly = issueDescription(node, normalizeLinearConfig({ linear: { team: "ENG", verbosity: "title" } }), {});
@@ -1406,6 +1408,62 @@ test("buildPushPlan is idempotent: matching snapshot → only the missing-issue 
   const upd = drifted.ops.find((o) => o.op === "updateIssue");
   eq(upd.payload, { title: "Login" }, "only the drifted field is sent");
   eq(upd.id, "uuid-1", "update targets the Linear uuid");
+});
+
+// WHY: est_sessions is the roadmap's own estimate; as prose in the description it was unsortable and
+// couldn't roll up on the board. It must ride the native `estimate` field — rounded to an integer,
+// clamped to estimate_max so an oversize slice can't push an out-of-scale value, and 0/null left
+// unestimated (never a pushed 0, which needs the team's allow-zero setting).
+test("buildPushPlan pushes est_sessions as native estimate: rounded, clamped, zero-skipped, idempotent", () => {
+  const g = { meta: { schema_version: 1, program: "T", linear: { team: "ENG" } },   // estimate_max defaults to 5
+    pis: [{ id: "p", title: "P", status: "active", linear: { project: "proj-1" }, sprints: [
+      { id: "s1", title: "Small", status: "next", invoke: "small", est_sessions: 1.5 },   // → round → 2
+      { id: "s2", title: "Huge", status: "next", invoke: "huge", est_sessions: 16 },        // → clamp → 5
+      { id: "s3", title: "Zero", status: "next", invoke: "zero", est_sessions: 0 },          // → unestimated
+    ]}]};
+  const cfg = normalizeLinearConfig(g.meta);
+  const existing = { projects: { "proj-1": { id: "proj-1", name: "P" } }, issues: {} };
+  const plan = buildPushPlan({ graph: g, backlog: null, cfg, teamStates: L_STATES, existing, labels: {} });
+  const est = Object.fromEntries(plan.ops.filter((o) => o.op === "createIssue").map((o) => [o.writeBack.invoke, o.payload.estimate]));
+  eq(est.small, 2, "1.5 sessions rounds to 2 points");
+  eq(est.huge, 5, "16 sessions clamps to estimate_max (5) — validate warns to split it");
+  ok(!("estimate" in plan.ops.find((o) => o.writeBack.invoke === "zero").payload), "0 sessions → no estimate field (unestimated, not a pushed 0)");
+  // idempotent: a mapped issue whose Linear estimate already equals the pushed value → no update
+  const g2 = { meta: g.meta, pis: [{ id: "p", title: "P", status: "active", linear: { project: "proj-1" }, sprints: [
+    { id: "s1", title: "Small", status: "next", invoke: "small", est_sessions: 2, linear: "ENG-9" } ]}]};
+  const node = { invoke: "small", title: "Small", what: "Small", gate: "default" };   // flatten defaults gate → match it
+  const cur = { projects: { "proj-1": { id: "proj-1", name: "P" } }, issues: { "ENG-9": {
+    id: "u9", title: "Small", description: issueDescription(node, cfg, { target: { type: "slice", key: "small" } }),
+    priority: 0, estimate: 2, stateId: "st-u", projectId: "proj-1", labelIds: [] } } };
+  const noop = buildPushPlan({ graph: g2, backlog: null, cfg, teamStates: L_STATES, existing: cur, labels: {} });
+  eq(noop.ops.filter((o) => o.op === "updateIssue").length, 0, "matching estimate → zero updates");
+  // drifted estimate → exactly one update carrying ONLY estimate
+  const cur3 = JSON.parse(JSON.stringify(cur)); cur3.issues["ENG-9"].estimate = 4;
+  const drift = buildPushPlan({ graph: g2, backlog: null, cfg, teamStates: L_STATES, existing: cur3, labels: {} });
+  eq(drift.ops.find((o) => o.op === "updateIssue").payload, { estimate: 2 }, "only the drifted estimate is sent");
+  // a mapped issue that LOST its est_sessions keeps its stale Linear estimate — the points>0 guard
+  // must NOT emit an update to clear it to 0 (which would churn AND needs the team's allow-zero setting)
+  const g4 = { meta: g.meta, pis: [{ id: "p", title: "P", status: "active", linear: { project: "proj-1" }, sprints: [
+    { id: "s1", title: "Small", status: "next", invoke: "small", linear: "ENG-9" } ]}]};   // no est_sessions
+  const cur4 = JSON.parse(JSON.stringify(cur)); cur4.issues["ENG-9"].estimate = 3;
+  const removed = buildPushPlan({ graph: g4, backlog: null, cfg, teamStates: L_STATES, existing: cur4, labels: {} });
+  eq(removed.ops.filter((o) => o.op === "updateIssue").length, 0, "removed est_sessions → no update (stale estimate tolerated, never cleared)");
+});
+
+// WHY: a slice bigger than the estimate scale can't map to one estimate point and is too big to fan
+// out as one session — validate must surface it (where you'd split it), not let it clamp silently.
+test("validate warns on a slice whose est_sessions exceeds estimate_max", () => {
+  const over = { meta: { schema_version: 1, program: "T", linear: { team: "ENG" } },
+    pis: [{ id: "p", title: "P", status: "active", sprints: [
+      { id: "s1", title: "Big", status: "next", invoke: "big", est_sessions: 16 },
+      { id: "s2", title: "Done big", status: "complete", invoke: "donebig", est_sessions: 16 },   // done → no warning
+    ]}]};
+  const w = validateLinearConfig(over).warnings.filter((m) => m.includes("estimate_max"));
+  eq(w.length, 1, "exactly one oversize warning — the not-done slice only");
+  ok(w[0].includes("p/s1") && w[0].includes("split"), "names the slice and says split it");
+  // no meta.linear → no estimate concept → no warning even for a 16
+  const noLinear = { meta: { schema_version: 1, program: "T" }, pis: over.pis };
+  eq(validateLinearConfig(noLinear).warnings.filter((m) => m.includes("estimate_max")).length, 0, "no Linear config → no oversize warning");
 });
 
 // WHY: granularity is the leak-control lever — 'pis' must emit NO issues, and a per-PI
@@ -1473,24 +1531,31 @@ test("buildPullProposals dedupes known identifiers, captures watch issues with s
 // WHY: live-caught — Linear rejects a project name > 80 or description > 255 with a hard
 // "Argument Validation Error" that aborts the whole push. Clip at the projection layer, and
 // clip on BOTH create and the drift diff so a clipped project stays idempotent (no re-churn).
-test("project name/description are clipped to Linear's limits and stay idempotent", () => {
+// WHY: the subtitle (Linear's 255-char `description`) is where the board truncates with "…";
+// cramming the full exit there is why projects read thin+cut-off. The full text belongs in the
+// uncapped `content` body. If either mis-sizes, or the snapshot re-drifts, the board regresses.
+test("project: name clips to 80, subtitle is a concise capped line, content is uncapped, idempotent", () => {
   const longTitle = "Account portal UX: onboarding, empty states, settings interactivity, billing depth, team management";
-  const longExit = "x".repeat(400);
   const g = { meta: { schema_version: 1, program: "T", linear: { team: "ENG" } },
-    pis: [{ id: "portal", title: longTitle, theme: "ux", exit_criteria: longExit, status: "active", sprints: [
+    pis: [{ id: "portal", title: longTitle, theme: "ux", exit_criteria: "Portal ships guided onboarding. " + "detail ".repeat(80), status: "active", sprints: [
       { id: "s1", title: "S", status: "next", invoke: "portal-s1" } ] }] };
   const cfg = normalizeLinearConfig(g.meta);
-  const name = projectName(g.pis[0]), desc = projectDescription(g.pis[0]);
+  const pi = g.pis[0];
+  const name = projectName(pi), desc = projectDescription(pi), content = projectContent(pi);
   ok(name.length <= LINEAR_PROJECT_NAME_MAX && name.endsWith("..."), "name clipped to <=80 with ellipsis");
-  ok(desc.length <= LINEAR_PROJECT_DESC_MAX && desc.endsWith("..."), "description clipped to <=255 with ellipsis");
+  eq(desc, "Portal ships guided onboarding.", "subtitle = exit's first sentence (concise, not truncated)");
+  ok(content.includes("detail detail") && content.length > LINEAR_PROJECT_DESC_MAX, "content holds the full body, uncapped by 255");
+  const clipped = projectDescription({ title: "T", exit_criteria: "x".repeat(400) });
+  ok(clipped.length <= LINEAR_PROJECT_DESC_MAX && clipped.endsWith("..."), "an unbroken long exit still clips the subtitle to 255");
   const create = buildPushPlan({ graph: g, backlog: null, cfg, teamStates: L_STATES, existing: { projects: {}, issues: {} }, labels: {} });
   const cp = create.ops.find((o) => o.op === "createProject");
-  eq(cp.payload.name.length <= 80 && cp.payload.description.length <= 255, true, "the create op carries clipped fields");
-  // idempotency: a snapshot storing the clipped values must produce ZERO project ops
-  g.pis[0].linear = { project: "proj-1" };
+  eq(cp.payload.description, desc, "create carries the subtitle");
+  eq(cp.payload.content, content, "create carries the full body");
+  // idempotency: a snapshot storing subtitle + content must produce ZERO project ops
+  pi.linear = { project: "proj-1" };
   const noop = buildPushPlan({ graph: g, backlog: null, cfg, teamStates: L_STATES,
-    existing: { projects: { "proj-1": { id: "proj-1", name, description: desc } }, issues: {} }, labels: {} });
-  ok(!noop.ops.some((o) => o.op === "updateProject"), "clipped values already in Linear → no re-update");
+    existing: { projects: { "proj-1": { id: "proj-1", name, description: desc, content } }, issues: {} }, labels: {} });
+  ok(!noop.ops.some((o) => o.op === "updateProject"), "stored values already in Linear → no re-update");
 });
 
 // WHY: live-caught — several roadmap statuses (gated/blocked/paused → started; scheduled/
@@ -1583,6 +1648,49 @@ test("syncInitiatives creates missing initiatives, skips existing, attaches mapp
   rmSync(root, { recursive: true, force: true });
 });
 
+// WHY: the initiative HEADER is the strongest grouping signal; a declared meta.initiatives style must
+// ride the create for a NEW initiative AND update an existing one on drift — but idempotently, or every
+// sync re-styles. An already-matching style must fire zero updates.
+test("syncInitiatives applies meta.initiatives style: on create, on drift, never when already matching", async () => {
+  const root = mkdtempSync(join(tmpdir(), "roadmap-init-style-"));
+  mkdirSync(join(root, "docs", "roadmap"), { recursive: true });
+  writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"),
+    `meta:\n  schema_version: 1\n  program: T\n  initiatives:\n    Launch readiness: { icon: Checklist }\n    Trust surface: { icon: Shield }\n    Data foundation: { icon: Database }\npis:\n  - id: a\n    title: A\n    initiative: Launch readiness\n    status: active\n    linear: { project: proj-a }\n    sprints: [ { id: s1, title: S, status: next, invoke: a1 } ]\n  - id: b\n    title: B\n    initiative: Trust surface\n    status: next\n    linear: { project: proj-b }\n    sprints: [ { id: s1, title: S, status: next, invoke: b1 } ]\n  - id: c\n    title: C\n    initiative: Data foundation\n    status: next\n    linear: { project: proj-c }\n    sprints: [ { id: s1, title: S, status: next, invoke: c1 } ]\n`, "utf8");
+  // Launch readiness exists with a STALE icon (drift → update); Trust surface already matches (no update);
+  // Data foundation is new (create carries the icon).
+  const fake = fakeLinear({ existingInitiatives: [
+    { id: "init-lr", name: "Launch readiness", icon: "Rocket", color: "", projects: { nodes: [{ id: "proj-a" }] } },
+    { id: "init-ts", name: "Trust surface", icon: "Shield", color: "", projects: { nodes: [{ id: "proj-b" }] } },
+  ]});
+  const r = await syncInitiatives(root, { apiKey: "k", fetchImpl: fake.fetchImpl });
+  eq(fake.calls.find((c) => c.query.includes("initiativeCreate")).variables.input, { name: "Data foundation", icon: "Database" }, "new initiative create carries its declared icon");
+  const updates = fake.calls.filter((c) => c.query.includes("initiativeUpdate"));
+  eq(updates.length, 1, "exactly one update — Launch readiness drift only, Trust surface already matched");
+  eq(updates[0].variables.input, { icon: "Checklist" }, "update sends only the drifted icon");
+  eq(r.styled.sort(), ["Data foundation", "Launch readiness"], "styled = created-with-style + drift-updated (matched one excluded)");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: initiative icon/color is unverified Linear input — a rejection must drop the initiative to
+// unstyled and let the sync finish (create + attach still happen), never abort the whole run.
+test("syncInitiatives degrades when Linear rejects an initiative icon: creates/keeps unstyled, never throws", async () => {
+  const root = mkdtempSync(join(tmpdir(), "roadmap-init-degrade-"));
+  mkdirSync(join(root, "docs", "roadmap"), { recursive: true });
+  writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"),
+    `meta:\n  schema_version: 1\n  program: T\n  initiatives:\n    Launch readiness: { icon: Checklist }\n    Data foundation: { icon: Database }\npis:\n  - id: a\n    title: A\n    initiative: Launch readiness\n    status: active\n    linear: { project: proj-a }\n    sprints: [ { id: s1, title: S, status: next, invoke: a1 } ]\n  - id: b\n    title: B\n    initiative: Data foundation\n    status: next\n    linear: { project: proj-b }\n    sprints: [ { id: s1, title: S, status: next, invoke: b1 } ]\n`, "utf8");
+  // Launch readiness exists with a stale icon (would drift-update); Data foundation is new (create-with-icon).
+  // Linear rejects BOTH icon mutations → both degrade to unstyled, and the new project's attach still runs.
+  const fake = fakeLinear({ failOn: "initiativeStyle", existingInitiatives: [
+    { id: "init-lr", name: "Launch readiness", icon: "Rocket", color: "", projects: { nodes: [{ id: "proj-a" }] } },
+  ]});
+  const r = await syncInitiatives(root, { apiKey: "k", fetchImpl: fake.fetchImpl });   // must NOT throw
+  eq(r.created, ["Data foundation"], "new initiative still created despite the rejected icon");
+  eq(r.styled, [], "both rejected styles → left unstyled (degraded, not aborted)");
+  ok(fake.calls.some((c) => c.query.includes("initiativeCreate") && !c.variables.input.icon), "create retried without the icon");
+  eq(r.attached, ["b → Data foundation"], "attach still runs after the style degrade");
+  rmSync(root, { recursive: true, force: true });
+});
+
 // WHY: 50 flat projects are unnavigable; initiatives are the grouping tier. initiativePlan
 // collects the distinct initiatives PIs declare and the pi→initiative assignments — the pure
 // input the (unverified) IO layer creates + attaches from.
@@ -1606,6 +1714,7 @@ test("validateLinearConfig: enum/team errors, PI-mismatch warning, non-string sp
   ok(validateLinearConfig({ meta: { linear: { granularity: "slices" } }, pis: [] }).errors[0].includes("team is required"), "teamless errors");
   ok(validateLinearConfig({ meta: { linear: { team: "E", pull: "always" } }, pis: [] }).errors[0].includes("pull"), "bad enum errors");
   ok(validateLinearConfig({ meta: { linear: { team: "E", watch: [{ project: "X" }] } }, pis: [] }).errors[0].includes("needs a team"), "watch without team errors");
+  ok(validateLinearConfig({ meta: { linear: { team: "E", estimate_max: 0 } }, pis: [] }).errors.some((e) => e.includes("estimate_max")), "estimate_max < 1 errors");
   const g = { meta: { linear: { team: "E", granularity: "slices" } }, pis: [
     { id: "p", title: "P", status: "active", linear: { granularity: "pis" }, sprints: [{ id: "s1", title: "S", status: "active", invoke: "x", linear: 123 }] },
   ]};
@@ -1640,9 +1749,10 @@ function linearRepo() {
     `meta:\n  schema_version: 1\n  program: T\n  linear:\n    team: ENG\n    pull: propose\n    watch:\n      - { team: PUB, project: Submit an issue, kind: bug, priority: {tier: P3} }\npis:\n  - id: auth\n    title: Authentication\n    status: active\n    sprints:\n      - { id: s1, title: Login, status: active, invoke: auth-login }\n`, "utf8");
   return root;
 }
-function fakeLinear({ failOn = null, snapshot = {}, inboundByTeam = null, teamLabels = [], teamProjects = [], existingViews = [], existingInitiatives = [] } = {}) {
+function fakeLinear({ failOn = null, snapshot = {}, projectSnapshot = {}, inboundByTeam = null, teamLabels = [], teamProjects = [], existingViews = [], existingInitiatives = [] } = {}) {
   const calls = [];
   const createdIssues = {};   // identifier → snapshot shape, so later issue(id:) lookups resolve
+  const createdProjects = {};   // id → snapshot shape, so a second run's project(id:) drift diff sees what create pushed
   let created = 0;
   let labelsCreated = 0;
   const fetchImpl = async (url, { body }) => {
@@ -1668,7 +1778,14 @@ function fakeLinear({ failOn = null, snapshot = {}, inboundByTeam = null, teamLa
     }
     if (query.includes("customViews(first")) return respond({ customViews: { nodes: existingViews.map((name, i) => ({ id: `v${i}`, name })) } });
     if (query.includes("initiatives(first")) return respond({ initiatives: { nodes: existingInitiatives } });
-    if (query.includes("initiativeCreate")) return respond({ initiativeCreate: { initiative: { id: `init-${calls.length}`, name: variables.input.name } } });
+    if (query.includes("initiativeCreate")) {
+      if (failOn === "initiativeStyle" && (variables.input.icon || variables.input.color)) throw new Error("argument validation error: icon");   // Linear rejects the styled input
+      return respond({ initiativeCreate: { initiative: { id: `init-${calls.length}`, name: variables.input.name } } });
+    }
+    if (query.includes("initiativeUpdate")) {
+      if (failOn === "initiativeStyle") throw new Error("argument validation error: icon");
+      return respond({ initiativeUpdate: { initiative: { id: variables.id } } });
+    }
     if (query.includes("initiativeToProjectCreate")) return respond({ initiativeToProjectCreate: { success: true } });
     if (query.includes("projectUpdateCreate")) {
       if (failOn === "projectUpdateCreate") throw new Error("simulated post rejection");
@@ -1686,13 +1803,26 @@ function fakeLinear({ failOn = null, snapshot = {}, inboundByTeam = null, teamLa
       ids.forEach((id, j) => { data[`i${j}`] = lookup(id); });
       return respond(data);
     }
-    if (query.includes("projectCreate")) return respond({ projectCreate: { project: { id: "proj-new" } } });
+    if (query.includes("project(id:")) {   // project drift snapshot (batched aliases) — mirrors issue(id:)
+      const ids = [...query.matchAll(/project\(id: "([^"]+)"\)/g)].map((m) => m[1]);
+      const lookup = (id) => projectSnapshot[id] || createdProjects[id] || null;
+      const data = {};
+      ids.forEach((id, j) => { data[`p${j}`] = lookup(id); });
+      return respond(data);
+    }
+    if (query.includes("projectCreate")) {
+      const p = variables.input;
+      createdProjects["proj-new"] = { id: "proj-new", name: p.name, description: p.description || "", content: p.content || "",
+        color: p.color || "", icon: p.icon || "", priority: p.priority || 0, targetDate: p.targetDate || null };   // faithful: create persists its payload
+      return respond({ projectCreate: { project: { id: "proj-new" } } });
+    }
     if (query.includes("issueCreate")) {
       if (failOn === "issueCreate") throw new Error("simulated transport failure");
       created += 1;
       const identifier = `ENG-${100 + created}`;
       createdIssues[identifier] = { id: `uuid-${created}`, identifier, title: variables.input.title,
         description: variables.input.description || "", priority: variables.input.priority ?? 0,
+        estimate: variables.input.estimate ?? null,   // faithful: a real create persists the estimate
         state: { id: variables.input.stateId },
         project: variables.input.projectId ? { id: variables.input.projectId } : null,   // faithful: real creates persist the project
         labels: { nodes: (variables.input.labelIds || []).map((id) => ({ id })) } };
@@ -2038,17 +2168,100 @@ test("desiredLabels routes marker+kind for items, marker+track for sprints", () 
 
 // WHY: PI theme/exit_criteria is the only strategic context Linear viewers get — it must
 // land on create, update on drift, and stay quiet when matching (idempotency).
-test("project description: composed on create, updates on drift, idempotent when matching", () => {
-  eq(projectDescription({ theme: "Own the login flow", exit_criteria: "all\nauth e2e green" }),
-    "Own the login flow\n\nExit: all auth e2e green", "theme + one-lined exit");
+test("project subtitle prefers exit's first sentence; content composes full body; drift + idempotent", () => {
+  eq(projectDescription({ theme: "Own the login flow", exit_criteria: "Auth e2e is green. Plus MFA." }),
+    "Auth e2e is green.", "subtitle = first sentence of exit");
+  eq(projectDescription({ theme: "Own the login flow" }), "Own the login flow", "no exit → falls back to theme");
+  eq(projectContent({ theme: "Own the login flow", exit_criteria: "Auth e2e is green.\nMFA too." }),
+    "**Theme:** Own the login flow\n\n**Exit criteria**\nAuth e2e is green.\nMFA too.", "content = theme + full (un-one-lined) exit");
   const g = pushGraph();
   g.pis[0].theme = "Own the login flow";
   const cfg = normalizeLinearConfig(g.meta);
-  const snap = (desc) => ({ projects: { "proj-1": { id: "proj-1", name: "Authentication", description: desc } }, issues: SNAP().issues });
-  const drift = buildPushPlan({ graph: g, backlog: null, cfg, teamStates: L_STATES, existing: snap(""), labels: {} });
-  eq(drift.ops.find((o) => o.op === "updateProject").payload, { description: "Own the login flow" }, "drifted description alone updates");
-  const match = buildPushPlan({ graph: g, backlog: null, cfg, teamStates: L_STATES, existing: snap("Own the login flow"), labels: {} });
-  ok(!match.ops.some((o) => o.op === "updateProject"), "matching description → no op");
+  const content = projectContent(g.pis[0]);
+  const snap = (over) => ({ projects: { "proj-1": { id: "proj-1", name: "Authentication", description: "", content: "", ...over } }, issues: SNAP().issues });
+  const drift = buildPushPlan({ graph: g, backlog: null, cfg, teamStates: L_STATES, existing: snap({}), labels: {} });
+  eq(drift.ops.find((o) => o.op === "updateProject").payload, { description: "Own the login flow", content }, "drifted subtitle + content update together");
+  const match = buildPushPlan({ graph: g, backlog: null, cfg, teamStates: L_STATES, existing: snap({ description: "Own the login flow", content }), labels: {} });
+  ok(!match.ops.some((o) => o.op === "updateProject"), "matching subtitle + content → no op");
+});
+
+// WHY: Linear auto-links URLs/domains in stored text; without normalizing BOTH sides the
+// description/content diff never converges and re-pushes every issue+project each sync.
+test("normalizeLinearMarkdown collapses Linear's stored auto-link form to plain text", () => {
+  eq(normalizeLinearMarkdown("see [Fly.io](<http://Fly.io>) now"), "see Fly.io now", "angle-bracket auto-link → its text");
+  eq(normalizeLinearMarkdown("[a](b) and [c](<d>)"), "a and c", "both markdown link forms collapse");
+  eq(normalizeLinearMarkdown("plain text"), "plain text", "plain text untouched");
+});
+
+// WHY: random per-project icon/color is scattered noise; grouping by initiative is the whole
+// point. Same initiative → same color/icon; distinct initiatives (up to palette size) differ.
+test("project color/icon are deterministic by initiative index, null when ungrouped", () => {
+  eq(projectColorFor(0), projectColorFor(0), "stable for the same index");
+  ok(projectColorFor(0) !== projectColorFor(1), "distinct initiatives get distinct colors");
+  eq(projectColorFor(-1), null, "ungrouped PI → no color override");
+  eq(projectIconFor(-1), null, "ungrouped PI → no icon override");
+  ok(typeof projectColorFor(0) === "string" && projectColorFor(0).startsWith("#"), "color is a hex string Linear stores verbatim");
+});
+
+// WHY: a PI's STRATEGIC priority + target date fill Linear's empty Priority/Target columns; an
+// untagged PI must stay honestly "No priority" (not a faked value), and same-initiative projects
+// must share a color so the board groups.
+test("buildPushPlan enriches projects with priority, target date, and initiative color/icon", () => {
+  const g = { meta: { schema_version: 1, program: "T", linear: { team: "ENG" } }, pis: [
+    { id: "a", title: "A", initiative: "Copilot", priority: { tier: "P0" }, target_date: "2026-09-01", status: "active", sprints: [{ id: "s1", title: "S", status: "next", invoke: "a-s1" }] },
+    { id: "b", title: "B", initiative: "Copilot", status: "active", sprints: [{ id: "s1", title: "S", status: "next", invoke: "b-s1" }] },
+  ]};
+  const cfg = normalizeLinearConfig(g.meta);
+  const plan = buildPushPlan({ graph: g, backlog: null, cfg, teamStates: L_STATES, existing: { projects: {}, issues: {} }, labels: {} });
+  const a = plan.ops.find((o) => o.op === "createProject" && o.projectRef === "a");
+  const b = plan.ops.find((o) => o.op === "createProject" && o.projectRef === "b");
+  eq(a.payload.priority, 1, "P0 → Linear priority 1 (Urgent)");
+  eq(a.payload.targetDate, "2026-09-01", "target_date → targetDate");
+  eq(a.payload.color, b.payload.color, "same initiative → same color");
+  ok(a.payload.icon && a.payload.color, "grouped project gets both an icon and a color");
+  ok(!("priority" in b.payload), "a PI with no priority stays No priority (not faked)");
+});
+
+// WHY: the by-order palette makes an initiative's icon a coincidence, not a meaning — meta.initiatives
+// is what turns grouping into signal (Lumen→WritingAI). A declared style must win over the palette,
+// per-field, or the whole point of the feature (legible grouping) is lost.
+test("meta.initiatives: declared icon/color wins over the fallback palette, per-field", () => {
+  eq(initiativeStyle({ initiatives: { Lumen: { icon: "WritingAI", color: "#bb87fc" } } }, "Lumen"), { icon: "WritingAI", color: "#bb87fc" }, "declared → its icon+color");
+  eq(initiativeStyle({ initiatives: { Lumen: { icon: "WritingAI" } } }, "Lumen"), { icon: "WritingAI", color: null }, "color omitted → null (falls back per-field)");
+  eq(initiativeStyle({}, "Lumen"), { icon: null, color: null }, "no registry → nulls");
+  const g = { meta: { schema_version: 1, program: "T", linear: { team: "ENG" }, initiatives: { Lumen: { icon: "WritingAI" } } }, pis: [
+    { id: "a", title: "A", initiative: "Lumen", status: "active", sprints: [{ id: "s1", title: "S", status: "next", invoke: "a-s1" }] },
+  ]};
+  const plan = buildPushPlan({ graph: g, backlog: null, cfg: normalizeLinearConfig(g.meta), teamStates: L_STATES, existing: { projects: {}, issues: {} }, labels: {} });
+  const a = plan.ops.find((o) => o.op === "createProject" && o.projectRef === "a");
+  eq(a.payload.icon, "WritingAI", "declared initiative icon lands on the project (over palette)");
+  ok(a.payload.color, "color still falls back to the palette (declared only the icon)");
+});
+
+// WHY: a declared style is only useful if a typo (or a half-applied rename like Copilot→Lumen) is caught
+// — a malformed entry must error, and a declared-but-unreferenced initiative must warn, not sit silent.
+test("validate: meta.initiatives shape errors; a declared-but-unreferenced initiative warns", () => {
+  const bad = { meta: { schema_version: 1, program: "T", initiatives: { X: { color: "purple" } } }, pis: [
+    { id: "p", title: "P", initiative: "X", status: "active", sprints: [{ id: "s1", title: "S", status: "next", invoke: "x" }] }] };
+  ok(validateLinearConfig(bad).errors.some((e) => e.includes("color must be a hex")), "non-hex color errors");
+  const stale = { meta: { schema_version: 1, program: "T", initiatives: { Lumen: { icon: "WritingAI" }, Copilot: { icon: "Robot" } } }, pis: [
+    { id: "p", title: "P", initiative: "Lumen", status: "active", sprints: [{ id: "s1", title: "S", status: "next", invoke: "x" }] }] };
+  const w = validateLinearConfig(stale).warnings.filter((m) => m.includes("Copilot"));
+  eq(w.length, 1, "the renamed-away 'Copilot' entry warns (no PI references it)");
+});
+
+// WHY: content carries URLs/file refs Linear auto-links on store; without the normalized compare
+// every project re-pushes its content each sync (the 92→10 idempotency class, generalized).
+test("project content re-push is suppressed when only Linear's auto-linking differs", () => {
+  const g = { meta: { schema_version: 1, program: "T", linear: { team: "ENG" } }, pis: [
+    { id: "a", title: "A", linear: { project: "proj-1" }, exit_criteria: "Ship at updates.pidgeon.health today.", status: "active", sprints: [{ id: "s1", title: "S", status: "next", invoke: "a-s1" }] },
+  ]};
+  const cfg = normalizeLinearConfig(g.meta);
+  const pi = g.pis[0];
+  const stored = projectContent(pi).replace("updates.pidgeon.health", "[updates.pidgeon.health](<http://updates.pidgeon.health>)");
+  const plan = buildPushPlan({ graph: g, backlog: null, cfg, teamStates: L_STATES,
+    existing: { projects: { "proj-1": { id: "proj-1", name: "A", description: projectDescription(pi), content: stored } }, issues: {} }, labels: {} });
+  ok(!plan.ops.some((o) => o.op === "updateProject"), "auto-link-only difference in content → no re-push");
 });
 
 // WHY: the plan is paper until the IO forwards it — the end-to-end must show labelIds

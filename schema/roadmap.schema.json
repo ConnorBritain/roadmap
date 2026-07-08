@@ -45,6 +45,17 @@
             "light": { "$ref": "#/$defs/cost" }
           }
         },
+        "initiatives": {
+          "type": "object",
+          "description": "Optional per-initiative Linear styling: maps an initiative NAME (matching a pi.initiative) to its board icon/color, so grouping reads as signal (every Lumen project a WritingAI icon, every Trust project a Shield) instead of the deterministic-but-arbitrary fallback palette. Applied to a declared initiative's projects AND its header; undeclared initiatives keep Linear's default header and use the fallback palette on their projects only.",
+          "additionalProperties": {
+            "type": "object", "additionalProperties": false,
+            "properties": {
+              "icon": { "type": "string", "description": "Linear icon name (e.g. Robot, Shield, Database, WritingAI). Names are a fixed Linear set; an unrecognized one degrades to no icon (color still groups)." },
+              "color": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$", "description": "Hex color like #5e6ad2." }
+            }
+          }
+        },
         "linear": {
           "type": "object", "additionalProperties": false,
           "required": ["team"],
@@ -55,6 +66,7 @@
             "verbosity": { "enum": ["title", "brief", "full"], "default": "brief", "description": "Issue-description detail. Never copies read-order/prompt; always ends with the machine footer + docs link." },
             "pull": { "enum": ["off", "propose", "auto"], "default": "off", "description": "Inbound handling: propose = /sync walks the inbox with you; auto = applied directly." },
             "push_on": { "enum": ["sync", "manual"], "default": "sync", "description": "sync = /sync runs the Linear phase when authed; manual = only 'roadmap linear sync'." },
+            "estimate_max": { "type": "integer", "minimum": 1, "default": 5, "description": "Max value pushed to a slice's native Linear estimate (est_sessions is rounded, then clamped here). Set to your Linear team's estimate scale max — use the 'Linear' scale (1..5; extended adds 6,7) for a direct 1-point=1-session read. validate warns when a slice exceeds it: the signal to split it, not extend." },
             "status_map": { "type": "object", "additionalProperties": { "type": "string" }, "description": "roadmap status → exact Linear workflow-state NAME overrides; unmapped statuses use the state-TYPE defaults (scheduled→backlog, next→unstarted, active/blocked/paused/gated→started, complete→completed)." },
             "watch": {
               "type": "array",
@@ -137,6 +149,8 @@
         "detail": { "type": "string", "description": "Pointer to the sprint dir / detail doc" },
         "exec_hint": { "type": ["string", "null"], "description": "Optional human override of the derived exec-plan line; rendered alongside the derived line" },
         "initiative": { "type": "string", "description": "Groups this PI under a Linear Initiative of this name (the tier above projects). Sync creates the initiative and attaches this PI's project. Several PIs sharing a name group together." },
+        "priority": { "$ref": "#/$defs/priority", "description": "STRATEGIC priority of this bet (not derived from slice heat) → Linear project priority. tier P0=Urgent … P3=Low." },
+        "target_date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "Target date (YYYY-MM-DD) → Linear project targetDate. A deliberate commitment date; omit when there's no dated commitment." },
         "linear": {
           "type": "object", "additionalProperties": false,
           "description": "Per-PI Linear override + the pushed-back project id. A granularity conflicting with the global requires the yes_linear_override ack at creation; validate warns on stored mismatches.",

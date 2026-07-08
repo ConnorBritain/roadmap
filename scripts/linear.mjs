@@ -20,7 +20,7 @@ import { addItem, setItemFields } from "./lib/backlog-core.mjs";
 import { mutateRoadmap, mutateBacklog, loadBacklog, roadmapPaths } from "./lib/store.mjs";
 import {
   normalizeLinearConfig, linearState, linearStatusLine, buildPushPlan, buildPullProposals, holdsFor,
-  provisionPlan, manualViewChecklist, agentGuidanceText, dispatchGuidance, initiativePlan,
+  provisionPlan, manualViewChecklist, agentGuidanceText, dispatchGuidance, initiativePlan, initiativeStyle,
 } from "./lib/linear-core.mjs";
 
 const ENDPOINT = "https://api.linear.app/graphql";
@@ -54,8 +54,7 @@ async function fetchTeamBundle(teamKey, io) {
     `query($key: String!) { teams(filter: { key: { eq: $key } }) { nodes {
        id key name
        states { nodes { id name type position } }
-       labels { nodes { id name } }
-       projects { nodes { id name description } } } } }`,
+       labels { nodes { id name } } } } }`,
     { key: teamKey }, io);
   const team = data.teams.nodes[0];
   if (!team) throw new Error(`no Linear team with key "${teamKey}" (check meta.linear.team)`);
@@ -63,8 +62,26 @@ async function fetchTeamBundle(teamKey, io) {
     id: team.id,
     states: [...team.states.nodes].sort((a, b) => a.position - b.position),
     labels: Object.fromEntries(((team.labels && team.labels.nodes) || []).map((l) => [l.name, l.id])),
-    projects: Object.fromEntries(team.projects.nodes.map((p) => [p.id, { id: p.id, name: p.name, description: p.description || "" }])),
   };
+}
+
+// Project drift snapshot, keyed by the mapped project ids only (NOT all team projects). `content`
+// is a heavy rich-text field — fetching it for every project inside the team bundle blows Linear's
+// 10k query-complexity ceiling, so it lives here, batched small, exactly like fetchIssueSnapshot.
+const mappedProjectIds = (graph) => (graph.pis || []).map((p) => p.linear && p.linear.project).filter(Boolean);
+async function fetchProjectSnapshot(ids, io) {
+  const projects = {};
+  for (let i = 0; i < ids.length; i += 10) {
+    const chunk = ids.slice(i, i + 10);
+    const q = `query { ${chunk.map((id, j) => `p${j}: project(id: "${id}") { id name description content color icon priority targetDate }`).join(" ")} }`;
+    const data = await gql(q, {}, io);
+    chunk.forEach((_, j) => {
+      const p = data[`p${j}`];
+      if (p) projects[p.id] = { id: p.id, name: p.name, description: p.description || "", content: p.content || "",
+        color: p.color || "", icon: p.icon || "", priority: p.priority || 0, targetDate: p.targetDate || null };
+    });
+  }
+  return projects;
 }
 
 // Snapshot of our mapped issues, batched via aliases (identifiers are valid issue(id:) args).
@@ -72,11 +89,11 @@ async function fetchIssueSnapshot(identifiers, io) {
   const issues = {};
   for (let i = 0; i < identifiers.length; i += 50) {
     const chunk = identifiers.slice(i, i + 50);
-    const q = `query { ${chunk.map((id, j) => `i${j}: issue(id: "${id}") { id identifier title description priority state { id } project { id } labels { nodes { id } } }`).join(" ")} }`;
+    const q = `query { ${chunk.map((id, j) => `i${j}: issue(id: "${id}") { id identifier title description priority estimate state { id } project { id } labels { nodes { id } } }`).join(" ")} }`;
     const data = await gql(q, {}, io);
     chunk.forEach((_, j) => {
       const iss = data[`i${j}`];
-      if (iss) issues[iss.identifier] = { id: iss.id, title: iss.title, description: iss.description || "", priority: iss.priority, stateId: iss.state.id,
+      if (iss) issues[iss.identifier] = { id: iss.id, title: iss.title, description: iss.description || "", priority: iss.priority, estimate: iss.estimate ?? null, stateId: iss.state.id,
         projectId: iss.project ? iss.project.id : null,
         labelIds: ((iss.labels && iss.labels.nodes) || []).map((l) => l.id) };
     });
@@ -116,7 +133,7 @@ export async function runSync(root, opts = {}) {
   const backlog = loadBacklog(root);
   const team = await fetchTeamBundle(cfg.team, io);
   const mapped = collectIdentifiers(graph, backlog);
-  const existing = { issues: await fetchIssueSnapshot(mapped, io), projects: team.projects };
+  const existing = { issues: await fetchIssueSnapshot(mapped, io), projects: await fetchProjectSnapshot(mappedProjectIds(graph), io) };
   const docsUrl = repoDocsUrl(root, graph);
 
   const result = { pushed: [], proposals: null, cursorAdvanced: false, dry: !!opts.dry };
@@ -158,18 +175,29 @@ export async function runSync(root, opts = {}) {
     } else if (ops.length) {
       const projectIds = projectIdsByPi(pushGraph);
       const writeBacks = { pis: [], sprints: [], items: [] };
+      // Icon names are a fixed Linear set we can't introspect without write-probing the board; a bad
+      // palette entry would abort the whole push. Retry once without `icon` so it degrades to "no
+      // icon" (color still groups) instead of failing the sync. Only icon needs this — every other
+      // field is a validated shape.
+      const isIconErr = (e) => /icon|argument validation/i.test(e.message || "");
+      const stripIcon = (p) => { const { icon, ...rest } = p; return rest; };
       // finally-flush: if an op throws mid-push, everything Linear already created still gets
       // its id written back — otherwise the next sync would create duplicates for those nodes.
       try {
         for (const op of ops) {
           if (op.op === "createProject") {
-            const d = await gql(`mutation($input: ProjectCreateInput!) { projectCreate(input: $input) { project { id } } }`,
-              { input: { ...op.payload, teamIds: [team.id] } }, io);   // spread: dropping fields here caused live churn (description)
+            const mk = (payload) => gql(`mutation($input: ProjectCreateInput!) { projectCreate(input: $input) { project { id } } }`,
+              { input: { ...payload, teamIds: [team.id] } }, io);   // spread: dropping fields here caused live churn (description)
+            let d;
+            try { d = await mk(op.payload); }
+            catch (e) { if (op.payload.icon && isIconErr(e)) d = await mk(stripIcon(op.payload)); else throw e; }
             projectIds[op.projectRef] = d.projectCreate.project.id;
             writeBacks.pis.push({ pi: op.writeBack.pi, project: d.projectCreate.project.id });
           } else if (op.op === "updateProject") {
-            await gql(`mutation($id: String!, $input: ProjectUpdateInput!) { projectUpdate(id: $id, input: $input) { project { id } } }`,
-              { id: op.id, input: op.payload }, io);
+            const mk = (payload) => gql(`mutation($id: String!, $input: ProjectUpdateInput!) { projectUpdate(id: $id, input: $input) { project { id } } }`,
+              { id: op.id, input: payload }, io);
+            try { await mk(op.payload); }
+            catch (e) { if (op.payload.icon && isIconErr(e)) await mk(stripIcon(op.payload)); else throw e; }
           } else if (op.op === "createIssue") {
             const input = { teamId: team.id, ...op.payload, ...(op.projectRef && projectIds[op.projectRef] ? { projectId: projectIds[op.projectRef] } : {}) };
             const d = await gql(`mutation($input: IssueCreateInput!) { issueCreate(input: $input) { issue { id identifier } } }`,
@@ -221,21 +249,43 @@ export async function runSync(root, opts = {}) {
   return result;
 }
 
-// Ensure each declared initiative exists in Linear and each mapped PI's project is attached.
-// UNVERIFIED API (initiativeCreate / initiativeToProjectCreate) — the caller catches and
-// degrades. Idempotent: skips existing initiatives and already-attached projects.
+// Ensure each declared initiative exists in Linear, carries its meta.initiatives icon/color, and each
+// mapped PI's project is attached. UNVERIFIED API (initiativeCreate/Update/ToProjectCreate) — the caller
+// catches and degrades. Idempotent: skips existing initiatives, re-applies style only on drift (the fetch
+// reads current icon/color back), and skips already-attached projects.
 export async function syncInitiatives(root, io) {
   const graph = loadGraph(roadmapPaths(root).yaml);
   const plan = initiativePlan(graph);
   if (!plan.initiatives.length) return { initiatives: [] };
-  const data = await gql(`query { initiatives(first: 250) { nodes { id name projects { nodes { id } } } } }`, {}, io);
+  const data = await gql(`query { initiatives(first: 250) { nodes { id name icon color projects { nodes { id } } } } }`, {}, io);
   const byName = new Map((data.initiatives.nodes || []).map((i) => [i.name, i]));
-  const created = [];
+  // icon/color are newly-exercised initiative input — degrade like project icons do: a bad name or an
+  // unsupported field drops the initiative to unstyled instead of aborting the whole initiative sync.
+  const isStyleErr = (e) => /icon|color|argument validation/i.test(e.message || "");
+  const created = [], styled = [];
   for (const name of plan.initiatives) {
-    if (byName.has(name)) continue;
-    const d = await gql(`mutation($input: InitiativeCreateInput!) { initiativeCreate(input: $input) { initiative { id name } } }`, { input: { name } }, io);
-    byName.set(name, { ...d.initiativeCreate.initiative, projects: { nodes: [] } });
-    created.push(name);
+    const style = initiativeStyle(graph.meta, name);
+    if (!byName.has(name)) {
+      const full = { name, ...(style.icon ? { icon: style.icon } : {}), ...(style.color ? { color: style.color } : {}) };
+      const mk = (input) => gql(`mutation($input: InitiativeCreateInput!) { initiativeCreate(input: $input) { initiative { id name } } }`, { input }, io);
+      let d;
+      try { d = await mk(full); if (full.icon || full.color) styled.push(name); }
+      catch (e) { if ((full.icon || full.color) && isStyleErr(e)) d = await mk({ name }); else throw e; }
+      byName.set(name, { ...d.initiativeCreate.initiative, projects: { nodes: [] } });
+      created.push(name);
+      continue;
+    }
+    // existing → apply declared style only when it drifts (idempotent via the fetched icon/color)
+    const cur = byName.get(name);
+    const patch = {};
+    if (style.icon && cur.icon !== style.icon) patch.icon = style.icon;
+    if (style.color && (cur.color || "") !== style.color) patch.color = style.color;
+    if (Object.keys(patch).length) {
+      try {
+        await gql(`mutation($id: String!, $input: InitiativeUpdateInput!) { initiativeUpdate(id: $id, input: $input) { initiative { id } } }`, { id: cur.id, input: patch }, io);
+        styled.push(name);
+      } catch (e) { if (!isStyleErr(e)) throw e; }   // best-effort: unsupported update → leave unstyled
+    }
   }
   const attached = [];
   for (const a of plan.assignments) {
@@ -248,7 +298,7 @@ export async function syncInitiatives(root, io) {
     (init.projects || (init.projects = { nodes: [] })).nodes.push({ id: projectId });   // local dedupe within this run
     attached.push(`${a.pi} → ${a.initiative}`);
   }
-  return { initiatives: plan.initiatives, created, attached };
+  return { initiatives: plan.initiatives, created, styled, attached };
 }
 
 // ── dispatch transport (the only-network-file rule: dispatch.mjs owns the capsule, this
@@ -435,7 +485,7 @@ if (isMain) {
       if (r.missingLabels && r.missingLabels.length) {
         console.log(`labels missing in team: ${r.missingLabels.join(", ")} — run 'roadmap linear provision' to create them.`);
       }
-      if (r.initiatives) console.log(`initiatives: ${r.initiatives.initiatives.length} grouped${r.initiatives.created.length ? ` (created ${r.initiatives.created.join(", ")})` : ""}${r.initiatives.attached.length ? ` · attached ${r.initiatives.attached.length} project(s)` : ""}`);
+      if (r.initiatives) console.log(`initiatives: ${r.initiatives.initiatives.length} grouped${r.initiatives.created.length ? ` (created ${r.initiatives.created.join(", ")})` : ""}${r.initiatives.styled && r.initiatives.styled.length ? ` · styled ${r.initiatives.styled.length}` : ""}${r.initiatives.attached.length ? ` · attached ${r.initiatives.attached.length} project(s)` : ""}`);
       if (r.initiativesError) console.log(`initiatives skipped: ${r.initiativesError} — pending live verification of the initiative API.`);
       console.log(r.cursorAdvanced ? `cursor advanced.` : `cursor unchanged${r.dry ? " (dry)" : " (inbox pending)"}.`);
     } else {

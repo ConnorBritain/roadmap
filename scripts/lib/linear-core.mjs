@@ -22,6 +22,7 @@ export function normalizeLinearConfig(meta) {
     verbosity: raw.verbosity || "brief",
     pull: raw.pull || "off",
     push_on: raw.push_on || "sync",
+    estimate_max: raw.estimate_max != null ? raw.estimate_max : 5,   // Linear estimate scale max (linear=5, extended=7)
     status_map: raw.status_map || {},
     watch: (raw.watch || []).map((w) => ({
       team: w.team, project: w.project || null, capture: w.capture || "backlog",
@@ -48,10 +49,27 @@ export function validateLinearConfig(graph) {
       if (raw.verbosity != null && !VERBOSITIES.includes(raw.verbosity)) errors.push(`meta.linear.verbosity "${raw.verbosity}" is not one of ${VERBOSITIES.join("|")}`);
       if (raw.pull != null && !PULL_MODES.includes(raw.pull)) errors.push(`meta.linear.pull "${raw.pull}" is not one of ${PULL_MODES.join("|")}`);
       if (raw.push_on != null && !["sync", "manual"].includes(raw.push_on)) errors.push(`meta.linear.push_on "${raw.push_on}" is not sync|manual`);
+      if (raw.estimate_max != null && !(Number.isInteger(raw.estimate_max) && raw.estimate_max >= 1)) errors.push("meta.linear.estimate_max must be an integer >= 1 (the Linear estimate scale max; default 5)");
       for (const w of raw.watch || []) {
         if (!w.team) errors.push("meta.linear.watch: every entry needs a team key");
         if (w.capture != null && w.capture !== "backlog") errors.push(`meta.linear.watch: capture "${w.capture}" is not supported (only "backlog")`);
         for (const e of validatePriority(w.priority, "meta.linear.watch").errors) errors.push(e);
+      }
+    }
+  }
+  // Optional meta.initiatives styling registry: a map of initiative-name → { icon, color }. Structural
+  // (runs regardless of Linear config), plus a typo/stale-rename guard — a declared initiative no PI
+  // references is almost always a rename that only got half-applied.
+  const inits = graph.meta && graph.meta.initiatives;
+  if (inits != null) {
+    if (typeof inits !== "object" || Array.isArray(inits)) errors.push("meta.initiatives must be a mapping of initiative-name → { icon, color }");
+    else {
+      const referenced = new Set((graph.pis || []).map((p) => p.initiative).filter(Boolean));
+      for (const [name, v] of Object.entries(inits)) {
+        if (v == null || typeof v !== "object" || Array.isArray(v)) { errors.push(`meta.initiatives["${name}"] must be a mapping with optional icon/color`); continue; }
+        if (v.icon != null && typeof v.icon !== "string") errors.push(`meta.initiatives["${name}"].icon must be a string (a Linear icon name)`);
+        if (v.color != null && !/^#[0-9a-fA-F]{6}$/.test(v.color)) errors.push(`meta.initiatives["${name}"].color must be a hex color like #5e6ad2`);
+        if (!referenced.has(name)) warnings.push(`meta.initiatives["${name}"] is declared but no PI has initiative: ${name} — typo or stale rename?`);
       }
     }
   }
@@ -65,6 +83,12 @@ export function validateLinearConfig(graph) {
     }
     for (const sp of pi.sprints || []) {
       if (sp.linear != null && typeof sp.linear !== "string") errors.push(`${pi.id}/${sp.id}: linear must be a string issue identifier (e.g. ABC-123)`);
+      // The forcing function: a slice bigger than the estimate scale can't map to one estimate point
+      // and is too big to fan out as a single agent session — surface it here (where you'd split it)
+      // rather than silently clamping it on the board. Only when Linear's configured (cfg present).
+      if (cfg && !isDone(sp.status) && typeof sp.est_sessions === "number" && Math.round(sp.est_sessions) > cfg.estimate_max) {
+        warnings.push(`${pi.id}/${sp.id}: est_sessions ${sp.est_sessions} exceeds estimate_max ${cfg.estimate_max} — too big to fan out as one slice; split it (its Linear estimate clamps to ${cfg.estimate_max})`);
+      }
     }
   }
   return { errors, warnings };
@@ -172,7 +196,8 @@ export function issueDescription(node, cfg, { docsUrl = null, target } = {}) {
   const lines = [];
   if (node.what && node.what !== node.title) lines.push(oneLine(node.what));
   if (node.gate) lines.push(`Gate: ${node.gate === "default" ? "default gate" : oneLine(node.gate)}`);
-  if (node.estSessions != null) lines.push(`Est: ~${node.estSessions} session(s)`);
+  // est_sessions is NOT written here — it rides the issue's native `estimate` field (see buildPushPlan),
+  // so it stays sortable/roll-up-able on the board instead of being unsearchable prose.
   if (cfg.verbosity === "full") {
     if (node.priority && (node.priority.tier || node.priority.reason)) {
       lines.push(`Priority: ${[node.priority.tier, node.priority.weight != null ? `weight ${node.priority.weight}` : null].filter(Boolean).join(" · ")}${node.priority.reason ? ` — ${oneLine(node.priority.reason)}` : ""}`);
@@ -219,17 +244,59 @@ export function projectName(pi) {
   return clip(headline, LINEAR_PROJECT_NAME_MAX);
 }
 
-// PI theme + exit criteria (+ the full title when the name was a headline split off it) —
-// the strategic context a Linear-side viewer gets that the short project name drops.
+// Linear rewrites bare URLs and domain-shaped tokens ("Fly.io", "install.rs") to the markdown
+// auto-link form "[X](<...>)" on store, so an exact-string diff of a description/content never
+// converges and re-pushes every sync. Collapse that form back to its text on BOTH sides before
+// comparing — matching Linear's fuzzy heuristic token-by-token is a dead end, this sidesteps it.
+export const normalizeLinearMarkdown = (s) =>
+  String(s || "").replace(/\[([^\]]*)\]\(<[^>]*>\)/g, "$1").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1");
+
+const firstSentence = (s) => {
+  const t = oneLine(s);
+  const m = t.match(/^.*?[.!?](?=\s|$)/);
+  return (m ? m[0] : t).trim();
+};
+
+// Project SUBTITLE (Linear's short `description`, hard-capped at 255 and truncated with "…" in the
+// UI). Keep it to one crisp essence line — the exit's first sentence beats the bare theme word.
 export function projectDescription(pi) {
-  const full = String(pi.title);
-  const nameIsSplit = projectName(pi) !== clip(full, LINEAR_PROJECT_NAME_MAX);
-  const desc = [
-    nameIsSplit ? full : null,   // preserve the subhead the name dropped
-    pi.theme || null,
-    pi.exit_criteria ? `Exit: ${oneLine(pi.exit_criteria)}` : null,
-  ].filter(Boolean).join("\n\n");
-  return clip(desc, LINEAR_PROJECT_DESC_MAX);
+  const subhead = projectName(pi) !== clip(String(pi.title), LINEAR_PROJECT_NAME_MAX)
+    ? String(pi.title).split(/\s+[—–]\s+/).slice(1).join(" — ").trim() : "";
+  const line = (pi.exit_criteria ? firstSentence(pi.exit_criteria) : "") || subhead || pi.theme || "";
+  return clip(line, LINEAR_PROJECT_DESC_MAX);
+}
+
+// Project BODY (Linear's rich `content`, effectively unbounded) — the full strategic context the
+// 255-char subtitle can't hold. This is where the whole exit criteria + theme + deps live.
+export function projectContent(pi) {
+  const nameIsSplit = projectName(pi) !== clip(String(pi.title), LINEAR_PROJECT_NAME_MAX);
+  const blocks = [
+    nameIsSplit ? `**${String(pi.title)}**` : null,
+    pi.theme ? `**Theme:** ${oneLine(pi.theme)}` : null,
+    pi.exit_criteria ? `**Exit criteria**\n${String(pi.exit_criteria).trim()}` : null,
+    pi.estimate_weeks ? `**Estimate:** ${oneLine(pi.estimate_weeks)}` : null,
+    Array.isArray(pi.deps) && pi.deps.length ? `**Depends on:** ${pi.deps.join(", ")}` : null,
+  ].filter(Boolean);
+  return blocks.join("\n\n");
+}
+
+// Deterministic project color + icon BY INITIATIVE, so a Linear viewer reads grouping from the
+// visual (every "Copilot" project shares a hue) instead of Linear's random per-project assignment.
+// Indexed by the initiative's first-seen position → distinct for up to PALETTE-length initiatives.
+// This is the FALLBACK for initiatives not explicitly styled via meta.initiatives (see initiativeStyle).
+// Icon names must be from Linear's fixed set; these are drawn from Linear's icon picker (believed-valid),
+// and a bad name degrades to "no icon" regardless — the icon surface is unverified against a live API.
+const PROJECT_COLORS = ["#5e6ad2", "#26b5ce", "#4cb782", "#f2c94c", "#f2994a", "#eb5757", "#bb87fc", "#95a2b3", "#db6e9a", "#82b536"];
+const PROJECT_ICONS = ["Rocket", "Gears", "Robot", "Network", "Shield", "Database", "Compass", "Bolt", "Box", "Chart"];
+export const projectColorFor = (idx) => (idx < 0 || idx == null ? null : PROJECT_COLORS[idx % PROJECT_COLORS.length]);
+export const projectIconFor = (idx) => (idx < 0 || idx == null ? null : PROJECT_ICONS[idx % PROJECT_ICONS.length]);
+
+// Explicit per-initiative styling from meta.initiatives — the MEANINGFUL layer: "Lumen" → WritingAI,
+// "Trust surface" → Shield. Wins over the by-order palette so a viewer reads intent, not luck. Returns
+// { icon, color } with nulls when undeclared, so callers can fall back per-field.
+export function initiativeStyle(meta, name) {
+  const e = name && meta && meta.initiatives && meta.initiatives[name];
+  return e && typeof e === "object" ? { icon: e.icon || null, color: e.color || null } : { icon: null, color: null };
 }
 
 // ── initiatives (the grouping tier above projects) ───────────────────────────
@@ -326,6 +393,7 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
   const ops = [];
   const missing = new Set();
   const model = flatten(graph);
+  const initiativeOrder = initiativePlan(graph).initiatives;   // first-seen order → stable color/icon index
 
   for (const pi of graph.pis || []) {
     const gran = effectiveGranularity(cfg, pi);
@@ -335,16 +403,38 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
     // (not-done, or already mapped) — or granularity is 'pis' (the project is the deliverable).
     // Without this, a fully-shipped PI creates a bare 0-issue project (46% of pidgeon's board).
     const hasWork = gran === "pis" || piNodes.some((n) => n.linear || !isDone(n.status));
-    const desc = projectDescription(pi);
     const name = projectName(pi);
+    const desc = projectDescription(pi);
+    const content = projectContent(pi);
+    const iIdx = pi.initiative ? initiativeOrder.indexOf(pi.initiative) : -1;
+    const declared = initiativeStyle(graph.meta, pi.initiative);   // explicit per-initiative style wins per-field
+    const color = declared.color || projectColorFor(iIdx);
+    const icon = declared.icon || projectIconFor(iIdx);
+    const priority = pi.priority ? priorityToLinear(pi.priority) : null;   // null → leave Linear's (No priority)
+    const targetDate = pi.target_date || null;
+    const desired = {   // the full projection; create takes it whole, update diffs field-by-field
+      name,
+      ...(desc ? { description: desc } : {}),
+      ...(content ? { content } : {}),
+      ...(color ? { color } : {}),
+      ...(icon ? { icon } : {}),
+      ...(priority != null ? { priority } : {}),
+      ...(targetDate ? { targetDate } : {}),
+    };
     if (!projId) {
-      if (hasWork) ops.push({ op: "createProject", payload: { name, ...(desc ? { description: desc } : {}) }, projectRef: pi.id,
+      if (hasWork) ops.push({ op: "createProject", payload: desired, projectRef: pi.id,
         writeBack: { kind: "pi", pi: pi.id, field: "project" } });
     } else if (existing.projects[projId]) {   // already mapped → keep it in sync (never orphan)
       const cur = existing.projects[projId];
       const changed = {};
       if (cur.name !== name) changed.name = name;
       if ((cur.description || "") !== desc) changed.description = desc;
+      // content compares under markdown-normalization (Linear auto-links URLs/domains on store)
+      if (content && normalizeLinearMarkdown(cur.content || "") !== normalizeLinearMarkdown(content)) changed.content = content;
+      if (color && (cur.color || "") !== color) changed.color = color;
+      if (icon && (cur.icon || "") !== icon) changed.icon = icon;
+      if (priority != null && (cur.priority || 0) !== priority) changed.priority = priority;
+      if (targetDate && (cur.targetDate || null) !== targetDate) changed.targetDate = targetDate;
       if (Object.keys(changed).length) ops.push({ op: "updateProject", id: projId, payload: changed });
     }
     if (gran === "pis") continue;   // projects only — no issue leaks for this PI
@@ -380,12 +470,17 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
   function pushIssueOp(node, target, status, resolver, projectRef, projectId = null) {
     const state = resolver(status, cfg, teamStates);
     const labelIds = labelIdsFor(target, node);
+    // est_sessions → native estimate: rounded to an integer, clamped to the scale max so an oversize
+    // slice never pushes an out-of-scale value (validate warns to split it). 0/null → unestimated (no
+    // field), never a pushed 0 (which needs the team's allow-zero setting). Use the "linear" scale.
+    const points = node.estSessions != null ? Math.min(Math.round(node.estSessions), cfg.estimate_max) : 0;
     const projection = {
       title: node.title,
       description: issueDescription(node, cfg, { docsUrl, target }),
       priority: priorityToLinear(node.priority),
       stateId: state.id,
       labelIds,
+      ...(points > 0 ? { estimate: points } : {}),
     };
     if (!node.linear) {
       const payload = { ...projection };
@@ -399,12 +494,19 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
     const changed = {};
     for (const k of ["title", "description", "priority", "stateId"]) {
       if (holds.has(`${node.linear}:${k}`)) continue;   // pending inbound proposal owns this field
-      if (projection[k] !== cur[k]) changed[k] = projection[k];
+      // description compares under markdown-normalization (Linear auto-links URLs/domains on store)
+      const same = k === "description"
+        ? normalizeLinearMarkdown(projection[k]) === normalizeLinearMarkdown(cur[k])
+        : projection[k] === cur[k];
+      if (!same) changed[k] = projection[k];
     }
     // labels compare as SETS (order-insensitive — Linear returns them in its own order)
     if (labelIds.length && labelIds.join(",") !== [...(cur.labelIds || [])].sort().join(",")) {
       changed.labelIds = labelIds;
     }
+    // estimate: only when we have a positive value that differs. A removed est_sessions leaving a
+    // stale estimate is acceptable (never clear to 0 — that needs the team's allow-zero setting).
+    if (points > 0 && (cur.estimate || 0) !== points) changed.estimate = points;
     // project attach — how a transferred issue (backlog item promoted to a sprint) moves
     // into its PI's project. Only when the project id is already known (post first push).
     if (projectId && cur.projectId !== projectId) changed.projectId = projectId;
