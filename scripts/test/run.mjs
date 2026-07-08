@@ -34,9 +34,9 @@ import {
   normalizeLinearConfig, effectiveGranularity, linearState, checkPiOverrideAck,
   resolvePushState, pullStatusFor, priorityToLinear, LINEAR_TO_PRIORITY,
   issueDescription, machineFooter, buildPushPlan, buildPullProposals, validateLinearConfig, holdsFor,
-  desiredLabels, projectDescription, projectName, projectContent, normalizeLinearMarkdown,
+  desiredLabels, projectDescription, projectSubtitleRaw, projectName, projectContent, normalizeLinearMarkdown,
   projectColorFor, projectIconFor, MARKER_LABEL, PLATE_LABEL, LINEAR_PROJECT_NAME_MAX, LINEAR_PROJECT_DESC_MAX,
-  initiativePlan, initiativeStyle, HELD_STATUSES,
+  initiativePlan, initiativeStyle, startStampTargets, HELD_STATUSES,
   provisionPlan, manualViewChecklist, dispatchGuidance, STANDARD_VIEWS,
 } from "../lib/linear-core.mjs";
 import { platedKeys, plateDrainKeys, setPlateDoc, validatePlate } from "../lib/plate-core.mjs";
@@ -1940,8 +1940,13 @@ function fakeLinear({ failOn = null, snapshot = {}, projectSnapshot = {}, inboun
     if (query.includes("projectCreate")) {
       const p = variables.input;
       createdProjects["proj-new"] = { id: "proj-new", name: p.name, description: p.description || "", content: p.content || "",
-        color: p.color || "", icon: p.icon || "", priority: p.priority || 0, targetDate: p.targetDate || null };   // faithful: create persists its payload
+        color: p.color || "", icon: p.icon || "", priority: p.priority || 0, startDate: p.startDate || null, targetDate: p.targetDate || null };   // faithful: create persists its payload
       return respond({ projectCreate: { project: { id: "proj-new" } } });
+    }
+    if (query.includes("projectUpdate")) {   // faithful: persist the patch so a re-fetch converges (idempotency)
+      const rec = createdProjects[variables.id] || projectSnapshot[variables.id];
+      if (rec) Object.assign(rec, variables.input);
+      return respond({ projectUpdate: { project: { id: variables.id } } });
     }
     if (query.includes("issueCreate")) {
       if (failOn === "issueCreate") throw new Error("simulated transport failure");
@@ -2362,6 +2367,73 @@ test("buildPushPlan enriches projects with priority, target date, and initiative
   eq(a.payload.color, b.payload.color, "same initiative → same color");
   ok(a.payload.icon && a.payload.color, "grouped project gets both an icon and a color");
   ok(!("priority" in b.payload), "a PI with no priority stays No priority (not faked)");
+});
+
+// WHY: a long exit_criteria first sentence truncates the 255-char Linear subtitle with "…"; an authored
+// pi.summary must win and stay whole, and the raw (pre-clip) form must be exposed so validate can warn.
+test("projectDescription: pi.summary wins over the derived subtitle; projectSubtitleRaw exposes the raw", () => {
+  const pi = { title: "Big PI", exit_criteria: "A".repeat(300) + "." };
+  ok(projectSubtitleRaw(pi).length > 255 && projectDescription(pi).endsWith("..."), "derived subtitle overflows → truncates with …");
+  const withSummary = { ...pi, summary: "One crisp line." };
+  eq(projectSubtitleRaw(withSummary), "One crisp line.", "summary is the raw subtitle");
+  eq(projectDescription(withSummary), "One crisp line.", "summary wins, no truncation");
+});
+
+// WHY: Linear's roadmap TIMELINE is project-level (startDate/targetDate) — a PI's start must project so the
+// Gantt view renders, and stay idempotent (matching dates → no re-push).
+test("buildPushPlan pushes project startDate + targetDate; idempotent", () => {
+  const g = { meta: { schema_version: 1, program: "T", linear: { team: "ENG" } }, pis: [
+    { id: "a", title: "A", status: "active", start_date: "2026-07-01", target_date: "2026-09-01", sprints: [{ id: "s1", title: "S", status: "next", invoke: "x" }] }] };
+  const cfg = normalizeLinearConfig(g.meta);
+  const proj = buildPushPlan({ graph: g, backlog: null, cfg, teamStates: L_STATES, existing: { projects: {}, issues: {} }, labels: {} }).ops.find((o) => o.op === "createProject");
+  eq(proj.payload.startDate, "2026-07-01", "startDate on create");
+  eq(proj.payload.targetDate, "2026-09-01", "targetDate on create");
+  const g2 = { meta: g.meta, pis: [{ ...g.pis[0], linear: { project: "proj-1" } }] };
+  const cur = { projects: { "proj-1": { id: "proj-1", name: "A", startDate: "2026-07-01", targetDate: "2026-09-01" } }, issues: {} };
+  ok(!buildPushPlan({ graph: g2, backlog: null, cfg, teamStates: L_STATES, existing: cur, labels: {} }).ops.some((o) => o.op === "updateProject"), "matching start/target → no project re-push");
+});
+
+// WHY: the auto-stamp DECISION is pure + unit-tested (mirrors plateDrainKeys), not buried in the IO layer —
+// only active PIs lacking an explicit start_date get stamped; explicit + non-active are excluded.
+test("startStampTargets: active PIs without an explicit start_date", () => {
+  eq(startStampTargets({ pis: [
+    { id: "a", status: "active", sprints: [] },
+    { id: "b", status: "active", start_date: "2026-01-01", sprints: [] },
+    { id: "c", status: "next", sprints: [] },
+    { id: "d", status: "complete", sprints: [] },
+  ] }), ["a"], "only active + no explicit start_date");
+});
+
+// WHY: bad dates / an oversized subtitle must error; a DERIVED subtitle that would truncate must warn (the
+// nudge to author a summary) — a silently cut-off board subtitle is the exact bug this fixes.
+test("validate: start_date/summary shape + derived-subtitle truncation warning", () => {
+  const bad = { meta: { schema_version: 1, program: "T" }, pis: [
+    { id: "p", title: "P", status: "active", start_date: "07/01/2026", summary: "x".repeat(300), sprints: [{ id: "s1", title: "S", status: "active", invoke: "x" }] }] };
+  const r = validateGraph(bad);
+  ok(r.errors.some((e) => e.includes("start_date must be YYYY-MM-DD")), "bad start_date errors");
+  ok(r.errors.some((e) => e.includes("summary must be a string of at most 255")), "oversized summary errors");
+  const trunc = { meta: { schema_version: 1, program: "T", linear: { team: "ENG" } }, pis: [
+    { id: "q", title: "Q", status: "active", exit_criteria: "Z".repeat(300) + ".", sprints: [{ id: "s1", title: "S", status: "active", invoke: "y" }] }] };
+  ok(validateGraph(trunc).warnings.some((w) => w.includes("subtitle truncates")), "derived subtitle >255 warns to add a summary");
+});
+
+// WHY: an active PI without a start_date must get one stamped on sync (the timeline needs a start), written
+// back to the YAML; an explicit date and a non-active PI must be left alone.
+test("runSync auto-stamps start_date on an active PI without one; spares explicit + non-active", async () => {
+  const root = mkdtempSync(join(tmpdir(), "roadmap-startstamp-"));
+  mkdirSync(join(root, "docs", "roadmap"), { recursive: true });
+  writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"),
+    `meta:\n  schema_version: 1\n  program: T\n  linear:\n    team: ENG\npis:\n  - id: live\n    title: Live\n    status: active\n    linear: { project: proj-live }\n    sprints: [ { id: s1, title: S, status: active, invoke: a, linear: ENG-1 } ]\n  - id: dated\n    title: Dated\n    status: active\n    start_date: 2026-01-01\n    linear: { project: proj-dated }\n    sprints: [ { id: s1, title: T, status: active, invoke: b, linear: ENG-2 } ]\n  - id: later\n    title: Later\n    status: scheduled\n    linear: { project: proj-later }\n    sprints: [ { id: s1, title: U, status: scheduled, invoke: c, linear: ENG-3 } ]\n`, "utf8");
+  const iss = (idf) => ({ id: `u-${idf}`, identifier: idf, title: "X", description: "", priority: 0, estimate: null, state: { id: "st-s" }, project: { id: "proj-x" }, assignee: null, labels: { nodes: [] } });
+  const proj = (id) => ({ id, name: "X", description: "", content: "", color: "", icon: "", priority: 0, startDate: null, targetDate: null });
+  const fake = fakeLinear({ snapshot: { "ENG-1": iss("ENG-1"), "ENG-2": iss("ENG-2"), "ENG-3": iss("ENG-3") },
+    projectSnapshot: { "proj-live": proj("proj-live"), "proj-dated": proj("proj-dated"), "proj-later": proj("proj-later") } });
+  await runSync(root, { fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-08T00:00:00Z" });
+  const pis = parseDocument(readFileSync(join(root, "docs", "roadmap", "roadmap.yaml"), "utf8")).toJS().pis;
+  eq(pis.find((p) => p.id === "live").start_date, "2026-07-08", "active PI without start_date → stamped the sync date");
+  eq(pis.find((p) => p.id === "dated").start_date, "2026-01-01", "explicit start_date untouched");
+  ok(!pis.find((p) => p.id === "later").start_date, "non-active PI → not stamped");
+  rmSync(root, { recursive: true, force: true });
 });
 
 // WHY: the by-order palette makes an initiative's icon a coincidence, not a meaning — meta.initiatives
