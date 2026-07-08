@@ -42,7 +42,7 @@ import {
 import { platedKeys, plateDrainKeys, setPlateDoc, validatePlate } from "../lib/plate-core.mjs";
 import { addPi, setPlate, addPlate, removePlate } from "../lib/mcp-core.mjs";
 import { runSync, runProvision, syncInitiatives, readCursor, runNote, runNotes, runProjectUpdate } from "../linear.mjs";
-import { noteBody, sliceForBranch, gitSnapshot } from "../lib/journal-core.mjs";
+import { noteBody, sliceForBranch, gitSnapshot, autoPostPlan } from "../lib/journal-core.mjs";
 import { runDispatch, runFanCloud, resolveRoutine, fireRoutine, routineEndpoint } from "../dispatch.mjs";
 import { graphDiff, backlogDiff, reviewDigest, pisInFlight } from "../lib/review-core.mjs";
 import { parseDocument } from "yaml";
@@ -2527,6 +2527,21 @@ test("journal-core: noteBody format, sliceForBranch inversion, gitSnapshot skip-
   eq(gitSnapshot({ branch: "b", commits: [], dirty: "" }), null, "no commits + clean tree → null (skip empty post)");
   const snap = gitSnapshot({ branch: "auth/s1", commits: ["feat: x", "fix: y"], dirty: " M a.js\n?? b.js" });
   ok(snap.includes("auth/s1") && snap.includes("feat: x") && snap.includes("a.js"), "snapshot names branch, commits, and dirty paths");
+});
+
+// WHY: the session-end hook's guard must be pure + unit-tested (PR A lesson) — auto-post only for a
+// mapped-slice branch with real work, and skip everything else (the hook just runs git + fetch around it).
+test("autoPostPlan: posts for a mapped-slice branch with work; skips unmapped / non-slice / no-work", () => {
+  const g = { meta: { schema_version: 1, program: "T", linear: { team: "ENG" } }, pis: [
+    { id: "auth", title: "A", status: "active", linear: { project: "proj-1" }, sprints: [
+      { id: "s1", title: "S", status: "active", invoke: "login", linear: "ENG-1" },
+      { id: "s2", title: "T", status: "active", invoke: "tokens" } ]}]};
+  const plan = autoPostPlan(g, { branch: "auth/s1", commits: ["feat: x"], dirty: "" });
+  eq(plan.identifier, "ENG-1", "mapped-slice branch + work → post to its issue");
+  ok(plan.body.includes("[auto]") && plan.body.includes("feat: x"), "body is the auto-kind git snapshot");
+  eq(autoPostPlan(g, { branch: "auth/s2", commits: ["x"], dirty: "" }), null, "branch maps to an UNMAPPED slice → skip");
+  eq(autoPostPlan(g, { branch: "main", commits: ["x"], dirty: "" }), null, "branch isn't a slice → skip");
+  eq(autoPostPlan(g, { branch: "auth/s1", commits: [], dirty: "" }), null, "no commits + clean → skip (no empty post)");
 });
 
 // WHY: `note` posts a formatted comment to the slice's MAPPED issue (reusing the dispatch transport);

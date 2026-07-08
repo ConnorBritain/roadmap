@@ -35,3 +35,14 @@ export function gitSnapshot({ branch, commits = [], dirty = "" } = {}) {
   if (dirtyLines.length) parts.push(`Uncommitted (${dirtyLines.length} path(s)):\n${dirtyLines.slice(0, 10).map((l) => `- ${l}`).join("\n")}`);
   return parts.join("\n\n");
 }
+
+// The session-end auto-post DECISION (PURE): given the graph + collected git facts, the { identifier, body }
+// to post — or null to skip. Guards: the branch must map 1:1 to a MAPPED slice, and there must be real
+// work (gitSnapshot non-null). The hook (hooks/journal-post.mjs) runs git + fetch; this decides.
+export function autoPostPlan(graph, { branch, commits = [], dirty = "" } = {}) {
+  const node = sliceForBranch(graph, branch);
+  if (!node || !node.linear) return null;
+  const snapshot = gitSnapshot({ branch, commits, dirty });
+  if (!snapshot) return null;
+  return { identifier: node.linear, body: noteBody({ kind: "auto", text: snapshot }) };
+}
