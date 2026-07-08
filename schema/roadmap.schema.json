@@ -156,6 +156,8 @@
         "exec_hint": { "type": ["string", "null"], "description": "Optional human override of the derived exec-plan line; rendered alongside the derived line" },
         "initiative": { "type": "string", "description": "Groups this PI under a Linear Initiative of this name (the tier above projects). Sync creates the initiative and attaches this PI's project. Several PIs sharing a name group together." },
         "priority": { "$ref": "#/$defs/priority", "description": "STRATEGIC priority of this bet (not derived from slice heat) → Linear project priority. tier P0=Urgent … P3=Low." },
+        "summary": { "type": "string", "maxLength": 255, "description": "Short one-line subtitle → Linear project description (the ≤255 field the board shows under the title). Authored so it never truncates; when omitted the subtitle is derived from the exit's first sentence and validate warns if that would truncate." },
+        "start_date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "Start date (YYYY-MM-DD) → Linear project startDate (drives the roadmap timeline). Set it explicitly, or leave blank and the sync auto-stamps it the first time the PI is active (≈ when it was picked up). Explicit always wins." },
         "target_date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "Target date (YYYY-MM-DD) → Linear project targetDate. A deliberate commitment date; omit when there's no dated commitment." },
         "linear": {
           "type": "object", "additionalProperties": false,

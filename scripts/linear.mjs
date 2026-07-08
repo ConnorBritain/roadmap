@@ -22,6 +22,7 @@ import { plateDrainKeys, setPlateDoc } from "./lib/plate-core.mjs";
 import {
   normalizeLinearConfig, linearState, linearStatusLine, buildPushPlan, buildPullProposals, holdsFor,
   provisionPlan, manualViewChecklist, agentGuidanceText, dispatchGuidance, initiativePlan, initiativeStyle,
+  startStampTargets,
 } from "./lib/linear-core.mjs";
 
 const ENDPOINT = "https://api.linear.app/graphql";
@@ -74,12 +75,12 @@ async function fetchProjectSnapshot(ids, io) {
   const projects = {};
   for (let i = 0; i < ids.length; i += 10) {
     const chunk = ids.slice(i, i + 10);
-    const q = `query { ${chunk.map((id, j) => `p${j}: project(id: "${id}") { id name description content color icon priority targetDate }`).join(" ")} }`;
+    const q = `query { ${chunk.map((id, j) => `p${j}: project(id: "${id}") { id name description content color icon priority startDate targetDate }`).join(" ")} }`;
     const data = await gql(q, {}, io);
     chunk.forEach((_, j) => {
       const p = data[`p${j}`];
       if (p) projects[p.id] = { id: p.id, name: p.name, description: p.description || "", content: p.content || "",
-        color: p.color || "", icon: p.icon || "", priority: p.priority || 0, targetDate: p.targetDate || null };
+        color: p.color || "", icon: p.icon || "", priority: p.priority || 0, startDate: p.startDate || null, targetDate: p.targetDate || null };
     });
   }
   return projects;
@@ -167,6 +168,21 @@ export async function runSync(root, opts = {}) {
   // Re-read after auto-apply so the push plan reflects the accepted inbound edits.
   let pushGraph = result.applied ? loadGraph(roadmapPaths(root).yaml) : graph;
   const pushBacklog = result.applied ? loadBacklog(root) : backlog;
+
+  // ── auto-stamp project start dates ── a PI that's active without an explicit start_date gets one (the
+  // sync date ≈ when it was picked up), so the Linear roadmap timeline has a start. Explicit wins; stamped
+  // once then stable. Write-back BEFORE the push so the new startDate projects this run.
+  const toStamp = opts.dry ? [] : startStampTargets(pushGraph);   // pure decision (linear-core); IO write below
+  if (toStamp.length) {
+    const today = now.slice(0, 10);
+    mutateRoadmap(root, (doc) => {
+      const pis = doc.toJS().pis || [];
+      for (const id of toStamp) { const idx = pis.findIndex((p) => p.id === id); if (idx >= 0) doc.setIn(["pis", idx, "start_date"], today); }
+      return { startStamped: toStamp.length };
+    });
+    pushGraph = loadGraph(roadmapPaths(root).yaml);
+    result.startStamped = toStamp;
+  }
 
   // ── plate auto-drain (complete-only) ── a finished slice leaves My Issues. Write-back BEFORE the push
   // so the projection unassigns it. Skipped on dry runs (no writes) and when the feature is off.
@@ -507,6 +523,7 @@ if (isMain) {
       }
       if (r.initiatives) console.log(`initiatives: ${r.initiatives.initiatives.length} grouped${r.initiatives.created.length ? ` (created ${r.initiatives.created.join(", ")})` : ""}${r.initiatives.styled && r.initiatives.styled.length ? ` · styled ${r.initiatives.styled.length}` : ""}${r.initiatives.attached.length ? ` · attached ${r.initiatives.attached.length} project(s)` : ""}`);
       if (r.initiativesError) console.log(`initiatives skipped: ${r.initiativesError} — pending live verification of the initiative API.`);
+      if (r.startStamped && r.startStamped.length) console.log(`start dates: stamped ${r.startStamped.length} active PI(s) (${r.startStamped.join(", ")}) — the Linear timeline now has a start.`);
       if (r.plateDrained && r.plateDrained.length) console.log(`plate: drained ${r.plateDrained.length} completed (${r.plateDrained.join(", ")}) — off My Issues.`);
       if (r.unmatchedPlate && r.unmatchedPlate.length) console.log(`plate: ${r.unmatchedPlate.join(", ")} match no slice/backlog item — typo in meta.plate? ('roadmap plate' lists it).`);
       console.log(r.cursorAdvanced ? `cursor advanced.` : `cursor unchanged${r.dry ? " (dry)" : " (inbox pending)"}.`);

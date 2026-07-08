@@ -89,6 +89,11 @@ export function validateLinearConfig(graph) {
         warnings.push(`PI ${pi.id}: linear.granularity "${pi.linear.granularity}" differs from meta.linear.granularity "${cfg.granularity}" — per-PI override in effect`);
       }
     }
+    // The Linear subtitle truncates at 255 with "…"; when it's DERIVED (no pi.summary) and the exit's
+    // first sentence overflows, nudge to author a summary. An explicit over-length summary errors (validate-core).
+    if (cfg && !pi.summary && projectSubtitleRaw(pi).length > LINEAR_PROJECT_DESC_MAX) {
+      warnings.push(`PI ${pi.id}: Linear subtitle truncates at ${LINEAR_PROJECT_DESC_MAX} chars — add a "summary" (one crisp line) so the board subtitle isn't cut off`);
+    }
     for (const sp of pi.sprints || []) {
       if (sp.linear != null && typeof sp.linear !== "string") errors.push(`${pi.id}/${sp.id}: linear must be a string issue identifier (e.g. ABC-123)`);
       // The forcing function: a slice bigger than the estimate scale can't map to one estimate point
@@ -268,13 +273,27 @@ const firstSentence = (s) => {
   return (m ? m[0] : t).trim();
 };
 
-// Project SUBTITLE (Linear's short `description`, hard-capped at 255 and truncated with "…" in the
-// UI). Keep it to one crisp essence line — the exit's first sentence beats the bare theme word.
-export function projectDescription(pi) {
+// The RAW (pre-clip) subtitle. An explicit `pi.summary` wins (it's authored to be the subtitle);
+// otherwise derive from the exit's first sentence / the title subhead / theme. Exposed so validate can
+// warn when the DERIVED form would truncate at 255 (the fix: author a `summary`).
+export function projectSubtitleRaw(pi) {
+  if (pi.summary) return oneLine(pi.summary);
   const subhead = projectName(pi) !== clip(String(pi.title), LINEAR_PROJECT_NAME_MAX)
     ? String(pi.title).split(/\s+[—–]\s+/).slice(1).join(" — ").trim() : "";
-  const line = (pi.exit_criteria ? firstSentence(pi.exit_criteria) : "") || subhead || pi.theme || "";
-  return clip(line, LINEAR_PROJECT_DESC_MAX);
+  return (pi.exit_criteria ? firstSentence(pi.exit_criteria) : "") || subhead || pi.theme || "";
+}
+
+// Project SUBTITLE (Linear's short `description`, hard-capped at 255 and truncated with "…" in the UI).
+// One crisp essence line: an authored `pi.summary` if present, else the derived line — both clipped.
+export function projectDescription(pi) {
+  return clip(projectSubtitleRaw(pi), LINEAR_PROJECT_DESC_MAX);
+}
+
+// PIs that should get an auto-stamped start_date on sync: active, but no explicit start_date yet. PURE
+// decision (mirrors plateDrainKeys) — the sync (IO) supplies the date + does the write-back. So a PI's
+// startDate ≈ when it was first picked up into active, giving the Linear roadmap timeline a start.
+export function startStampTargets(graph) {
+  return (graph.pis || []).filter((pi) => pi.status === "active" && !pi.start_date).map((pi) => pi.id);
 }
 
 // Project BODY (Linear's rich `content`, effectively unbounded) — the full strategic context the
@@ -427,6 +446,7 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
     const color = declared.color || projectColorFor(iIdx);
     const icon = declared.icon || projectIconFor(iIdx);
     const priority = pi.priority ? priorityToLinear(pi.priority) : null;   // null → leave Linear's (No priority)
+    const startDate = pi.start_date || null;   // explicit, or auto-stamped when the PI went active (sync write-back)
     const targetDate = pi.target_date || null;
     const desired = {   // the full projection; create takes it whole, update diffs field-by-field
       name,
@@ -435,6 +455,7 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
       ...(color ? { color } : {}),
       ...(icon ? { icon } : {}),
       ...(priority != null ? { priority } : {}),
+      ...(startDate ? { startDate } : {}),
       ...(targetDate ? { targetDate } : {}),
     };
     if (!projId) {
@@ -450,6 +471,7 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
       if (color && (cur.color || "") !== color) changed.color = color;
       if (icon && (cur.icon || "") !== icon) changed.icon = icon;
       if (priority != null && (cur.priority || 0) !== priority) changed.priority = priority;
+      if (startDate && (cur.startDate || null) !== startDate) changed.startDate = startDate;
       if (targetDate && (cur.targetDate || null) !== targetDate) changed.targetDate = targetDate;
       if (Object.keys(changed).length) ops.push({ op: "updateProject", id: projId, payload: changed });
     }
