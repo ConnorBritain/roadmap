@@ -20,7 +20,7 @@ import { addItem, setItemFields } from "./lib/backlog-core.mjs";
 import { mutateRoadmap, mutateBacklog, loadBacklog, roadmapPaths } from "./lib/store.mjs";
 import {
   normalizeLinearConfig, linearState, linearStatusLine, buildPushPlan, buildPullProposals, holdsFor,
-  provisionPlan, manualViewChecklist, agentGuidanceText, dispatchGuidance, initiativePlan,
+  provisionPlan, manualViewChecklist, agentGuidanceText, dispatchGuidance, initiativePlan, initiativeStyle,
 } from "./lib/linear-core.mjs";
 
 const ENDPOINT = "https://api.linear.app/graphql";
@@ -249,21 +249,43 @@ export async function runSync(root, opts = {}) {
   return result;
 }
 
-// Ensure each declared initiative exists in Linear and each mapped PI's project is attached.
-// UNVERIFIED API (initiativeCreate / initiativeToProjectCreate) — the caller catches and
-// degrades. Idempotent: skips existing initiatives and already-attached projects.
+// Ensure each declared initiative exists in Linear, carries its meta.initiatives icon/color, and each
+// mapped PI's project is attached. UNVERIFIED API (initiativeCreate/Update/ToProjectCreate) — the caller
+// catches and degrades. Idempotent: skips existing initiatives, re-applies style only on drift (the fetch
+// reads current icon/color back), and skips already-attached projects.
 export async function syncInitiatives(root, io) {
   const graph = loadGraph(roadmapPaths(root).yaml);
   const plan = initiativePlan(graph);
   if (!plan.initiatives.length) return { initiatives: [] };
-  const data = await gql(`query { initiatives(first: 250) { nodes { id name projects { nodes { id } } } } }`, {}, io);
+  const data = await gql(`query { initiatives(first: 250) { nodes { id name icon color projects { nodes { id } } } } }`, {}, io);
   const byName = new Map((data.initiatives.nodes || []).map((i) => [i.name, i]));
-  const created = [];
+  // icon/color are newly-exercised initiative input — degrade like project icons do: a bad name or an
+  // unsupported field drops the initiative to unstyled instead of aborting the whole initiative sync.
+  const isStyleErr = (e) => /icon|color|argument validation/i.test(e.message || "");
+  const created = [], styled = [];
   for (const name of plan.initiatives) {
-    if (byName.has(name)) continue;
-    const d = await gql(`mutation($input: InitiativeCreateInput!) { initiativeCreate(input: $input) { initiative { id name } } }`, { input: { name } }, io);
-    byName.set(name, { ...d.initiativeCreate.initiative, projects: { nodes: [] } });
-    created.push(name);
+    const style = initiativeStyle(graph.meta, name);
+    if (!byName.has(name)) {
+      const full = { name, ...(style.icon ? { icon: style.icon } : {}), ...(style.color ? { color: style.color } : {}) };
+      const mk = (input) => gql(`mutation($input: InitiativeCreateInput!) { initiativeCreate(input: $input) { initiative { id name } } }`, { input }, io);
+      let d;
+      try { d = await mk(full); if (full.icon || full.color) styled.push(name); }
+      catch (e) { if ((full.icon || full.color) && isStyleErr(e)) d = await mk({ name }); else throw e; }
+      byName.set(name, { ...d.initiativeCreate.initiative, projects: { nodes: [] } });
+      created.push(name);
+      continue;
+    }
+    // existing → apply declared style only when it drifts (idempotent via the fetched icon/color)
+    const cur = byName.get(name);
+    const patch = {};
+    if (style.icon && cur.icon !== style.icon) patch.icon = style.icon;
+    if (style.color && (cur.color || "") !== style.color) patch.color = style.color;
+    if (Object.keys(patch).length) {
+      try {
+        await gql(`mutation($id: String!, $input: InitiativeUpdateInput!) { initiativeUpdate(id: $id, input: $input) { initiative { id } } }`, { id: cur.id, input: patch }, io);
+        styled.push(name);
+      } catch (e) { if (!isStyleErr(e)) throw e; }   // best-effort: unsupported update → leave unstyled
+    }
   }
   const attached = [];
   for (const a of plan.assignments) {
@@ -276,7 +298,7 @@ export async function syncInitiatives(root, io) {
     (init.projects || (init.projects = { nodes: [] })).nodes.push({ id: projectId });   // local dedupe within this run
     attached.push(`${a.pi} → ${a.initiative}`);
   }
-  return { initiatives: plan.initiatives, created, attached };
+  return { initiatives: plan.initiatives, created, styled, attached };
 }
 
 // ── dispatch transport (the only-network-file rule: dispatch.mjs owns the capsule, this
@@ -463,7 +485,7 @@ if (isMain) {
       if (r.missingLabels && r.missingLabels.length) {
         console.log(`labels missing in team: ${r.missingLabels.join(", ")} — run 'roadmap linear provision' to create them.`);
       }
-      if (r.initiatives) console.log(`initiatives: ${r.initiatives.initiatives.length} grouped${r.initiatives.created.length ? ` (created ${r.initiatives.created.join(", ")})` : ""}${r.initiatives.attached.length ? ` · attached ${r.initiatives.attached.length} project(s)` : ""}`);
+      if (r.initiatives) console.log(`initiatives: ${r.initiatives.initiatives.length} grouped${r.initiatives.created.length ? ` (created ${r.initiatives.created.join(", ")})` : ""}${r.initiatives.styled && r.initiatives.styled.length ? ` · styled ${r.initiatives.styled.length}` : ""}${r.initiatives.attached.length ? ` · attached ${r.initiatives.attached.length} project(s)` : ""}`);
       if (r.initiativesError) console.log(`initiatives skipped: ${r.initiativesError} — pending live verification of the initiative API.`);
       console.log(r.cursorAdvanced ? `cursor advanced.` : `cursor unchanged${r.dry ? " (dry)" : " (inbox pending)"}.`);
     } else {

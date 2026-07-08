@@ -45,6 +45,17 @@
             "light": { "$ref": "#/$defs/cost" }
           }
         },
+        "initiatives": {
+          "type": "object",
+          "description": "Optional per-initiative Linear styling: maps an initiative NAME (matching a pi.initiative) to its board icon/color, so grouping reads as signal (every Lumen project a WritingAI icon, every Trust project a Shield) instead of the deterministic-but-arbitrary fallback palette. Applied to a declared initiative's projects AND its header; undeclared initiatives keep Linear's default header and use the fallback palette on their projects only.",
+          "additionalProperties": {
+            "type": "object", "additionalProperties": false,
+            "properties": {
+              "icon": { "type": "string", "description": "Linear icon name (e.g. Robot, Shield, Database, WritingAI). Names are a fixed Linear set; an unrecognized one degrades to no icon (color still groups)." },
+              "color": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$", "description": "Hex color like #5e6ad2." }
+            }
+          }
+        },
         "linear": {
           "type": "object", "additionalProperties": false,
           "required": ["team"],

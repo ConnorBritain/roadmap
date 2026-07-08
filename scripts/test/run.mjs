@@ -36,7 +36,7 @@ import {
   issueDescription, machineFooter, buildPushPlan, buildPullProposals, validateLinearConfig, holdsFor,
   desiredLabels, projectDescription, projectName, projectContent, normalizeLinearMarkdown,
   projectColorFor, projectIconFor, MARKER_LABEL, LINEAR_PROJECT_NAME_MAX, LINEAR_PROJECT_DESC_MAX,
-  initiativePlan, HELD_STATUSES,
+  initiativePlan, initiativeStyle, HELD_STATUSES,
   provisionPlan, manualViewChecklist, dispatchGuidance, STANDARD_VIEWS,
 } from "../lib/linear-core.mjs";
 import { addPi } from "../lib/mcp-core.mjs";
@@ -1648,6 +1648,49 @@ test("syncInitiatives creates missing initiatives, skips existing, attaches mapp
   rmSync(root, { recursive: true, force: true });
 });
 
+// WHY: the initiative HEADER is the strongest grouping signal; a declared meta.initiatives style must
+// ride the create for a NEW initiative AND update an existing one on drift — but idempotently, or every
+// sync re-styles. An already-matching style must fire zero updates.
+test("syncInitiatives applies meta.initiatives style: on create, on drift, never when already matching", async () => {
+  const root = mkdtempSync(join(tmpdir(), "roadmap-init-style-"));
+  mkdirSync(join(root, "docs", "roadmap"), { recursive: true });
+  writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"),
+    `meta:\n  schema_version: 1\n  program: T\n  initiatives:\n    Launch readiness: { icon: Checklist }\n    Trust surface: { icon: Shield }\n    Data foundation: { icon: Database }\npis:\n  - id: a\n    title: A\n    initiative: Launch readiness\n    status: active\n    linear: { project: proj-a }\n    sprints: [ { id: s1, title: S, status: next, invoke: a1 } ]\n  - id: b\n    title: B\n    initiative: Trust surface\n    status: next\n    linear: { project: proj-b }\n    sprints: [ { id: s1, title: S, status: next, invoke: b1 } ]\n  - id: c\n    title: C\n    initiative: Data foundation\n    status: next\n    linear: { project: proj-c }\n    sprints: [ { id: s1, title: S, status: next, invoke: c1 } ]\n`, "utf8");
+  // Launch readiness exists with a STALE icon (drift → update); Trust surface already matches (no update);
+  // Data foundation is new (create carries the icon).
+  const fake = fakeLinear({ existingInitiatives: [
+    { id: "init-lr", name: "Launch readiness", icon: "Rocket", color: "", projects: { nodes: [{ id: "proj-a" }] } },
+    { id: "init-ts", name: "Trust surface", icon: "Shield", color: "", projects: { nodes: [{ id: "proj-b" }] } },
+  ]});
+  const r = await syncInitiatives(root, { apiKey: "k", fetchImpl: fake.fetchImpl });
+  eq(fake.calls.find((c) => c.query.includes("initiativeCreate")).variables.input, { name: "Data foundation", icon: "Database" }, "new initiative create carries its declared icon");
+  const updates = fake.calls.filter((c) => c.query.includes("initiativeUpdate"));
+  eq(updates.length, 1, "exactly one update — Launch readiness drift only, Trust surface already matched");
+  eq(updates[0].variables.input, { icon: "Checklist" }, "update sends only the drifted icon");
+  eq(r.styled.sort(), ["Data foundation", "Launch readiness"], "styled = created-with-style + drift-updated (matched one excluded)");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: initiative icon/color is unverified Linear input — a rejection must drop the initiative to
+// unstyled and let the sync finish (create + attach still happen), never abort the whole run.
+test("syncInitiatives degrades when Linear rejects an initiative icon: creates/keeps unstyled, never throws", async () => {
+  const root = mkdtempSync(join(tmpdir(), "roadmap-init-degrade-"));
+  mkdirSync(join(root, "docs", "roadmap"), { recursive: true });
+  writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"),
+    `meta:\n  schema_version: 1\n  program: T\n  initiatives:\n    Launch readiness: { icon: Checklist }\n    Data foundation: { icon: Database }\npis:\n  - id: a\n    title: A\n    initiative: Launch readiness\n    status: active\n    linear: { project: proj-a }\n    sprints: [ { id: s1, title: S, status: next, invoke: a1 } ]\n  - id: b\n    title: B\n    initiative: Data foundation\n    status: next\n    linear: { project: proj-b }\n    sprints: [ { id: s1, title: S, status: next, invoke: b1 } ]\n`, "utf8");
+  // Launch readiness exists with a stale icon (would drift-update); Data foundation is new (create-with-icon).
+  // Linear rejects BOTH icon mutations → both degrade to unstyled, and the new project's attach still runs.
+  const fake = fakeLinear({ failOn: "initiativeStyle", existingInitiatives: [
+    { id: "init-lr", name: "Launch readiness", icon: "Rocket", color: "", projects: { nodes: [{ id: "proj-a" }] } },
+  ]});
+  const r = await syncInitiatives(root, { apiKey: "k", fetchImpl: fake.fetchImpl });   // must NOT throw
+  eq(r.created, ["Data foundation"], "new initiative still created despite the rejected icon");
+  eq(r.styled, [], "both rejected styles → left unstyled (degraded, not aborted)");
+  ok(fake.calls.some((c) => c.query.includes("initiativeCreate") && !c.variables.input.icon), "create retried without the icon");
+  eq(r.attached, ["b → Data foundation"], "attach still runs after the style degrade");
+  rmSync(root, { recursive: true, force: true });
+});
+
 // WHY: 50 flat projects are unnavigable; initiatives are the grouping tier. initiativePlan
 // collects the distinct initiatives PIs declare and the pi→initiative assignments — the pure
 // input the (unverified) IO layer creates + attaches from.
@@ -1735,7 +1778,14 @@ function fakeLinear({ failOn = null, snapshot = {}, projectSnapshot = {}, inboun
     }
     if (query.includes("customViews(first")) return respond({ customViews: { nodes: existingViews.map((name, i) => ({ id: `v${i}`, name })) } });
     if (query.includes("initiatives(first")) return respond({ initiatives: { nodes: existingInitiatives } });
-    if (query.includes("initiativeCreate")) return respond({ initiativeCreate: { initiative: { id: `init-${calls.length}`, name: variables.input.name } } });
+    if (query.includes("initiativeCreate")) {
+      if (failOn === "initiativeStyle" && (variables.input.icon || variables.input.color)) throw new Error("argument validation error: icon");   // Linear rejects the styled input
+      return respond({ initiativeCreate: { initiative: { id: `init-${calls.length}`, name: variables.input.name } } });
+    }
+    if (query.includes("initiativeUpdate")) {
+      if (failOn === "initiativeStyle") throw new Error("argument validation error: icon");
+      return respond({ initiativeUpdate: { initiative: { id: variables.id } } });
+    }
     if (query.includes("initiativeToProjectCreate")) return respond({ initiativeToProjectCreate: { success: true } });
     if (query.includes("projectUpdateCreate")) {
       if (failOn === "projectUpdateCreate") throw new Error("simulated post rejection");
@@ -2170,6 +2220,34 @@ test("buildPushPlan enriches projects with priority, target date, and initiative
   eq(a.payload.color, b.payload.color, "same initiative → same color");
   ok(a.payload.icon && a.payload.color, "grouped project gets both an icon and a color");
   ok(!("priority" in b.payload), "a PI with no priority stays No priority (not faked)");
+});
+
+// WHY: the by-order palette makes an initiative's icon a coincidence, not a meaning — meta.initiatives
+// is what turns grouping into signal (Lumen→WritingAI). A declared style must win over the palette,
+// per-field, or the whole point of the feature (legible grouping) is lost.
+test("meta.initiatives: declared icon/color wins over the fallback palette, per-field", () => {
+  eq(initiativeStyle({ initiatives: { Lumen: { icon: "WritingAI", color: "#bb87fc" } } }, "Lumen"), { icon: "WritingAI", color: "#bb87fc" }, "declared → its icon+color");
+  eq(initiativeStyle({ initiatives: { Lumen: { icon: "WritingAI" } } }, "Lumen"), { icon: "WritingAI", color: null }, "color omitted → null (falls back per-field)");
+  eq(initiativeStyle({}, "Lumen"), { icon: null, color: null }, "no registry → nulls");
+  const g = { meta: { schema_version: 1, program: "T", linear: { team: "ENG" }, initiatives: { Lumen: { icon: "WritingAI" } } }, pis: [
+    { id: "a", title: "A", initiative: "Lumen", status: "active", sprints: [{ id: "s1", title: "S", status: "next", invoke: "a-s1" }] },
+  ]};
+  const plan = buildPushPlan({ graph: g, backlog: null, cfg: normalizeLinearConfig(g.meta), teamStates: L_STATES, existing: { projects: {}, issues: {} }, labels: {} });
+  const a = plan.ops.find((o) => o.op === "createProject" && o.projectRef === "a");
+  eq(a.payload.icon, "WritingAI", "declared initiative icon lands on the project (over palette)");
+  ok(a.payload.color, "color still falls back to the palette (declared only the icon)");
+});
+
+// WHY: a declared style is only useful if a typo (or a half-applied rename like Copilot→Lumen) is caught
+// — a malformed entry must error, and a declared-but-unreferenced initiative must warn, not sit silent.
+test("validate: meta.initiatives shape errors; a declared-but-unreferenced initiative warns", () => {
+  const bad = { meta: { schema_version: 1, program: "T", initiatives: { X: { color: "purple" } } }, pis: [
+    { id: "p", title: "P", initiative: "X", status: "active", sprints: [{ id: "s1", title: "S", status: "next", invoke: "x" }] }] };
+  ok(validateLinearConfig(bad).errors.some((e) => e.includes("color must be a hex")), "non-hex color errors");
+  const stale = { meta: { schema_version: 1, program: "T", initiatives: { Lumen: { icon: "WritingAI" }, Copilot: { icon: "Robot" } } }, pis: [
+    { id: "p", title: "P", initiative: "Lumen", status: "active", sprints: [{ id: "s1", title: "S", status: "next", invoke: "x" }] }] };
+  const w = validateLinearConfig(stale).warnings.filter((m) => m.includes("Copilot"));
+  eq(w.length, 1, "the renamed-away 'Copilot' entry warns (no PI references it)");
 });
 
 // WHY: content carries URLs/file refs Linear auto-links on store; without the normalized compare

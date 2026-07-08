@@ -57,6 +57,22 @@ export function validateLinearConfig(graph) {
       }
     }
   }
+  // Optional meta.initiatives styling registry: a map of initiative-name → { icon, color }. Structural
+  // (runs regardless of Linear config), plus a typo/stale-rename guard — a declared initiative no PI
+  // references is almost always a rename that only got half-applied.
+  const inits = graph.meta && graph.meta.initiatives;
+  if (inits != null) {
+    if (typeof inits !== "object" || Array.isArray(inits)) errors.push("meta.initiatives must be a mapping of initiative-name → { icon, color }");
+    else {
+      const referenced = new Set((graph.pis || []).map((p) => p.initiative).filter(Boolean));
+      for (const [name, v] of Object.entries(inits)) {
+        if (v == null || typeof v !== "object" || Array.isArray(v)) { errors.push(`meta.initiatives["${name}"] must be a mapping with optional icon/color`); continue; }
+        if (v.icon != null && typeof v.icon !== "string") errors.push(`meta.initiatives["${name}"].icon must be a string (a Linear icon name)`);
+        if (v.color != null && !/^#[0-9a-fA-F]{6}$/.test(v.color)) errors.push(`meta.initiatives["${name}"].color must be a hex color like #5e6ad2`);
+        if (!referenced.has(name)) warnings.push(`meta.initiatives["${name}"] is declared but no PI has initiative: ${name} — typo or stale rename?`);
+      }
+    }
+  }
   const cfg = normalizeLinearConfig(graph.meta || {});
   for (const pi of graph.pis || []) {
     if (pi.linear && pi.linear.granularity != null) {
@@ -267,10 +283,21 @@ export function projectContent(pi) {
 // Deterministic project color + icon BY INITIATIVE, so a Linear viewer reads grouping from the
 // visual (every "Copilot" project shares a hue) instead of Linear's random per-project assignment.
 // Indexed by the initiative's first-seen position → distinct for up to PALETTE-length initiatives.
+// This is the FALLBACK for initiatives not explicitly styled via meta.initiatives (see initiativeStyle).
+// Icon names must be from Linear's fixed set; these are drawn from Linear's icon picker (believed-valid),
+// and a bad name degrades to "no icon" regardless — the icon surface is unverified against a live API.
 const PROJECT_COLORS = ["#5e6ad2", "#26b5ce", "#4cb782", "#f2c94c", "#f2994a", "#eb5757", "#bb87fc", "#95a2b3", "#db6e9a", "#82b536"];
-const PROJECT_ICONS = ["Rocket", "Settings", "Beaker", "Bot", "Satellite", "Shield", "Compass", "Package", "Link", "Bolt"];
+const PROJECT_ICONS = ["Rocket", "Gears", "Robot", "Network", "Shield", "Database", "Compass", "Bolt", "Box", "Chart"];
 export const projectColorFor = (idx) => (idx < 0 || idx == null ? null : PROJECT_COLORS[idx % PROJECT_COLORS.length]);
 export const projectIconFor = (idx) => (idx < 0 || idx == null ? null : PROJECT_ICONS[idx % PROJECT_ICONS.length]);
+
+// Explicit per-initiative styling from meta.initiatives — the MEANINGFUL layer: "Lumen" → WritingAI,
+// "Trust surface" → Shield. Wins over the by-order palette so a viewer reads intent, not luck. Returns
+// { icon, color } with nulls when undeclared, so callers can fall back per-field.
+export function initiativeStyle(meta, name) {
+  const e = name && meta && meta.initiatives && meta.initiatives[name];
+  return e && typeof e === "object" ? { icon: e.icon || null, color: e.color || null } : { icon: null, color: null };
+}
 
 // ── initiatives (the grouping tier above projects) ───────────────────────────
 // A PI declares its initiative via `pi.initiative` (a display name). Sync ensures each distinct
@@ -380,8 +407,9 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
     const desc = projectDescription(pi);
     const content = projectContent(pi);
     const iIdx = pi.initiative ? initiativeOrder.indexOf(pi.initiative) : -1;
-    const color = projectColorFor(iIdx);
-    const icon = projectIconFor(iIdx);
+    const declared = initiativeStyle(graph.meta, pi.initiative);   // explicit per-initiative style wins per-field
+    const color = declared.color || projectColorFor(iIdx);
+    const icon = declared.icon || projectIconFor(iIdx);
     const priority = pi.priority ? priorityToLinear(pi.priority) : null;   // null → leave Linear's (No priority)
     const targetDate = pi.target_date || null;
     const desired = {   // the full projection; create takes it whole, update diffs field-by-field
