@@ -1365,6 +1365,18 @@ test("issueDescription: verbosity levers, footer always last, prompt/read-order 
   ok(machineFooter({ type: "backlog", key: "b7" }, null).includes("roadmap grab b7"), "backlog footer says grab");
 });
 
+// WHY: Linear rewrites a bare URL to "[url](<url>)" on store; if the footer pushes the bare
+// form, the description diff never converges and EVERY issue re-pushes on every sync. The
+// canonical form must already BE Linear's normalized form.
+test("machineFooter renders the docs URL in Linear's stored auto-link form (round-trips)", () => {
+  const base = "https://github.com/x/y/blob/main";
+  const f = machineFooter({ type: "slice", key: "auth-sessions" }, base);
+  const url = `${base}/docs/SLICES.md#auth-sessions`;
+  ok(f.endsWith(`[${url}](<${url}>)`), "full URL wrapped as [url](<url>)");
+  // no docsUrl → relative path, which Linear does NOT auto-link → stays bare (no brackets)
+  ok(machineFooter({ type: "slice", key: "auth-sessions" }, null).endsWith("\ndocs/SLICES.md#auth-sessions"), "relative path stays bare");
+});
+
 // ── linear-core: push plan ────────────────────────────────────────────────────
 const pushGraph = (over = {}) => ({
   meta: { schema_version: 1, program: "T", linear: { team: "ENG", ...over } },
