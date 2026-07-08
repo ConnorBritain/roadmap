@@ -153,7 +153,11 @@ export function machineFooter(target, docsUrl) {
   const pickup = target.type === "slice" ? `/slice ${target.key}` : `roadmap grab ${target.key}`;
   const doc = target.type === "slice" ? "SLICES.md" : "BACKLOG.md";
   const link = docsUrl ? `${docsUrl}/docs/${doc}#${target.key}` : `docs/${doc}#${target.key}`;
-  return `roadmap: ${target.type}=${target.key} · pick up: ${pickup}\n${link}`;
+  // Linear normalizes a bare URL to "[url](<url>)" on store; emit that exact form (same reason
+  // as the "---\n\n" rule in issueDescription) so the description round-trips instead of
+  // re-pushing every issue each sync. Relative paths (no docsUrl) aren't auto-linked → stay bare.
+  const rendered = docsUrl ? `[${link}](<${link}>)` : link;
+  return `roadmap: ${target.type}=${target.key} · pick up: ${pickup}\n${rendered}`;
 }
 
 const oneLine = (s) => String(s).replace(/\s*\n\s*/g, " ").trim();
