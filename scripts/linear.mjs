@@ -14,11 +14,12 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadGraph } from "./lib/graph.mjs";
+import { loadGraph, flatten } from "./lib/graph.mjs";
 import { setFields } from "./lib/mcp-core.mjs";
 import { addItem, setItemFields } from "./lib/backlog-core.mjs";
 import { mutateRoadmap, mutateBacklog, loadBacklog, roadmapPaths } from "./lib/store.mjs";
 import { plateDrainKeys, setPlateDoc } from "./lib/plate-core.mjs";
+import { noteBody } from "./lib/journal-core.mjs";
 import {
   normalizeLinearConfig, linearState, linearStatusLine, buildPushPlan, buildPullProposals, holdsFor,
   provisionPlan, manualViewChecklist, agentGuidanceText, dispatchGuidance, initiativePlan, initiativeStyle,
@@ -346,6 +347,61 @@ export async function postDispatchComment(identifier, body, io) {
     { input: { issueId: d.issue.id, body } }, io);
 }
 
+// ── the journal (progress notes on the mapped issue) ──────────────────────────
+// A slice invoke key / backlog id → its mapped Linear issue identifier (null when unmapped). Mirrors
+// runDispatch's resolver; used by note/notes so an agent can journal against the work it's picking up.
+function resolveMapped(root, key) {
+  const graph = loadGraph(roadmapPaths(root).yaml);
+  const node = flatten(graph).nodes.find((n) => n.invoke === key);
+  if (node) return { identifier: node.linear, title: node.title };
+  const it = ((loadBacklog(root) || {}).items || []).find((i) => i.id === key);
+  if (it) return { identifier: it.linear, title: it.title };
+  return null;
+}
+function journalIo(opts) {
+  const env = opts.env || process.env;
+  if (!env.LINEAR_API_KEY) throw new Error("LINEAR_API_KEY isn't set ('roadmap linear auth' explains)");
+  return { apiKey: env.LINEAR_API_KEY, fetchImpl: opts.fetchImpl || fetch };
+}
+function requireMapped(root, key) {
+  const m = resolveMapped(root, key);
+  if (!m) throw new Error(`no slice or backlog item "${key}"`);
+  if (!m.identifier) throw new Error(`"${key}" isn't mapped to a Linear issue yet — run 'roadmap linear sync' first`);
+  return m;
+}
+
+// Post a progress note to a slice/backlog item's mapped issue. Reuses postDispatchComment's transport.
+export async function runNote(root, key, { kind, text }, opts = {}) {
+  const io = journalIo(opts);
+  const m = requireMapped(root, key);
+  await postDispatchComment(m.identifier, noteBody({ kind, text }), io);
+  return { key, identifier: m.identifier };
+}
+
+// Read the mapped issue's comment stream (chronological), so a resuming agent sees where it left off.
+export async function runNotes(root, key, opts = {}) {
+  const io = journalIo(opts);
+  const m = requireMapped(root, key);
+  const d = await gql(`query { issue(id: "${m.identifier}") { comments(first: 50) { nodes { body createdAt user { name } } } } }`, {}, io);
+  const nodes = (d.issue && d.issue.comments && d.issue.comments.nodes) || [];
+  return { identifier: m.identifier, notes: nodes.map((n) => ({ author: n.user ? n.user.name : "?", createdAt: n.createdAt, body: n.body })) };
+}
+
+// PI digest → a Linear project update (the "where this bet stands" rollup). Degradation-guarded: the
+// projectUpdateCreate shape is unverified, so a rejection is a skip, not a failure.
+export async function runProjectUpdate(root, pi, body, opts = {}) {
+  const io = journalIo(opts);
+  const piObj = (loadGraph(roadmapPaths(root).yaml).pis || []).find((p) => p.id === pi);
+  if (!piObj || !piObj.linear || !piObj.linear.project) throw new Error(`PI "${pi}" has no linear.project mapping — push first ('roadmap linear sync')`);
+  try {
+    await gql(`mutation($input: ProjectUpdateCreateInput!) { projectUpdateCreate(input: $input) { projectUpdate { id } } }`,
+      { input: { projectId: piObj.linear.project, body } }, io);
+    return { pi, posted: true };
+  } catch (e) {
+    return { pi, posted: false, error: e.message };
+  }
+}
+
 // ── provision: shape the workspace (idempotent) ───────────────────────────────
 export async function runProvision(root, opts = {}) {
   const env = opts.env || process.env;
@@ -481,22 +537,28 @@ if (isMain) {
       }
       console.log(`\n── Workspace agent guidance (paste into Linear's agent-guidance setting) ──\n${agentGuidanceText()}`);
       console.log(`\n── Repo dispatch guidance (paste into CLAUDE.md, AGENTS.md, or a skills.md your dispatch agents read) ──\n${dispatchGuidance()}`);
+    } else if (sub === "note") {
+      const rest = args.slice(1);
+      const positional = [];
+      for (let i = 0; i < rest.length; i++) { if (rest[i] === "--kind") { i++; continue; } if (!rest[i].startsWith("-")) positional.push(rest[i]); }
+      const [key, text] = positional;
+      if (!key || !text) { console.error(`usage: roadmap linear note <slice-or-id> "<text>" [--kind progress|blocker|done]`); process.exit(2); }
+      const r = await runNote(root, key, { kind: val("--kind"), text }, {});
+      console.log(`✓ note posted to ${r.identifier} (${key}).`);
+    } else if (sub === "notes") {
+      const key = args.slice(1).find((a) => !a.startsWith("-"));
+      if (!key) { console.error("usage: roadmap linear notes <slice-or-id>"); process.exit(2); }
+      const r = await runNotes(root, key, {});
+      console.log(`Notes on ${r.identifier} (${key}) — ${r.notes.length}:`);
+      if (!r.notes.length) console.log("  (none yet)");
+      for (const n of r.notes) console.log(`  • ${n.createdAt ? n.createdAt.slice(0, 16).replace("T", " ") : "?"} ${n.author}: ${n.body.replace(/\s+/g, " ").trim().slice(0, 160)}`);
     } else if (sub === "post-update") {
       const pi = val("--pi");
       const bodyArg = val("--body");
       if (!pi || !bodyArg) { console.error("usage: roadmap linear post-update --pi <id> --body <text|@file>"); process.exit(2); }
-      const graph = loadGraph(roadmapPaths(root).yaml);
-      const piObj = (graph.pis || []).find((p) => p.id === pi);
-      if (!piObj || !piObj.linear || !piObj.linear.project) { console.error(`✗ PI "${pi}" has no linear.project mapping — push first ('roadmap linear sync').`); process.exit(1); }
       const body = bodyArg.startsWith("@") ? readFileSync(bodyArg.slice(1), "utf8") : bodyArg;
-      try {
-        await gql(`mutation($input: ProjectUpdateCreateInput!) { projectUpdateCreate(input: $input) { projectUpdate { id } } }`,
-          { input: { projectId: piObj.linear.project, body } }, { apiKey: process.env.LINEAR_API_KEY });
-        console.log(`✓ posted a project update on ${pi}.`);
-      } catch (e) {
-        // Designed degradation: the mutation shape is unverified; a rejection is a skip, not a failure.
-        console.log(`projectUpdateCreate rejected (${e.message}) — digest not posted; pending live verification.`);
-      }
+      const r = await runProjectUpdate(root, pi, body, {});
+      console.log(r.posted ? `✓ posted a project update on ${pi}.` : `projectUpdateCreate rejected (${r.error}) — digest not posted; pending live verification.`);
     } else if (sub === "sync") {
       const r = await runSync(root, { dry: has("--dry"), pushOnly: has("--push-only"), pullOnly: has("--pull-only") });
       if (r.pushPlan) {
@@ -528,7 +590,7 @@ if (isMain) {
       if (r.unmatchedPlate && r.unmatchedPlate.length) console.log(`plate: ${r.unmatchedPlate.join(", ")} match no slice/backlog item — typo in meta.plate? ('roadmap plate' lists it).`);
       console.log(r.cursorAdvanced ? `cursor advanced.` : `cursor unchanged${r.dry ? " (dry)" : " (inbox pending)"}.`);
     } else {
-      console.error(`roadmap linear: unknown subcommand "${sub}" (status | auth | setup | provision | sync | post-update)`);
+      console.error(`roadmap linear: unknown subcommand "${sub}" (status | auth | setup | provision | sync | note | notes | post-update)`);
       process.exit(2);
     }
   } catch (e) {

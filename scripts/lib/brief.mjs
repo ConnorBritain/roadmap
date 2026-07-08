@@ -95,6 +95,8 @@ ${String(node.prompt).trimEnd()}
 **Slice:** \`${node.invoke}\`  ·  **Branch:** \`${branch}\`
 **What:** ${node.what || node.title}
 
+**Resuming?** \`roadmap linear notes ${node.invoke}\` shows any prior-session notes on this slice's tracker issue — read them first if present (that's where a dead session left off).
+
 ${execSection}${promptSection}## 1. Scope / target
 ${owns.length ? owns.map((f) => `- \`${f}\``).join("\n") : "- (scope to this slice only; see read-order)"}
 
@@ -115,6 +117,7 @@ ${gate}
 
 ## 6. Report back
 LOC delta · file inventory · gate result (pass/fail with output) · commit SHA · PR # · 2–3 line retro.
+Journal as you go: at each checkpoint — a gate cleared, a blocker hit, a logical unit done — post \`roadmap linear note ${node.invoke} "…" [--kind progress|blocker|done]\` (a no-op if this slice isn't tracker-mapped), so if this session dies the next one resumes from the trail, not from zero.
 Leftovers: before opening the PR, file anything that genuinely blocks or follows this slice (discovered bugs, broken contracts, deferred gate items) to the BACKLOG ONLY — the \`backlog_add\` MCP tool if available, else \`roadmap backlog add "<title>" -k followup --slice ${node.invoke}\`, else a **Leftovers** heading in the PR body (the lead's /sync harvests it). NEVER add sprints or PIs from this session — scope decisions belong to the human. Skip speculative ideas entirely (YAGNI applies to captures too).
 `;
 }
