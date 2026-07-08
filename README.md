@@ -185,6 +185,9 @@ pis:
   - id: auth                      # stable; == branch slug
     title: Authentication
     status: active                # active|next|scheduled|complete|blocked|paused|gated|optionality
+    initiative: Launch readiness  # optional; groups this PI's Linear project under a named Initiative
+    priority: { tier: P1 }        # optional; STRATEGIC → Linear project priority (not slice-derived)
+    target_date: 2026-09-01       # optional; YYYY-MM-DD → Linear project target date
     sprints:
       - id: s1
         title: Login flow
@@ -323,6 +326,8 @@ meta:
 ```
 
 **Mapping.** PI ↔ Linear **Project** (grouped under an **Initiative** when `pi.initiative` is set) · slice / backlog item ↔ **Issue** · `priority.tier` P0–P3 ↔ Urgent/High/Medium/Low · `status` ↔ workflow state by TYPE (`active`→In Progress; `next`/held→Todo; `scheduled`/`optionality`→Backlog; `complete`→Done; `status_map` overrides by name). Issue ids are written back into the YAML (`linear: ABC-123`) — the mapping's source of truth survives any machine.
+
+**Project enrichment.** A PI's project carries a rich `content` body (the full theme + exit criteria + deps — the uncapped project doc, so nothing truncates) and a concise `description` subtitle (the exit's first sentence). Optional `pi.priority` (a **strategic** tier, *not* derived from slice heat — an urgent slice shouldn't hijack a PI's ranking) → the project's Linear priority; optional `pi.target_date` (`YYYY-MM-DD`) → its target date. Every project also gets a deterministic **color + icon by initiative** (same initiative → same hue), so the board reads as grouped lanes instead of Linear's random per-project assignment. Icon names are a fixed Linear set pushed best-effort — an unrecognized name degrades to "no icon" (color still groups) rather than failing the sync.
 
 **Push** (`roadmap linear sync`, or automatically inside `/sync` when authed): diff-based and idempotent — an unchanged roadmap sends zero ops. Descriptions follow the `verbosity` lever, never copy read-order/prompt, and always end with a machine footer (`roadmap: slice=<invoke> · pick up: /slice <invoke>` + a SLICES.md link) — so an agent dispatched *from Linear* (via Linear's own agent delegation or hosted MCP) self-orients in one command. Set `branch_convention: "{pi}/{linear}-{sprint}"` and Linear auto-links every fanout PR to its issue.
 
