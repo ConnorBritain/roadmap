@@ -3,10 +3,10 @@
 // what grew, what's stuck, and whether scope is outrunning shipping. No IO — scripts/review.mjs
 // resolves the anchor commit and injects both parsed YAMLs.
 
-import { flatten, isDone } from "./graph.mjs";
+import { flatten, isDone, HELD_STATUSES } from "./graph.mjs";
 import { sprawlWarnings, captureRatio } from "./sync-core.mjs";
 
-const HELD = new Set(["blocked", "gated", "paused"]);
+const HELD = new Set(HELD_STATUSES);
 
 // Sprints keyed by invoke (the stable key); PIs by id. A sprint added AND completed inside
 // the window appears in both addedSprints and completedSlices — that's honest, not a bug.

@@ -4,7 +4,7 @@
 // snapshots. Shapes are tracker-neutral where possible so a later jira.mjs reuses the diff
 // engine — Linear-specific names live in the payloads this module emits and the IO layer.
 
-import { flatten, isDone } from "./graph.mjs";
+import { flatten, isDone, HELD_STATUSES } from "./graph.mjs";
 import { validatePriority } from "./priority.mjs";
 
 // ── config ────────────────────────────────────────────────────────────────────
@@ -117,8 +117,9 @@ const STATUS_TYPE_MAP = {
   active: "started", blocked: "unstarted", paused: "unstarted", gated: "unstarted",
   complete: "completed",
 };
-// Held roadmap statuses — not-done, not-active. Each carries a status:<s> label on its issue.
-export const HELD_STATUSES = ["blocked", "paused", "gated"];
+// Held roadmap statuses (blocked/paused/gated) carry a status:<s> label on their issue.
+// HELD_STATUSES is re-exported from graph.mjs — the single source of truth for the set.
+export { HELD_STATUSES };
 // backlog item status -> state type. promoted items are skipped (the sprint carries them).
 const ITEM_TYPE_MAP = { open: "backlog", in_progress: "started", done: "completed", dropped: "canceled" };
 
