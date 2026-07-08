@@ -96,6 +96,7 @@ export function validateLinearConfig(graph) {
     }
     for (const sp of pi.sprints || []) {
       if (sp.linear != null && typeof sp.linear !== "string") errors.push(`${pi.id}/${sp.id}: linear must be a string issue identifier (e.g. ABC-123)`);
+      if (sp.milestone != null && typeof sp.milestone !== "string") errors.push(`${pi.id}/${sp.id}: milestone must be a string (a Linear project-milestone / stage name)`);
       // The forcing function: a slice bigger than the estimate scale can't map to one estimate point
       // and is too big to fan out as a single agent session — surface it here (where you'd split it)
       // rather than silently clamping it on the board. Only when Linear's configured (cfg present).
@@ -344,6 +345,26 @@ export function initiativePlan(graph) {
     assignments.push({ pi: pi.id, initiative: pi.initiative });
   }
   return { initiatives: [...names], assignments };
+}
+
+// ── milestones (stages WITHIN a project) ─────────────────────────────────────
+// A slice declares its milestone via `sp.milestone` (a stage name). Milestones are PROJECT-scoped, so
+// the same name under two PIs is two milestones. PURE: per-PI distinct names (first-seen order) + the
+// mapped slices to attach. The IO layer (linear.mjs syncMilestones) creates them on the PI's project and
+// sets each issue's projectMilestoneId, behind graceful degradation (projectMilestone API not yet live-verified).
+export function milestonePlan(graph) {
+  const pis = [];
+  for (const pi of graph.pis || []) {
+    const names = [];
+    const slices = [];
+    for (const sp of pi.sprints || []) {
+      if (!sp.milestone) continue;
+      if (!names.includes(sp.milestone)) names.push(sp.milestone);
+      slices.push({ invoke: sp.invoke, linear: sp.linear || null, milestone: sp.milestone });
+    }
+    if (names.length) pis.push({ pi: pi.id, milestones: names, slices });
+  }
+  return { pis };
 }
 
 // ── provisioning (the "Linear as the board" layer) ───────────────────────────
