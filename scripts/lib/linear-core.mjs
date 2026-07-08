@@ -403,11 +403,12 @@ export function agentGuidanceText(cfg) {
 export function dispatchGuidance() {
   return [
     "## Working a roadmap-dispatched Linear issue",
-    "1. Read the issue's roadmap footer (`roadmap: slice=<key>` or `backlog=<key>`) — it is the machine contract.",
+    "1. Read the issue's roadmap footer (`roadmap: slice=<key>` or `backlog=<key>`) — the machine contract — THEN read the issue's existing notes (`roadmap linear notes <key>`): if a prior session left off mid-flight, that comment stream is where it stands.",
     "2. Open docs/SLICES.md#<key> and the slice's entry (including its `prompt`) in docs/roadmap/roadmap.yaml. The YAML is canonical; the Linear issue is a projection.",
     "3. Honor the slice's verification gate before committing.",
-    "4. Open a PR whose DESCRIPTION includes the exact line `roadmap: slice=<key>` (or `backlog=<key>`) — that marker is how /sync reconciles cloud PRs, whose branch names don't follow the repo convention. NEVER merge — the lead merges.",
-    "5. Leftovers go to the BACKLOG ONLY (`roadmap backlog add \"<title>\" -k followup --slice <key>`, or a **Leftovers** heading in the PR body). Never add sprints or PIs; skip speculative ideas (YAGNI applies to captures too).",
+    "4. Journal as you go: at each checkpoint — a gate cleared, a blocker hit, a logical unit done, session end — post a note with `roadmap linear note <key> \"…\" [--kind progress|blocker|done]`, so the work survives a dead session.",
+    "5. Open a PR whose DESCRIPTION includes the exact line `roadmap: slice=<key>` (or `backlog=<key>`) — that marker is how /sync reconciles cloud PRs, whose branch names don't follow the repo convention. NEVER merge — the lead merges.",
+    "6. Leftovers go to the BACKLOG ONLY (`roadmap backlog add \"<title>\" -k followup --slice <key>`, or a **Leftovers** heading in the PR body). Never add sprints or PIs; skip speculative ideas (YAGNI applies to captures too).",
   ].join("\n");
 }
 

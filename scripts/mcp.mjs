@@ -15,7 +15,7 @@ import { TOOLS, READ_HANDLERS, MUTATION_HANDLERS } from "./lib/mcp-core.mjs";
 import { BACKLOG_TOOLS, BACKLOG_READ_HANDLERS, BACKLOG_MUTATION_HANDLERS, performPromotion } from "./lib/backlog-core.mjs";
 import { linearState, linearStatusLine, normalizeLinearConfig } from "./lib/linear-core.mjs";
 import { platedKeys } from "./lib/plate-core.mjs";
-import { runSync } from "./linear.mjs";
+import { runSync, runNote, runNotes, runProjectUpdate } from "./linear.mjs";
 import { runDispatch, runFanCloud } from "./dispatch.mjs";
 
 // Always registered; politely erroring when unconfigured beats config-gated registration
@@ -45,6 +45,16 @@ const CLOUD_TOOLS = [
 const PLATE_TOOLS = [
   { name: "plate_list", description: "The current plate — the curated batch projected to Linear's My Issues (assignee=you): explicit meta.plate entries plus auto-included active/in_progress work. Returns { enabled, explicit, plate, plate_max }. Read-only.",
     inputSchema: { type: "object", properties: {} } },
+];
+
+// The journal — progress notes on the mapped issue, so in-flight work survives a dead session.
+const JOURNAL_TOOLS = [
+  { name: "issue_note", description: "Post a progress note to a slice/backlog item's mapped Linear issue — the resumability trail. Use at checkpoints (a gate cleared, a blocker hit, a logical unit done) so a session that dies mid-flight can be picked up from where it left off. kind: progress|blocker|done.",
+    inputSchema: { type: "object", required: ["key", "text"], properties: { key: { type: "string", description: "slice invoke key or backlog id" }, text: { type: "string" }, kind: { enum: ["progress", "blocker", "done"] } } } },
+  { name: "issue_notes", description: "Read a slice/backlog item's Linear issue comment stream (chronological). Call this FIRST when picking up in-flight work — it's where the last session left off. Read-only.",
+    inputSchema: { type: "object", required: ["key"], properties: { key: { type: "string", description: "slice invoke key or backlog id" } } } },
+  { name: "project_update", description: "Post a PI-level digest to its Linear project update (the 'where this bet stands' rollup) — for milestones, not per-checkpoint. Degradation-guarded: returns { posted:false } if Linear rejects it.",
+    inputSchema: { type: "object", required: ["pi", "body"], properties: { pi: { type: "string" }, body: { type: "string" } } } },
 ];
 
 const PROTOCOL_VERSION = "2024-11-05";
@@ -104,6 +114,9 @@ function callTool(name, args) {
     const cfg = normalizeLinearConfig(graph.meta || {});
     return { enabled: set != null, explicit, plate: set ? [...set] : [], plate_max: cfg ? cfg.plate_max : 7 };
   }
+  if (name === "issue_note") return runNote(repoRoot(), args.key, { kind: args.kind, text: args.text }, {});
+  if (name === "issue_notes") return runNotes(repoRoot(), args.key, {});
+  if (name === "project_update") return runProjectUpdate(repoRoot(), args.pi, args.body, {});
   throw new Error(`unknown tool "${name}"`);
 }
 
@@ -117,7 +130,7 @@ function handle(msg) {
   if (method === "notifications/initialized" || method === "initialized") return; // notification: no reply
   if (method === "ping") return out({ jsonrpc: "2.0", id, result: {} });
   if (method === "tools/list") {
-    return out({ jsonrpc: "2.0", id, result: { tools: [...TOOLS, ...BACKLOG_TOOLS, ...LINEAR_TOOLS, ...CLOUD_TOOLS, ...PLATE_TOOLS] } });
+    return out({ jsonrpc: "2.0", id, result: { tools: [...TOOLS, ...BACKLOG_TOOLS, ...LINEAR_TOOLS, ...CLOUD_TOOLS, ...PLATE_TOOLS, ...JOURNAL_TOOLS] } });
   }
   if (method === "tools/call") {
     const name = params && params.name;

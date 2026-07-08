@@ -41,7 +41,8 @@ import {
 } from "../lib/linear-core.mjs";
 import { platedKeys, plateDrainKeys, setPlateDoc, validatePlate } from "../lib/plate-core.mjs";
 import { addPi, setPlate, addPlate, removePlate } from "../lib/mcp-core.mjs";
-import { runSync, runProvision, syncInitiatives, readCursor } from "../linear.mjs";
+import { runSync, runProvision, syncInitiatives, readCursor, runNote, runNotes, runProjectUpdate } from "../linear.mjs";
+import { noteBody, sliceForBranch, gitSnapshot, autoPostPlan } from "../lib/journal-core.mjs";
 import { runDispatch, runFanCloud, resolveRoutine, fireRoutine, routineEndpoint } from "../dispatch.mjs";
 import { graphDiff, backlogDiff, reviewDigest, pisInFlight } from "../lib/review-core.mjs";
 import { parseDocument } from "yaml";
@@ -1875,7 +1876,7 @@ function linearRepo() {
     `meta:\n  schema_version: 1\n  program: T\n  linear:\n    team: ENG\n    pull: propose\n    watch:\n      - { team: PUB, project: Submit an issue, kind: bug, priority: {tier: P3} }\npis:\n  - id: auth\n    title: Authentication\n    status: active\n    sprints:\n      - { id: s1, title: Login, status: active, invoke: auth-login }\n`, "utf8");
   return root;
 }
-function fakeLinear({ failOn = null, snapshot = {}, projectSnapshot = {}, inboundByTeam = null, teamLabels = [], teamProjects = [], existingViews = [], existingInitiatives = [] } = {}) {
+function fakeLinear({ failOn = null, snapshot = {}, projectSnapshot = {}, issueComments = {}, inboundByTeam = null, teamLabels = [], teamProjects = [], existingViews = [], existingInitiatives = [] } = {}) {
   const calls = [];
   const createdIssues = {};   // identifier → snapshot shape, so later issue(id:) lookups resolve
   const createdProjects = {};   // id → snapshot shape, so a second run's project(id:) drift diff sees what create pushed
@@ -1921,6 +1922,10 @@ function fakeLinear({ failOn = null, snapshot = {}, projectSnapshot = {}, inboun
     if (query.includes("commentCreate")) {
       if (failOn === "commentCreate") throw new Error("simulated comment failure");
       return respond({ commentCreate: { comment: { id: "c-1" } } });
+    }
+    if (query.includes("comments(first:")) {   // the journal read: issue(id){ comments { nodes } }
+      const id = (query.match(/issue\(id: "([^"]+)"\)/) || [])[1];
+      return respond({ issue: { comments: { nodes: issueComments[id] || [] } } });
     }
     if (query.includes("issue(id:")) {   // snapshot aliases + uuid lookups — configurable per test
       const ids = [...query.matchAll(/issue\(id: "([^"]+)"\)/g)].map((m) => m[1]);
@@ -2503,6 +2508,77 @@ test("runProvision creates missing labels once (idempotent) with track labels fr
   const run2 = fakeLinear({ teamLabels: r1.labelsCreated.map((name, i) => ({ id: `l${i}`, name })) });
   const r2 = await runProvision(root, { fetchImpl: run2.fetchImpl, env: { LINEAR_API_KEY: "k" } });
   eq(r2.labelsCreated, [], "second run creates nothing");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// ── the journal (progress notes on the mapped issue) ──────────────────────────
+// WHY: the note body must be human-scannable on pickup (kind heading + marker); the branch→slice resolver
+// and git-snapshot formatter drive the auto-post hook and must be pure + unit-tested (the PR A lesson).
+test("journal-core: noteBody format, sliceForBranch inversion, gitSnapshot skip-when-empty", () => {
+  eq(noteBody({ kind: "blocker", text: "  DB down  " }), "**[blocker]** DB down\n\n_roadmap-note_", "kind heading + trimmed text + marker");
+  ok(noteBody({ text: "x" }).startsWith("**[progress]**"), "default kind is progress");
+  ok(noteBody({ kind: "bogus", text: "x" }).startsWith("**[progress]**"), "unknown kind → progress");
+  const g = { meta: { schema_version: 1, program: "T" }, pis: [
+    { id: "auth", title: "A", status: "active", sprints: [
+      { id: "s1", title: "S", status: "active", invoke: "login" },
+      { id: "s2", title: "T", status: "active", invoke: "tokens" } ]}]};
+  eq(sliceForBranch(g, "auth/s1").invoke, "login", "branch → its slice (inverts branchFor)");
+  eq(sliceForBranch(g, "nope/x"), null, "no match → null (hook no-ops)");
+  eq(gitSnapshot({ branch: "b", commits: [], dirty: "" }), null, "no commits + clean tree → null (skip empty post)");
+  const snap = gitSnapshot({ branch: "auth/s1", commits: ["feat: x", "fix: y"], dirty: " M a.js\n?? b.js" });
+  ok(snap.includes("auth/s1") && snap.includes("feat: x") && snap.includes("a.js"), "snapshot names branch, commits, and dirty paths");
+});
+
+// WHY: the session-end hook's guard must be pure + unit-tested (PR A lesson) — auto-post only for a
+// mapped-slice branch with real work, and skip everything else (the hook just runs git + fetch around it).
+test("autoPostPlan: posts for a mapped-slice branch with work; skips unmapped / non-slice / no-work", () => {
+  const g = { meta: { schema_version: 1, program: "T", linear: { team: "ENG" } }, pis: [
+    { id: "auth", title: "A", status: "active", linear: { project: "proj-1" }, sprints: [
+      { id: "s1", title: "S", status: "active", invoke: "login", linear: "ENG-1" },
+      { id: "s2", title: "T", status: "active", invoke: "tokens" } ]}]};
+  const plan = autoPostPlan(g, { branch: "auth/s1", commits: ["feat: x"], dirty: "" });
+  eq(plan.identifier, "ENG-1", "mapped-slice branch + work → post to its issue");
+  ok(plan.body.includes("[auto]") && plan.body.includes("feat: x"), "body is the auto-kind git snapshot");
+  eq(autoPostPlan(g, { branch: "auth/s2", commits: ["x"], dirty: "" }), null, "branch maps to an UNMAPPED slice → skip");
+  eq(autoPostPlan(g, { branch: "main", commits: ["x"], dirty: "" }), null, "branch isn't a slice → skip");
+  eq(autoPostPlan(g, { branch: "auth/s1", commits: [], dirty: "" }), null, "no commits + clean → skip (no empty post)");
+});
+
+// WHY: `note` posts a formatted comment to the slice's MAPPED issue (reusing the dispatch transport);
+// `notes` reads the stream back for pickup; an unmapped or unknown key must error clearly, not post blind.
+test("runNote / runNotes: post to + read the mapped issue; errors on unmapped/unknown", async () => {
+  const root = mkdtempSync(join(tmpdir(), "roadmap-journal-"));
+  mkdirSync(join(root, "docs", "roadmap"), { recursive: true });
+  writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"),
+    `meta:\n  schema_version: 1\n  program: T\n  linear:\n    team: ENG\npis:\n  - id: p\n    title: P\n    status: active\n    sprints:\n      - { id: s1, title: Login, status: active, invoke: login, linear: ENG-1 }\n      - { id: s2, title: Tokens, status: next, invoke: tokens }\n`, "utf8");
+  const fake = fakeLinear({
+    snapshot: { "ENG-1": { id: "u1", identifier: "ENG-1", title: "Login", description: "", priority: 0, state: { id: "st-s" }, labels: { nodes: [] } } },
+    issueComments: { "ENG-1": [{ body: "**[progress]** did X\n\n_roadmap-note_", createdAt: "2026-07-08T10:00:00Z", user: { name: "Connor" } }] },
+  });
+  const io = { env: { LINEAR_API_KEY: "k" }, fetchImpl: fake.fetchImpl };
+  const r = await runNote(root, "login", { kind: "blocker", text: "stuck on auth" }, io);
+  eq(r.identifier, "ENG-1", "note resolved the slice to its mapped issue");
+  const posted = fake.calls.find((c) => c.query.includes("commentCreate"));
+  ok(posted.variables.input.body.includes("[blocker]") && posted.variables.input.body.includes("stuck on auth"), "posted body carries kind + text");
+  const read = await runNotes(root, "login", io);
+  eq(read.notes.length, 1, "notes returns the issue's comment stream");
+  eq(read.notes[0].author, "Connor", "note author mapped");
+  await runNote(root, "ghost", { text: "x" }, io).then(() => { throw new Error("should throw"); }, (e) => ok(e.message.includes('no slice or backlog item "ghost"'), "unknown key errors"));
+  eq((await runNote(root, "tokens", { text: "x" }, io)).skipped, "unmapped", "known-but-unmapped slice → soft-skip (no throw, no blind post)");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: the PI digest posts a Linear project update, degradation-guarded — a Linear rejection is a skip
+// (posted:false), never a throw that would break a sync/session.
+test("runProjectUpdate: posts a project update; degrades on rejection; errors on unmapped PI", async () => {
+  const root = mkdtempSync(join(tmpdir(), "roadmap-digest-"));
+  mkdirSync(join(root, "docs", "roadmap"), { recursive: true });
+  writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"),
+    `meta:\n  schema_version: 1\n  program: T\n  linear:\n    team: ENG\npis:\n  - id: p\n    title: P\n    status: active\n    linear: { project: proj-1 }\n    sprints: [ { id: s1, title: S, status: active, invoke: x } ]\n`, "utf8");
+  const io = (fail) => { const f = fakeLinear({ failOn: fail || null }); return { env: { LINEAR_API_KEY: "k" }, fetchImpl: f.fetchImpl }; };
+  eq((await runProjectUpdate(root, "p", "shipped the thing", io())).posted, true, "posts a project update");
+  eq((await runProjectUpdate(root, "p", "x", io("projectUpdateCreate"))).posted, false, "Linear rejection → posted:false (degraded, no throw)");
+  await runProjectUpdate(root, "nope", "x", io()).then(() => { throw new Error("should throw"); }, (e) => ok(e.message.includes("no linear.project"), "unmapped PI errors"));
   rmSync(root, { recursive: true, force: true });
 });
 
