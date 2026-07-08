@@ -15,6 +15,7 @@ import { TOOLS, READ_HANDLERS, MUTATION_HANDLERS } from "./lib/mcp-core.mjs";
 import { BACKLOG_TOOLS, BACKLOG_READ_HANDLERS, BACKLOG_MUTATION_HANDLERS, performPromotion } from "./lib/backlog-core.mjs";
 import { linearState, linearStatusLine } from "./lib/linear-core.mjs";
 import { runSync } from "./linear.mjs";
+import { runDispatch, runFanCloud } from "./dispatch.mjs";
 
 // Always registered; politely erroring when unconfigured beats config-gated registration
 // (tools/list would need IO). linear_sync reuses linear.mjs's runSync — one sync implementation.
@@ -23,6 +24,19 @@ const LINEAR_TOOLS = [
     inputSchema: { type: "object", properties: {} } },
   { name: "linear_sync", description: "Run the Linear sync: push the roadmap/backlog projection, fetch the pull inbox. dry=true plans without writing. With meta.linear.pull=propose the inbox is returned as proposals for you to apply via backlog_add/set_status/backlog_set.",
     inputSchema: { type: "object", properties: { dry: { type: "boolean" }, push: { type: "boolean" }, pull: { type: "boolean" } } } },
+];
+
+// Cloud dispatch — lets the SESSION conduct a cloud fanout. Fires on the currently-authed
+// claude.ai account's plan (no local worktree/disk). fan_cloud PREVIEWS by default; confirm=true
+// actually fires (it spends plan usage + opens real PRs). Needs ~/.claude-routines.json configured.
+const CLOUD_TOOLS = [
+  { name: "dispatch", description: "Fire a Claude Code CLOUD session for ONE slice or backlog item via the Routines API — runs on the currently-authed claude.ai account's plan, no local worktree or disk. Returns the session URL (and comments it on the Linear issue when the node is mapped). Requires ~/.claude-routines.json (docs/DEPLOYMENT.md § Cloud dispatch).",
+    inputSchema: { type: "object", required: ["key"], properties: { key: { type: "string", description: "slice invoke key or backlog id" } } } },
+  { name: "fan_cloud", description: "Conduct a cloud FANOUT of a ready wave — the worktree-free, disk-free fanout. Each slice fires a Claude Code cloud session on the authed account's plan and opens a PR. DEFAULT is a dry preview (lists what would fire, spawns nothing); pass confirm=true to actually fire. Returns session URLs when confirmed. The conducting session reconciles the resulting PRs via the roadmap marker (/sync).",
+    inputSchema: { type: "object", properties: {
+      wave: { type: "integer", minimum: 1, description: "which ready wave (default 1)" },
+      cap: { type: "integer", minimum: 1, description: "max slices in the wave (default the review ceiling, 5 — machine limits don't apply to cloud)" },
+      confirm: { type: "boolean", description: "false/absent = preview only; true = actually fire the cloud sessions" } } } },
 ];
 
 const PROTOCOL_VERSION = "2024-11-05";
@@ -66,6 +80,14 @@ function callTool(name, args) {
     // async; the tools/call path awaits. runSync itself throws the setup-guidance errors.
     return runSync(repoRoot(), { dry: !!args.dry, pushOnly: args.pull === false, pullOnly: args.push === false });
   }
+  if (name === "dispatch") {
+    // async; runDispatch fires the routine (or the Linear @-mention) and returns the session/comment.
+    return runDispatch(repoRoot(), args.key, {});
+  }
+  if (name === "fan_cloud") {
+    // preview unless confirm=true; runFanCloud loops runDispatch over the ready wave.
+    return runFanCloud(repoRoot(), args || {});
+  }
   throw new Error(`unknown tool "${name}"`);
 }
 
@@ -79,7 +101,7 @@ function handle(msg) {
   if (method === "notifications/initialized" || method === "initialized") return; // notification: no reply
   if (method === "ping") return out({ jsonrpc: "2.0", id, result: {} });
   if (method === "tools/list") {
-    return out({ jsonrpc: "2.0", id, result: { tools: [...TOOLS, ...BACKLOG_TOOLS, ...LINEAR_TOOLS] } });
+    return out({ jsonrpc: "2.0", id, result: { tools: [...TOOLS, ...BACKLOG_TOOLS, ...LINEAR_TOOLS, ...CLOUD_TOOLS] } });
   }
   if (method === "tools/call") {
     const name = params && params.name;

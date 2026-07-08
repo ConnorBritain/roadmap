@@ -18,7 +18,7 @@ import { resolve, join } from "node:path";
 import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { loadGraph, flatten } from "./lib/graph.mjs";
+import { loadGraph, flatten, computeWaves, coherenceEnabled } from "./lib/graph.mjs";
 import { loadBacklog, roadmapPaths } from "./lib/store.mjs";
 import { runSync, postDispatchComment } from "./linear.mjs";
 import { linearState, linearStatusLine, machineFooter } from "./lib/linear-core.mjs";
@@ -186,6 +186,29 @@ export async function runDispatch(root, key, opts = {}) {
     throw new Error(`dispatch failed — tried: push-map (${pushed ? "pushed" : "already mapped"} → ${found.identifier}), commentCreate on ${found.identifier} (${e.message}). Delegate-field mutation not attempted (unverified).`);
   }
   return { dispatched: key, identifier: found.identifier, agent, pushed };
+}
+
+// Conduct a cloud fanout of one ready wave — the worktree-free, disk-free fanout that lets a
+// local session orchestrate cloud workers. PREVIEW unless opts.confirm (firing spends plan
+// usage + opens PRs). Cloud has no machine ceiling, so the cap defaults to the review ceiling
+// (a human still merges) — mirrors `fan --cloud`. opts.dispatch is forwarded to each
+// runDispatch (transport injection for tests).
+export async function runFanCloud(root, opts = {}) {
+  const graph = loadGraph(roadmapPaths(root).yaml);
+  const cap = opts.cap || 5;
+  const { waves } = computeWaves(flatten(graph), cap, { coherence: coherenceEnabled(graph.meta) });
+  const waveIdx = opts.wave || 1;
+  const slices = (waves[waveIdx - 1] || []).map((n) => n.invoke);
+  if (!opts.confirm) {
+    return { preview: true, wave: waveIdx, cap, slices,
+      note: `${slices.length} slice(s) would each fire a cloud session on the authed claude.ai account and open a PR. Re-call with confirm=true to fire.` };
+  }
+  const results = [];
+  for (const invoke of slices) {
+    try { const r = await runDispatch(root, invoke, opts.dispatch || {}); results.push({ slice: invoke, ok: true, sessionUrl: r.sessionUrl }); }
+    catch (e) { results.push({ slice: invoke, ok: false, error: e.message }); }
+  }
+  return { fired: results.filter((r) => r.ok).length, of: slices.length, wave: waveIdx, results };
 }
 
 // ── CLI ───────────────────────────────────────────────────────────────────────

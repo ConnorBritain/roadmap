@@ -39,7 +39,7 @@ import {
 } from "../lib/linear-core.mjs";
 import { addPi } from "../lib/mcp-core.mjs";
 import { runSync, runProvision, readCursor } from "../linear.mjs";
-import { runDispatch, resolveRoutine, fireRoutine, routineEndpoint } from "../dispatch.mjs";
+import { runDispatch, runFanCloud, resolveRoutine, fireRoutine, routineEndpoint } from "../dispatch.mjs";
 import { graphDiff, backlogDiff, reviewDigest, pisInFlight } from "../lib/review-core.mjs";
 import { parseDocument } from "yaml";
 import { join, resolve } from "node:path";
@@ -2133,6 +2133,48 @@ test("fireRoutine errors are actionable; a mapped dispatch comments the session 
   eq(r.linearComment, "ENG-1", "session link commented on the mapped issue");
   const comment = linearFake.calls.find((c) => c.query.includes("commentCreate"));
   ok(comment.variables.input.body.includes("https://claude.ai/code/s2"), "comment carries the session url");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// ── cloud fanout (the conductor pattern) ─────────────────────────────────────
+// WHY: fan_cloud spends plan usage and opens real PRs — firing on the DEFAULT call instead
+// of previewing would surprise an orchestrating session into an unintended cloud wave.
+test("runFanCloud previews by default (fires nothing), fires only on confirm", async () => {
+  const root = mkdtempSync(join(tmpdir(), "roadmap-fancloud-test-"));
+  mkdirSync(join(root, "docs", "roadmap"), { recursive: true });
+  writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"),
+    `meta:\n  schema_version: 1\n  program: T\npis:\n  - id: a\n    title: A\n    status: active\n    sprints:\n      - { id: s1, title: One, status: next, invoke: one, touches: [f1] }\n      - { id: s2, title: Two, status: next, invoke: two, touches: [f2] }\n`, "utf8");
+  const fires = [];
+  const fakeFetch = async (url) => { fires.push(url); return { ok: true, json: async () => ({ claude_code_session_id: `s${fires.length}`, claude_code_session_url: `https://claude.ai/code/s${fires.length}` }) }; };
+  const dispatch = { fetchImpl: fakeFetch, env: {}, profiles: { p: { account: "a@b.c", routines: { default: { trigger: "trig_x", token: "tok_x" } } } }, accountEmail: "a@b.c", repoSlug: null };
+
+  const preview = await runFanCloud(root, { wave: 1, dispatch });
+  eq(preview.preview, true, "default = preview");
+  eq(preview.slices.sort(), ["one", "two"], "the ready wave is listed");
+  eq(fires.length, 0, "preview fires NOTHING");
+
+  const fired = await runFanCloud(root, { wave: 1, confirm: true, dispatch });
+  eq(fired.fired, 2, "both slices fired");
+  eq(fired.of, 2, "of the two in the wave");
+  ok(fired.results.every((r) => r.ok && r.sessionUrl), "each result carries a session url");
+  eq(fires.filter((u) => u.includes("anthropic.com")).length, 2, "two routine fires, one per slice");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: one slice failing mid-wave (bad routine, transport error) must not sink the rest —
+// the conductor needs a per-slice ledger, not an all-or-nothing throw.
+test("runFanCloud isolates a per-slice failure and reports it", async () => {
+  const root = mkdtempSync(join(tmpdir(), "roadmap-fancloud-fail-"));
+  mkdirSync(join(root, "docs", "roadmap"), { recursive: true });
+  writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"),
+    `meta:\n  schema_version: 1\n  program: T\npis:\n  - id: a\n    title: A\n    status: active\n    sprints:\n      - { id: s1, title: One, status: next, invoke: one, touches: [f1] }\n      - { id: s2, title: Two, status: next, invoke: two, touches: [f2] }\n`, "utf8");
+  let n = 0;
+  const fakeFetch = async () => { n += 1; if (n === 1) return { ok: false, status: 401 }; return { ok: true, json: async () => ({ claude_code_session_id: "s", claude_code_session_url: "https://claude.ai/code/s" }) }; };
+  const dispatch = { fetchImpl: fakeFetch, env: {}, profiles: { p: { account: "a@b.c", routines: { default: { trigger: "t", token: "k" } } } }, accountEmail: "a@b.c", repoSlug: null };
+  const r = await runFanCloud(root, { confirm: true, dispatch });
+  eq(r.fired, 1, "the healthy slice still fired");
+  eq(r.results.filter((x) => !x.ok).length, 1, "the failed slice is recorded, not thrown");
+  ok(r.results.find((x) => !x.ok).error.includes("401"), "failure reason captured");
   rmSync(root, { recursive: true, force: true });
 });
 
