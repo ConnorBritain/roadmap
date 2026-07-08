@@ -18,6 +18,7 @@ import { loadGraph } from "./lib/graph.mjs";
 import { setFields } from "./lib/mcp-core.mjs";
 import { addItem, setItemFields } from "./lib/backlog-core.mjs";
 import { mutateRoadmap, mutateBacklog, loadBacklog, roadmapPaths } from "./lib/store.mjs";
+import { plateDrainKeys, setPlateDoc } from "./lib/plate-core.mjs";
 import {
   normalizeLinearConfig, linearState, linearStatusLine, buildPushPlan, buildPullProposals, holdsFor,
   provisionPlan, manualViewChecklist, agentGuidanceText, dispatchGuidance, initiativePlan, initiativeStyle,
@@ -89,12 +90,13 @@ async function fetchIssueSnapshot(identifiers, io) {
   const issues = {};
   for (let i = 0; i < identifiers.length; i += 50) {
     const chunk = identifiers.slice(i, i + 50);
-    const q = `query { ${chunk.map((id, j) => `i${j}: issue(id: "${id}") { id identifier title description priority estimate state { id } project { id } labels { nodes { id } } }`).join(" ")} }`;
+    const q = `query { ${chunk.map((id, j) => `i${j}: issue(id: "${id}") { id identifier title description priority estimate state { id } project { id } assignee { id } labels { nodes { id } } }`).join(" ")} }`;
     const data = await gql(q, {}, io);
     chunk.forEach((_, j) => {
       const iss = data[`i${j}`];
       if (iss) issues[iss.identifier] = { id: iss.id, title: iss.title, description: iss.description || "", priority: iss.priority, estimate: iss.estimate ?? null, stateId: iss.state.id,
         projectId: iss.project ? iss.project.id : null,
+        assigneeId: iss.assignee ? iss.assignee.id : null,
         labelIds: ((iss.labels && iss.labels.nodes) || []).map((l) => l.id) };
     });
   }
@@ -163,13 +165,31 @@ export async function runSync(root, opts = {}) {
     }
   }
   // Re-read after auto-apply so the push plan reflects the accepted inbound edits.
-  const pushGraph = result.applied ? loadGraph(roadmapPaths(root).yaml) : graph;
+  let pushGraph = result.applied ? loadGraph(roadmapPaths(root).yaml) : graph;
   const pushBacklog = result.applied ? loadBacklog(root) : backlog;
+
+  // ── plate auto-drain (complete-only) ── a finished slice leaves My Issues. Write-back BEFORE the push
+  // so the projection unassigns it. Skipped on dry runs (no writes) and when the feature is off.
+  if (!opts.dry && Array.isArray(pushGraph.meta && pushGraph.meta.plate) && pushGraph.meta.plate.length) {
+    const drop = plateDrainKeys(pushGraph, pushBacklog);
+    if (drop.length) {
+      const keep = pushGraph.meta.plate.filter((k) => !drop.includes(k));
+      mutateRoadmap(root, (doc) => { setPlateDoc(doc, keep); return { plateDrained: drop.length }; });
+      pushGraph = loadGraph(roadmapPaths(root).yaml);
+      result.plateDrained = drop;
+    }
+  }
+  // viewer id — only when the plate feature is on; a fetch failure just disables the assignee projection.
+  let viewerId = null;
+  if (pushGraph.meta && pushGraph.meta.plate != null) {
+    try { viewerId = (await gql(`query { viewer { id } }`, {}, io)).viewer.id; } catch { /* no viewer → no assignee ops */ }
+  }
 
   // ── push ──
   if (!opts.pullOnly) {
-    const { ops, missingLabels } = buildPushPlan({ graph: pushGraph, backlog: pushBacklog, cfg, teamStates: team.states, existing, docsUrl, holds, labels: team.labels });
+    const { ops, missingLabels, unmatchedPlate } = buildPushPlan({ graph: pushGraph, backlog: pushBacklog, cfg, teamStates: team.states, existing, docsUrl, holds, labels: team.labels, viewerId });
     if (missingLabels.length) result.missingLabels = missingLabels;
+    if (unmatchedPlate && unmatchedPlate.length) result.unmatchedPlate = unmatchedPlate;
     if (opts.dry) {
       result.pushPlan = ops;
     } else if (ops.length) {
@@ -487,6 +507,8 @@ if (isMain) {
       }
       if (r.initiatives) console.log(`initiatives: ${r.initiatives.initiatives.length} grouped${r.initiatives.created.length ? ` (created ${r.initiatives.created.join(", ")})` : ""}${r.initiatives.styled && r.initiatives.styled.length ? ` · styled ${r.initiatives.styled.length}` : ""}${r.initiatives.attached.length ? ` · attached ${r.initiatives.attached.length} project(s)` : ""}`);
       if (r.initiativesError) console.log(`initiatives skipped: ${r.initiativesError} — pending live verification of the initiative API.`);
+      if (r.plateDrained && r.plateDrained.length) console.log(`plate: drained ${r.plateDrained.length} completed (${r.plateDrained.join(", ")}) — off My Issues.`);
+      if (r.unmatchedPlate && r.unmatchedPlate.length) console.log(`plate: ${r.unmatchedPlate.join(", ")} match no slice/backlog item — typo in meta.plate? ('roadmap plate' lists it).`);
       console.log(r.cursorAdvanced ? `cursor advanced.` : `cursor unchanged${r.dry ? " (dry)" : " (inbox pending)"}.`);
     } else {
       console.error(`roadmap linear: unknown subcommand "${sub}" (status | auth | setup | provision | sync | post-update)`);

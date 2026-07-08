@@ -29,6 +29,7 @@ COMMANDS
   dispatch <key>  fire a Claude Code CLOUD session for one slice/backlog item (default --to claude-cloud;
                   --to claude|codex|oz posts a Linear @-mention capsule instead)
   backlog         erratic-work tracker: list | add "title" [-k kind --tier PN] | set <id> f=v
+  plate           the My Issues hopper: list | add/rm/set <key>... | clear  (curated batch → assignee=you)
   grab <id>       launch ONE backlog item in its own worktree + session
   promote <id>    promote a backlog item into a roadmap sprint (--pi <pi> [--id sN])
   cleanup         prune fanout worktrees merged into the base branch + clean
