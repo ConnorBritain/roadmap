@@ -109,12 +109,16 @@ export const LINEAR_TO_PRIORITY = { 1: "P0", 2: "P1", 3: "P2", 4: "P3" };
 export const priorityToLinear = (p) => (p && PRIORITY_TO_LINEAR[p.tier]) || 0;
 
 // roadmap status -> Linear workflow-state TYPE (types are stable across teams; names aren't).
-// blocked/paused/gated stay "started" on push — the roadmap remains the richer truth.
+// Only `active` maps to "started" (In Progress) so the board's In-Progress count means real,
+// live work. Held statuses (blocked/paused/gated) are NOT being worked → "unstarted" (Todo),
+// distinguished from plain `next` by a status:<held> label so the "Held on human" view filters.
 const STATUS_TYPE_MAP = {
   scheduled: "backlog", optionality: "backlog", next: "unstarted",
-  active: "started", blocked: "started", paused: "started", gated: "started",
+  active: "started", blocked: "unstarted", paused: "unstarted", gated: "unstarted",
   complete: "completed",
 };
+// Held roadmap statuses — not-done, not-active. Each carries a status:<s> label on its issue.
+export const HELD_STATUSES = ["blocked", "paused", "gated"];
 // backlog item status -> state type. promoted items are skipped (the sprint carries them).
 const ITEM_TYPE_MAP = { open: "backlog", in_progress: "started", done: "completed", dropped: "canceled" };
 
@@ -187,7 +191,11 @@ export const KIND_LABELS = ["bug", "chore", "followup", "urgent", "idea"].map((k
 
 export function desiredLabels(target, node) {
   if (target.type === "backlog") return [MARKER_LABEL, ...(node.kind ? [`kind:${node.kind}`] : [])];
-  return [MARKER_LABEL, ...(node.track ? [`track:${node.track}`] : [])];
+  return [
+    MARKER_LABEL,
+    ...(node.track ? [`track:${node.track}`] : []),
+    ...(HELD_STATUSES.includes(node.status) ? [`status:${node.status}`] : []),   // held distinction on the board
+  ];
 }
 
 // Linear's ProjectCreateInput field limits (live-verified: name 80, description 255). Exceeding
@@ -198,15 +206,42 @@ export const LINEAR_PROJECT_NAME_MAX = 80;
 export const LINEAR_PROJECT_DESC_MAX = 255;
 const clip = (s, max) => (s.length > max ? s.slice(0, max - 3) + "..." : s);
 
+// Project name = the PI's HEADLINE. Roadmap titles are often authored "Headline — subhead
+// explanation"; the subhead is context, not a name, and makes the board tacky. Take the part
+// before the first em/en-dash separator (falling back to the whole title), then clip.
 export function projectName(pi) {
-  return clip(pi.title, LINEAR_PROJECT_NAME_MAX);
+  const headline = String(pi.title).split(/\s+[—–]\s+/)[0].trim() || String(pi.title);
+  return clip(headline, LINEAR_PROJECT_NAME_MAX);
 }
 
-// PI theme + exit criteria — the only strategic context a Linear-side viewer gets.
+// PI theme + exit criteria (+ the full title when the name was a headline split off it) —
+// the strategic context a Linear-side viewer gets that the short project name drops.
 export function projectDescription(pi) {
-  const desc = [pi.theme || null, pi.exit_criteria ? `Exit: ${oneLine(pi.exit_criteria)}` : null]
-    .filter(Boolean).join("\n\n");
+  const full = String(pi.title);
+  const nameIsSplit = projectName(pi) !== clip(full, LINEAR_PROJECT_NAME_MAX);
+  const desc = [
+    nameIsSplit ? full : null,   // preserve the subhead the name dropped
+    pi.theme || null,
+    pi.exit_criteria ? `Exit: ${oneLine(pi.exit_criteria)}` : null,
+  ].filter(Boolean).join("\n\n");
   return clip(desc, LINEAR_PROJECT_DESC_MAX);
+}
+
+// ── initiatives (the grouping tier above projects) ───────────────────────────
+// A PI declares its initiative via `pi.initiative` (a display name). Sync ensures each distinct
+// initiative exists in Linear and each mapped PI's project is attached to it — turning a flat
+// wall of 50 projects into a handful of navigable strategic groups. PURE: returns the distinct
+// initiative names + the pi→initiative assignments. The IO layer (linear.mjs syncInitiatives)
+// creates + attaches, behind graceful degradation (initiativeCreate is not yet live-verified).
+export function initiativePlan(graph) {
+  const names = new Set();
+  const assignments = [];
+  for (const pi of graph.pis || []) {
+    if (!pi.initiative) continue;
+    names.add(pi.initiative);
+    assignments.push({ pi: pi.id, initiative: pi.initiative });
+  }
+  return { initiatives: [...names], assignments };
 }
 
 // ── provisioning (the "Linear as the board" layer) ───────────────────────────
@@ -214,21 +249,33 @@ export function projectDescription(pi) {
 // is UNVERIFIED against a live workspace, so provision attempts each and degrades to the
 // manual checklist below on the first rejection.
 export const STANDARD_VIEWS = [
-  { name: "Ready wave", hint: "issues in unstarted states, label roadmap, sorted by priority — what fanout/dispatch launches next" },
-  { name: "In flight", hint: "issues in started states, label roadmap — the live wave" },
-  { name: "Held on human", hint: "label roadmap in started states that aren't moving — review by hand against SLICES.md's held-on-human list" },
+  { name: "Ready wave", hint: "unstarted (Todo) issues labeled roadmap, EXCLUDING status:* (held), sorted by priority — what fanout/dispatch launches next" },
+  { name: "In flight", hint: "started (In Progress) issues labeled roadmap — genuinely active work only" },
+  { name: "Held on human", hint: "issues labeled status:gated (or status:blocked / status:paused) — held, not being worked" },
   { name: "Backlog triage", hint: "backlog-state issues labeled kind:* — the /prioritize queue" },
-  { name: "Recently shipped", hint: "completed in the last 14 days, label roadmap" },
+  { name: "Recently shipped", hint: "completed in the last 14 days, labeled roadmap" },
 ];
+
+// Per-track lane views are generated from the tracks actually present in the graph.
+function trackViews(graph) {
+  const tracks = [...new Set(flatten(graph).nodes.map((n) => n.track).filter(Boolean))].sort();
+  return tracks.map((t) => ({ name: `Track ${t}`, hint: `issues labeled track:${t} — the ${t} fanout lane` }));
+}
 
 export function provisionPlan({ graph, teamLabels }) {
   const have = new Set(Object.keys(teamLabels || {}));
-  const tracks = new Set(flatten(graph).nodes.map((n) => n.track).filter(Boolean));
-  const wanted = [MARKER_LABEL, ...KIND_LABELS, ...[...tracks].sort().map((t) => `track:${t}`)];
+  const nodes = flatten(graph).nodes;
+  const tracks = new Set(nodes.map((n) => n.track).filter(Boolean));
+  const heldPresent = HELD_STATUSES.filter((s) => nodes.some((n) => n.status === s));
+  const wanted = [
+    MARKER_LABEL, ...KIND_LABELS,
+    ...[...tracks].sort().map((t) => `track:${t}`),
+    ...heldPresent.map((s) => `status:${s}`),
+  ];
   return {
     createLabels: wanted.filter((n) => !have.has(n)),
     existingLabels: wanted.filter((n) => have.has(n)),
-    views: STANDARD_VIEWS,
+    views: [...STANDARD_VIEWS, ...trackViews(graph)],
   };
 }
 
@@ -278,12 +325,17 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
   for (const pi of graph.pis || []) {
     const gran = effectiveGranularity(cfg, pi);
     const projId = pi.linear && pi.linear.project;
+    const piNodes = model.nodes.filter((n) => n.piId === pi.id);
+    // A PI earns a project only if it has PROJECTABLE work — a slice that will get an issue
+    // (not-done, or already mapped) — or granularity is 'pis' (the project is the deliverable).
+    // Without this, a fully-shipped PI creates a bare 0-issue project (46% of pidgeon's board).
+    const hasWork = gran === "pis" || piNodes.some((n) => n.linear || !isDone(n.status));
     const desc = projectDescription(pi);
     const name = projectName(pi);
     if (!projId) {
-      ops.push({ op: "createProject", payload: { name, ...(desc ? { description: desc } : {}) }, projectRef: pi.id,
+      if (hasWork) ops.push({ op: "createProject", payload: { name, ...(desc ? { description: desc } : {}) }, projectRef: pi.id,
         writeBack: { kind: "pi", pi: pi.id, field: "project" } });
-    } else if (existing.projects[projId]) {
+    } else if (existing.projects[projId]) {   // already mapped → keep it in sync (never orphan)
       const cur = existing.projects[projId];
       const changed = {};
       if (cur.name !== name) changed.name = name;
@@ -292,7 +344,7 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
     }
     if (gran === "pis") continue;   // projects only — no issue leaks for this PI
 
-    for (const node of model.nodes.filter((n) => n.piId === pi.id)) {
+    for (const node of piNodes) {
       // create only not-done work (issues for finished history are noise); always update mapped.
       if (!node.linear && isDone(node.status)) continue;
       pushIssueOp(node, { type: "slice", key: node.invoke }, node.status, resolvePushState, pi.id, projId || null);

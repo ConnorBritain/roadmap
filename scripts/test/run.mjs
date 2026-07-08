@@ -35,10 +35,11 @@ import {
   resolvePushState, pullStatusFor, priorityToLinear, LINEAR_TO_PRIORITY,
   issueDescription, machineFooter, buildPushPlan, buildPullProposals, validateLinearConfig, holdsFor,
   desiredLabels, projectDescription, projectName, MARKER_LABEL, LINEAR_PROJECT_NAME_MAX, LINEAR_PROJECT_DESC_MAX,
+  initiativePlan, HELD_STATUSES,
   provisionPlan, manualViewChecklist, dispatchGuidance, STANDARD_VIEWS,
 } from "../lib/linear-core.mjs";
 import { addPi } from "../lib/mcp-core.mjs";
-import { runSync, runProvision, readCursor } from "../linear.mjs";
+import { runSync, runProvision, syncInitiatives, readCursor } from "../linear.mjs";
 import { runDispatch, runFanCloud, resolveRoutine, fireRoutine, routineEndpoint } from "../dispatch.mjs";
 import { graphDiff, backlogDiff, reviewDigest, pisInFlight } from "../lib/review-core.mjs";
 import { parseDocument } from "yaml";
@@ -1332,7 +1333,8 @@ test("linear off by default: no config → null, unauthed state, branchFor untou
 test("resolvePushState maps by type, honors status_map by name, and errors naming available states", () => {
   eq(resolvePushState("scheduled", L_CFG, L_STATES).id, "st-b", "scheduled → backlog type");
   eq(resolvePushState("active", L_CFG, L_STATES).id, "st-s", "active → first started state");
-  eq(resolvePushState("blocked", L_CFG, L_STATES).id, "st-s", "blocked stays started (roadmap is the richer truth)");
+  eq(resolvePushState("blocked", L_CFG, L_STATES).id, "st-u", "held (blocked/paused/gated) → unstarted, NOT In Progress — the board's In-Progress count means real active work only");
+  eq(resolvePushState("gated", L_CFG, L_STATES).id, "st-u", "gated → unstarted too (distinguished by a status:gated label, not the workflow state)");
   eq(resolvePushState("complete", L_CFG, L_STATES).id, "st-c", "complete → completed");
   const mapped = normalizeLinearConfig({ linear: { team: "ENG", status_map: { blocked: "Blocked" } } });
   eq(resolvePushState("blocked", mapped, L_STATES).id, "st-s2", "status_map name override wins");
@@ -1492,7 +1494,7 @@ test("buildPullProposals suppresses round-trip status echoes, keeps genuine huma
       { id: "s3", title: "Active", status: "active", invoke: "act", linear: "ENG-3" },
     ]}]};
   const inbound = [
-    { identifier: "ENG-1", title: "Gated", priority: 0, state: { type: "started" }, team: "ENG", project: null },   // echo of our push (gated→started)
+    { identifier: "ENG-1", title: "Gated", priority: 0, state: { type: "unstarted" }, team: "ENG", project: null },   // echo of our push (gated→unstarted)
     { identifier: "ENG-2", title: "Opt", priority: 0, state: { type: "backlog" }, team: "ENG", project: null },     // echo (optionality→backlog)
     { identifier: "ENG-3", title: "Active", priority: 0, state: { type: "completed" }, team: "ENG", project: null },// GENUINE human move (started→completed)
   ];
@@ -1500,6 +1502,89 @@ test("buildPullProposals suppresses round-trip status echoes, keeps genuine huma
   const statusDeltas = deltas.filter((d) => d.field === "status");
   eq(statusDeltas.length, 1, "only the genuine move proposes a status delta — the two echoes are silent");
   eq([statusDeltas[0].key, statusDeltas[0].to], ["act", "complete"], "the human completion survives");
+});
+
+// WHY: pidgeon's board was tacky ("Headline — subhead...") because the project name was the
+// PI title verbatim. The name must be the headline (pre-dash), with the dropped subhead
+// preserved in the description so no context is lost.
+test("projectName takes the headline before the em-dash; description keeps the full title", () => {
+  const pi = { title: "Oracle data foundation — acquire + consume the cross-standard data moat", theme: "data" };
+  eq(projectName(pi), "Oracle data foundation", "headline only");
+  ok(projectDescription(pi).includes("acquire + consume the cross-standard data moat"), "subhead preserved in description");
+  eq(projectName({ title: "Stripe Projects Provider Integration" }), "Stripe Projects Provider Integration", "no dash → whole title");
+});
+
+// WHY: 23 of pidgeon's 50 PIs were fully shipped → 23 bare 0-issue projects cluttering the
+// board. A PI with no projectable work must not create a project (but an already-mapped one
+// is kept in sync, never orphaned).
+test("buildPushPlan skips a project for a PI whose slices are all done", () => {
+  const g = (mapped) => ({ meta: { schema_version: 1, program: "T", linear: { team: "ENG" } }, pis: [
+    { id: "shipped", title: "All done", status: "complete", ...(mapped ? { linear: { project: "p-old" } } : {}), sprints: [
+      { id: "s1", title: "S", status: "complete", invoke: "done-1", prs: ["#1"] } ] },
+    { id: "live", title: "Has work", status: "active", sprints: [
+      { id: "s1", title: "S", status: "next", invoke: "live-1" } ] },
+  ]});
+  const cfg = normalizeLinearConfig(g().meta);
+  const plan = buildPushPlan({ graph: g(), backlog: null, cfg, teamStates: L_STATES, existing: { projects: {}, issues: {} }, labels: {} });
+  const created = plan.ops.filter((o) => o.op === "createProject").map((o) => o.projectRef);
+  eq(created, ["live"], "only the PI with live work earns a project");
+  // an already-mapped empty PI is still reconciled (never orphaned)
+  const mappedPlan = buildPushPlan({ graph: g(true), backlog: null, cfg, teamStates: L_STATES,
+    existing: { projects: { "p-old": { id: "p-old", name: "stale", description: "" } }, issues: {} }, labels: {} });
+  ok(mappedPlan.ops.some((o) => o.op === "updateProject" && o.id === "p-old"), "mapped empty PI kept in sync");
+});
+
+// WHY: held work (blocked/paused/gated) mapped to In Progress made the board's In-Progress
+// count meaningless. Held slices carry a status:<held> label so the board stays honest AND
+// the "Held on human" view can filter — provision must create those labels + per-track views.
+test("held slices get a status label; provisionPlan creates held labels + track views", () => {
+  eq(desiredLabels({ type: "slice" }, { status: "gated", track: "A" }), [MARKER_LABEL, "track:A", "status:gated"], "gated slice: marker + track + status");
+  eq(desiredLabels({ type: "slice" }, { status: "active" }), [MARKER_LABEL], "active slice: marker only (no status label)");
+  eq(HELD_STATUSES, ["blocked", "paused", "gated"], "the held set");
+  const g = { meta: { schema_version: 1, program: "T", linear: { team: "ENG" } }, pis: [
+    { id: "a", title: "A", status: "active", sprints: [
+      { id: "s1", title: "G", status: "gated", gated_on: "C", invoke: "g", track: "B" },
+      { id: "s2", title: "N", status: "next", invoke: "n" } ] } ]};
+  const plan = provisionPlan({ graph: g, teamLabels: {} });
+  ok(plan.createLabels.includes("status:gated"), "gated present → status:gated label created");
+  ok(!plan.createLabels.includes("status:blocked"), "no blocked slice → no status:blocked label (from-graph, not hardcoded)");
+  ok(plan.createLabels.includes("track:B"), "track:B from the graph");
+  ok(plan.views.some((v) => v.name === "Track B"), "a per-track lane view");
+});
+
+// WHY: the initiative IO must be idempotent — create only the missing initiative, attach only
+// the not-yet-attached project — or a re-sync duplicates initiatives and re-links projects.
+// (The GraphQL shape is unverified live; this tests OUR orchestration against a fake.)
+test("syncInitiatives creates missing initiatives, skips existing, attaches mapped projects once", async () => {
+  const root = mkdtempSync(join(tmpdir(), "roadmap-init-test-"));
+  mkdirSync(join(root, "docs", "roadmap"), { recursive: true });
+  writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"),
+    `meta:\n  schema_version: 1\n  program: T\npis:\n  - id: a\n    title: A\n    initiative: Launch readiness\n    status: active\n    linear: { project: proj-a }\n    sprints:\n      - { id: s1, title: S, status: next, invoke: a1 }\n  - id: b\n    title: B\n    initiative: Data foundation\n    status: next\n    linear: { project: proj-b }\n    sprints:\n      - { id: s1, title: S, status: next, invoke: b1 }\n`, "utf8");
+  // "Launch readiness" already exists with proj-a already attached; "Data foundation" is new.
+  const fake = fakeLinear({ existingInitiatives: [{ id: "init-lr", name: "Launch readiness", projects: { nodes: [{ id: "proj-a" }] } }] });
+  const r = await syncInitiatives(root, { apiKey: "k", fetchImpl: fake.fetchImpl });
+  eq(r.created, ["Data foundation"], "only the missing initiative is created");
+  eq(r.attached, ["b → Data foundation"], "only the unattached project is linked (proj-a already in its initiative)");
+  const creates = fake.calls.filter((c) => c.query.includes("initiativeCreate")).length;
+  const links = fake.calls.filter((c) => c.query.includes("initiativeToProjectCreate")).length;
+  eq([creates, links], [1, 1], "exactly one create + one attach — no duplicate work");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: 50 flat projects are unnavigable; initiatives are the grouping tier. initiativePlan
+// collects the distinct initiatives PIs declare and the pi→initiative assignments — the pure
+// input the (unverified) IO layer creates + attaches from.
+test("initiativePlan groups PIs by their declared initiative", () => {
+  const g = { pis: [
+    { id: "a", title: "A", initiative: "Launch readiness", status: "active", sprints: [] },
+    { id: "b", title: "B", initiative: "Launch readiness", status: "next", sprints: [] },
+    { id: "c", title: "C", initiative: "Data foundation", status: "next", sprints: [] },
+    { id: "d", title: "D", status: "next", sprints: [] },   // no initiative → ungrouped
+  ]};
+  const plan = initiativePlan(g);
+  eq(plan.initiatives, ["Launch readiness", "Data foundation"], "distinct initiatives, first-seen order");
+  eq(plan.assignments.length, 3, "only PIs that declare an initiative are assigned");
+  eq(plan.assignments.filter((a) => a.initiative === "Launch readiness").map((a) => a.pi), ["a", "b"], "both PIs grouped");
 });
 
 // WHY: validate is the only net for hand-edited YAML — bad enums and non-string ids must
@@ -1543,7 +1628,7 @@ function linearRepo() {
     `meta:\n  schema_version: 1\n  program: T\n  linear:\n    team: ENG\n    pull: propose\n    watch:\n      - { team: PUB, project: Submit an issue, kind: bug, priority: {tier: P3} }\npis:\n  - id: auth\n    title: Authentication\n    status: active\n    sprints:\n      - { id: s1, title: Login, status: active, invoke: auth-login }\n`, "utf8");
   return root;
 }
-function fakeLinear({ failOn = null, snapshot = {}, inboundByTeam = null, teamLabels = [], teamProjects = [], existingViews = [] } = {}) {
+function fakeLinear({ failOn = null, snapshot = {}, inboundByTeam = null, teamLabels = [], teamProjects = [], existingViews = [], existingInitiatives = [] } = {}) {
   const calls = [];
   const createdIssues = {};   // identifier → snapshot shape, so later issue(id:) lookups resolve
   let created = 0;
@@ -1570,6 +1655,9 @@ function fakeLinear({ failOn = null, snapshot = {}, inboundByTeam = null, teamLa
       throw new Error("simulated view rejection");
     }
     if (query.includes("customViews(first")) return respond({ customViews: { nodes: existingViews.map((name, i) => ({ id: `v${i}`, name })) } });
+    if (query.includes("initiatives(first")) return respond({ initiatives: { nodes: existingInitiatives } });
+    if (query.includes("initiativeCreate")) return respond({ initiativeCreate: { initiative: { id: `init-${calls.length}`, name: variables.input.name } } });
+    if (query.includes("initiativeToProjectCreate")) return respond({ initiativeToProjectCreate: { success: true } });
     if (query.includes("projectUpdateCreate")) {
       if (failOn === "projectUpdateCreate") throw new Error("simulated post rejection");
       return respond({ projectUpdateCreate: { projectUpdate: { id: "pu-1" } } });
@@ -1972,7 +2060,7 @@ test("runProvision creates missing labels once (idempotent) with track labels fr
   const run1 = fakeLinear();
   const r1 = await runProvision(root, { fetchImpl: run1.fetchImpl, env: { LINEAR_API_KEY: "k" } });
   eq(r1.labelsCreated, ["roadmap", "kind:bug", "kind:chore", "kind:followup", "kind:urgent", "kind:idea", "track:infra"], "marker + kinds + graph track");
-  eq(r1.views, STANDARD_VIEWS.map((v) => v.name), "all views created against the permissive fake");
+  eq(r1.views, [...STANDARD_VIEWS.map((v) => v.name), "Track infra"], "the 5 standard views + a per-track lane view from the graph's track");
   const run2 = fakeLinear({ teamLabels: r1.labelsCreated.map((name, i) => ({ id: `l${i}`, name })) });
   const r2 = await runProvision(root, { fetchImpl: run2.fetchImpl, env: { LINEAR_API_KEY: "k" } });
   eq(r2.labelsCreated, [], "second run creates nothing");

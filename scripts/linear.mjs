@@ -20,7 +20,7 @@ import { addItem, setItemFields } from "./lib/backlog-core.mjs";
 import { mutateRoadmap, mutateBacklog, loadBacklog, roadmapPaths } from "./lib/store.mjs";
 import {
   normalizeLinearConfig, linearState, linearStatusLine, buildPushPlan, buildPullProposals, holdsFor,
-  provisionPlan, manualViewChecklist, agentGuidanceText, dispatchGuidance,
+  provisionPlan, manualViewChecklist, agentGuidanceText, dispatchGuidance, initiativePlan,
 } from "./lib/linear-core.mjs";
 
 const ENDPOINT = "https://api.linear.app/graphql";
@@ -205,12 +205,50 @@ export async function runSync(root, opts = {}) {
     }
   }
 
+  // ── initiatives ── group projects under their declared Linear initiatives. Runs AFTER the
+  // push write-backs so the project ids exist. Best-effort + graceful: a failure (the
+  // initiative API is not yet live-verified) records a note and never fails the sync.
+  if (!opts.dry && !opts.pullOnly) {
+    try { const ir = await syncInitiatives(root, io); if (ir.initiatives.length) result.initiatives = ir; }
+    catch (e) { result.initiativesError = e.message; }
+  }
+
   // ── cursor ── advance only when the inbox is handled (auto) or empty — in propose mode a
   // non-empty inbox stays in the window so unhandled proposals reappear rather than vanish.
   if (!opts.dry && !opts.pushOnly) {
     if (cfg.pull === "off" || cfg.pull === "auto" || inboxEmpty) { writeCursor(root, now); result.cursorAdvanced = true; }
   }
   return result;
+}
+
+// Ensure each declared initiative exists in Linear and each mapped PI's project is attached.
+// UNVERIFIED API (initiativeCreate / initiativeToProjectCreate) — the caller catches and
+// degrades. Idempotent: skips existing initiatives and already-attached projects.
+export async function syncInitiatives(root, io) {
+  const graph = loadGraph(roadmapPaths(root).yaml);
+  const plan = initiativePlan(graph);
+  if (!plan.initiatives.length) return { initiatives: [] };
+  const data = await gql(`query { initiatives(first: 250) { nodes { id name projects { nodes { id } } } } }`, {}, io);
+  const byName = new Map((data.initiatives.nodes || []).map((i) => [i.name, i]));
+  const created = [];
+  for (const name of plan.initiatives) {
+    if (byName.has(name)) continue;
+    const d = await gql(`mutation($input: InitiativeCreateInput!) { initiativeCreate(input: $input) { initiative { id name } } }`, { input: { name } }, io);
+    byName.set(name, { ...d.initiativeCreate.initiative, projects: { nodes: [] } });
+    created.push(name);
+  }
+  const attached = [];
+  for (const a of plan.assignments) {
+    const pi = (graph.pis || []).find((p) => p.id === a.pi);
+    const projectId = pi && pi.linear && pi.linear.project;
+    if (!projectId) continue;   // PI has no project (empty/skipped) — nothing to group
+    const init = byName.get(a.initiative);
+    if (((init.projects && init.projects.nodes) || []).some((p) => p.id === projectId)) continue;   // already attached
+    await gql(`mutation($input: InitiativeToProjectCreateInput!) { initiativeToProjectCreate(input: $input) { success } }`, { input: { initiativeId: init.id, projectId } }, io);
+    (init.projects || (init.projects = { nodes: [] })).nodes.push({ id: projectId });   // local dedupe within this run
+    attached.push(`${a.pi} → ${a.initiative}`);
+  }
+  return { initiatives: plan.initiatives, created, attached };
 }
 
 // ── dispatch transport (the only-network-file rule: dispatch.mjs owns the capsule, this
@@ -397,6 +435,8 @@ if (isMain) {
       if (r.missingLabels && r.missingLabels.length) {
         console.log(`labels missing in team: ${r.missingLabels.join(", ")} — run 'roadmap linear provision' to create them.`);
       }
+      if (r.initiatives) console.log(`initiatives: ${r.initiatives.initiatives.length} grouped${r.initiatives.created.length ? ` (created ${r.initiatives.created.join(", ")})` : ""}${r.initiatives.attached.length ? ` · attached ${r.initiatives.attached.length} project(s)` : ""}`);
+      if (r.initiativesError) console.log(`initiatives skipped: ${r.initiativesError} — pending live verification of the initiative API.`);
       console.log(r.cursorAdvanced ? `cursor advanced.` : `cursor unchanged${r.dry ? " (dry)" : " (inbox pending)"}.`);
     } else {
       console.error(`roadmap linear: unknown subcommand "${sub}" (status | auth | setup | provision | sync | post-update)`);
