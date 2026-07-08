@@ -190,10 +190,23 @@ export function desiredLabels(target, node) {
   return [MARKER_LABEL, ...(node.track ? [`track:${node.track}`] : [])];
 }
 
+// Linear's ProjectCreateInput field limits (live-verified: name 80, description 255). Exceeding
+// either is a hard "Argument Validation Error", so we clip at the projection layer — the SAME
+// clipped value is used on create AND in the drift diff, so a clipped project stays idempotent
+// (the full text lives in the canonical roadmap.yaml regardless). "…" is one char.
+export const LINEAR_PROJECT_NAME_MAX = 80;
+export const LINEAR_PROJECT_DESC_MAX = 255;
+const clip = (s, max) => (s.length > max ? s.slice(0, max - 3) + "..." : s);
+
+export function projectName(pi) {
+  return clip(pi.title, LINEAR_PROJECT_NAME_MAX);
+}
+
 // PI theme + exit criteria — the only strategic context a Linear-side viewer gets.
 export function projectDescription(pi) {
-  return [pi.theme || null, pi.exit_criteria ? `Exit: ${oneLine(pi.exit_criteria)}` : null]
+  const desc = [pi.theme || null, pi.exit_criteria ? `Exit: ${oneLine(pi.exit_criteria)}` : null]
     .filter(Boolean).join("\n\n");
+  return clip(desc, LINEAR_PROJECT_DESC_MAX);
 }
 
 // ── provisioning (the "Linear as the board" layer) ───────────────────────────
@@ -266,13 +279,14 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
     const gran = effectiveGranularity(cfg, pi);
     const projId = pi.linear && pi.linear.project;
     const desc = projectDescription(pi);
+    const name = projectName(pi);
     if (!projId) {
-      ops.push({ op: "createProject", payload: { name: pi.title, ...(desc ? { description: desc } : {}) }, projectRef: pi.id,
+      ops.push({ op: "createProject", payload: { name, ...(desc ? { description: desc } : {}) }, projectRef: pi.id,
         writeBack: { kind: "pi", pi: pi.id, field: "project" } });
     } else if (existing.projects[projId]) {
       const cur = existing.projects[projId];
       const changed = {};
-      if (cur.name !== pi.title) changed.name = pi.title;
+      if (cur.name !== name) changed.name = name;
       if ((cur.description || "") !== desc) changed.description = desc;
       if (Object.keys(changed).length) ops.push({ op: "updateProject", id: projId, payload: changed });
     }
@@ -359,12 +373,22 @@ export function buildPullProposals({ cfg, inbound, graph, backlog }) {
     seen.add(iss.identifier);
     const known = byIdentifier.get(iss.identifier);
     if (known) {
-      const to = pullStatusFor(iss.state && iss.state.type);
-      if (to === "canceled") {
-        if (known.kind === "item") { if (known.status !== "dropped") deltas.push({ kind: known.kind, key: known.key, identifier: iss.identifier, field: "status", from: known.status, to: "dropped" }); }
-        else deltas.push({ kind: known.kind, key: known.key, identifier: iss.identifier, field: "status", from: known.status, to: null, note: `canceled in Linear — no roadmap equivalent; decide by hand` });
-      } else if (to && to !== known.status && !(known.kind === "item" && to === "active" && known.status === "in_progress")) {
-        deltas.push({ kind: known.kind, key: known.key, identifier: iss.identifier, field: "status", from: known.status, to: known.kind === "item" && to === "active" ? "in_progress" : to });
+      // Only propose a status delta when Linear's state TYPE differs from the type WE would
+      // push for the node's CURRENT roadmap status. Several roadmap statuses collapse to one
+      // Linear type on push (gated/blocked/paused → "started"; scheduled/optionality →
+      // "backlog"), so reading that type back is the round-trip echo of our own push — not a
+      // human move — and proposing it would spam false gated→active / optionality→scheduled
+      // deltas on every sync of a large roadmap. A genuine human move lands in a DIFFERENT type.
+      const pushedType = (known.kind === "item" ? ITEM_TYPE_MAP : STATUS_TYPE_MAP)[known.status];
+      const inboundType = iss.state && iss.state.type;
+      if (inboundType && inboundType !== pushedType) {
+        const to = pullStatusFor(inboundType);
+        if (to === "canceled") {
+          if (known.kind === "item") { if (known.status !== "dropped") deltas.push({ kind: known.kind, key: known.key, identifier: iss.identifier, field: "status", from: known.status, to: "dropped" }); }
+          else deltas.push({ kind: known.kind, key: known.key, identifier: iss.identifier, field: "status", from: known.status, to: null, note: `canceled in Linear — no roadmap equivalent; decide by hand` });
+        } else if (to && to !== known.status && !(known.kind === "item" && to === "active" && known.status === "in_progress")) {
+          deltas.push({ kind: known.kind, key: known.key, identifier: iss.identifier, field: "status", from: known.status, to: known.kind === "item" && to === "active" ? "in_progress" : to });
+        }
       }
       const tier = LINEAR_TO_PRIORITY[iss.priority] || null;
       const curTier = (known.priority && known.priority.tier) || null;

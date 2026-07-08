@@ -34,7 +34,7 @@ import {
   normalizeLinearConfig, effectiveGranularity, linearState, checkPiOverrideAck,
   resolvePushState, pullStatusFor, priorityToLinear, LINEAR_TO_PRIORITY,
   issueDescription, machineFooter, buildPushPlan, buildPullProposals, validateLinearConfig, holdsFor,
-  desiredLabels, projectDescription, MARKER_LABEL,
+  desiredLabels, projectDescription, projectName, MARKER_LABEL, LINEAR_PROJECT_NAME_MAX, LINEAR_PROJECT_DESC_MAX,
   provisionPlan, manualViewChecklist, dispatchGuidance, STANDARD_VIEWS,
 } from "../lib/linear-core.mjs";
 import { addPi } from "../lib/mcp-core.mjs";
@@ -1454,6 +1454,52 @@ test("buildPullProposals dedupes known identifiers, captures watch issues with s
   eq([statusDelta.from, statusDelta.to], ["active", "complete"], "mapped-issue completion is a PROPOSAL, not a mutation");
   const priDelta = deltas.find((d) => d.key === "auth-login" && d.field === "priority.tier");
   eq([priDelta.from, priDelta.to], [null, "P1"], "priority edit proposed");
+});
+
+// WHY: live-caught — Linear rejects a project name > 80 or description > 255 with a hard
+// "Argument Validation Error" that aborts the whole push. Clip at the projection layer, and
+// clip on BOTH create and the drift diff so a clipped project stays idempotent (no re-churn).
+test("project name/description are clipped to Linear's limits and stay idempotent", () => {
+  const longTitle = "Account portal UX: onboarding, empty states, settings interactivity, billing depth, team management";
+  const longExit = "x".repeat(400);
+  const g = { meta: { schema_version: 1, program: "T", linear: { team: "ENG" } },
+    pis: [{ id: "portal", title: longTitle, theme: "ux", exit_criteria: longExit, status: "active", sprints: [
+      { id: "s1", title: "S", status: "next", invoke: "portal-s1" } ] }] };
+  const cfg = normalizeLinearConfig(g.meta);
+  const name = projectName(g.pis[0]), desc = projectDescription(g.pis[0]);
+  ok(name.length <= LINEAR_PROJECT_NAME_MAX && name.endsWith("..."), "name clipped to <=80 with ellipsis");
+  ok(desc.length <= LINEAR_PROJECT_DESC_MAX && desc.endsWith("..."), "description clipped to <=255 with ellipsis");
+  const create = buildPushPlan({ graph: g, backlog: null, cfg, teamStates: L_STATES, existing: { projects: {}, issues: {} }, labels: {} });
+  const cp = create.ops.find((o) => o.op === "createProject");
+  eq(cp.payload.name.length <= 80 && cp.payload.description.length <= 255, true, "the create op carries clipped fields");
+  // idempotency: a snapshot storing the clipped values must produce ZERO project ops
+  g.pis[0].linear = { project: "proj-1" };
+  const noop = buildPushPlan({ graph: g, backlog: null, cfg, teamStates: L_STATES,
+    existing: { projects: { "proj-1": { id: "proj-1", name, description: desc } }, issues: {} }, labels: {} });
+  ok(!noop.ops.some((o) => o.op === "updateProject"), "clipped values already in Linear → no re-update");
+});
+
+// WHY: live-caught — several roadmap statuses (gated/blocked/paused → started; scheduled/
+// optionality → backlog) collapse to one Linear type on push, so reading that type back
+// proposed a false status change on every sync. A big roadmap's first sync spammed dozens
+// of gated→active / optionality→scheduled proposals. Only a DIFFERENT type is a human move.
+test("buildPullProposals suppresses round-trip status echoes, keeps genuine human moves", () => {
+  const cfg = normalizeLinearConfig({ linear: { team: "ENG", pull: "propose" } });
+  const graph = { meta: { schema_version: 1, program: "T", linear: { team: "ENG" } },
+    pis: [{ id: "a", title: "A", status: "active", sprints: [
+      { id: "s1", title: "Gated", status: "gated", gated_on: "C", invoke: "g", linear: "ENG-1" },
+      { id: "s2", title: "Opt", status: "optionality", invoke: "o", linear: "ENG-2" },
+      { id: "s3", title: "Active", status: "active", invoke: "act", linear: "ENG-3" },
+    ]}]};
+  const inbound = [
+    { identifier: "ENG-1", title: "Gated", priority: 0, state: { type: "started" }, team: "ENG", project: null },   // echo of our push (gated→started)
+    { identifier: "ENG-2", title: "Opt", priority: 0, state: { type: "backlog" }, team: "ENG", project: null },     // echo (optionality→backlog)
+    { identifier: "ENG-3", title: "Active", priority: 0, state: { type: "completed" }, team: "ENG", project: null },// GENUINE human move (started→completed)
+  ];
+  const { deltas } = buildPullProposals({ cfg, inbound, graph, backlog: null });
+  const statusDeltas = deltas.filter((d) => d.field === "status");
+  eq(statusDeltas.length, 1, "only the genuine move proposes a status delta — the two echoes are silent");
+  eq([statusDeltas[0].key, statusDeltas[0].to], ["act", "complete"], "the human completion survives");
 });
 
 // WHY: validate is the only net for hand-edited YAML — bad enums and non-string ids must
