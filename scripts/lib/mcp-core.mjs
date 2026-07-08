@@ -20,7 +20,7 @@ const DONE = new Set(STATUSES.filter((s) => STATUS[s].done));
 const SETTABLE = new Set([
   "title", "what", "status", "status_label", "est_sessions", "weight",
   "deps", "touches", "owns", "gate", "gated_on", "read_order", "resume_action",
-  "prs", "completed_on", "optional", "execution", "track", "priority", "prompt", "kickoff_brief", "linear",
+  "prs", "completed_on", "optional", "execution", "track", "priority", "prompt", "kickoff_brief", "linear", "milestone",
 ]);
 
 // ── tool registry ─────────────────────────────────────────────────────────────
@@ -48,7 +48,7 @@ export const TOOLS = [
       owns: { type: "array", items: { type: "string" } }, gate: { type: "string" },
       weight: { enum: ["heavy", "medium", "light"] }, gated_on: { type: "string" },
       read_order: { type: "array", items: { type: "string" } }, resume_action: { type: "string" },
-      prompt: { type: "string" },
+      prompt: { type: "string" }, milestone: { type: "string" },
       priority: { type: "object", properties: { tier: { enum: ["P0", "P1", "P2", "P3"] }, weight: { type: "number", minimum: 0, maximum: 100 }, reason: { type: "string" } } } } } },
   { name: "set_status", description: "Set a slice's status (by invoke), optionally recording PRs + completed_on. Re-renders.",
     inputSchema: { type: "object", required: ["invoke", "status"], properties: {
@@ -146,7 +146,7 @@ export function addSprint(doc, args) {
   const pi = piIndexById(doc, args.pi);
   if (pi < 0) throw new Error(`no PI "${args.pi}"`);
   const node = { id: args.id, title: args.title, status: args.status || "scheduled", invoke: args.invoke };
-  for (const k of ["what", "est_sessions", "gate", "weight", "gated_on", "resume_action", "prompt", "priority", "linear"]) if (args[k] != null) node[k] = args[k];
+  for (const k of ["what", "est_sessions", "gate", "weight", "gated_on", "resume_action", "prompt", "priority", "linear", "milestone"]) if (args[k] != null) node[k] = args[k];
   for (const k of ["deps", "touches", "owns", "read_order"]) if (Array.isArray(args[k])) node[k] = args[k];
   const piMap = pisSeq(doc).items[pi];
   if (!piMap.has("sprints") || !piMap.get("sprints")) doc.setIn(["pis", pi, "sprints"], doc.createNode([node]));

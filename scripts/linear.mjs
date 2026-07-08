@@ -23,7 +23,7 @@ import { noteBody } from "./lib/journal-core.mjs";
 import {
   normalizeLinearConfig, linearState, linearStatusLine, buildPushPlan, buildPullProposals, holdsFor,
   provisionPlan, manualViewChecklist, agentGuidanceText, dispatchGuidance, initiativePlan, initiativeStyle,
-  startStampTargets,
+  startStampTargets, milestonePlan,
 } from "./lib/linear-core.mjs";
 
 const ENDPOINT = "https://api.linear.app/graphql";
@@ -276,6 +276,9 @@ export async function runSync(root, opts = {}) {
   if (!opts.dry && !opts.pullOnly) {
     try { const ir = await syncInitiatives(root, io); if (ir.initiatives.length) result.initiatives = ir; }
     catch (e) { result.initiativesError = e.message; }
+    // milestones run AFTER initiatives (both post-push): the project ids exist and issues are mapped.
+    try { const mr = await syncMilestones(root, io); if (mr.milestones.length) result.milestones = mr; }
+    catch (e) { result.milestonesError = e.message; }
   }
 
   // ── cursor ── advance only when the inbox is handled (auto) or empty — in propose mode a
@@ -336,6 +339,58 @@ export async function syncInitiatives(root, io) {
     attached.push(`${a.pi} → ${a.initiative}`);
   }
   return { initiatives: plan.initiatives, created, styled, attached };
+}
+
+// Mapped issues' current milestone, batched (identifier → { id: uuid, milestoneId }) — like fetchIssueSnapshot.
+async function fetchIssueMilestones(identifiers, io) {
+  const out = {};
+  for (let i = 0; i < identifiers.length; i += 50) {
+    const chunk = identifiers.slice(i, i + 50);
+    const q = `query { ${chunk.map((id, j) => `i${j}: issue(id: "${id}") { id identifier projectMilestone { id } }`).join(" ")} }`;
+    const data = await gql(q, {}, io);
+    chunk.forEach((_, j) => { const iss = data[`i${j}`]; if (iss) out[iss.identifier] = { id: iss.id, milestoneId: iss.projectMilestone ? iss.projectMilestone.id : null }; });
+  }
+  return out;
+}
+
+// Ensure each PI's declared milestones (sp.milestone) exist on its Linear project and each mapped issue is
+// attached to its milestone. Mirrors syncInitiatives one level down (issues within a project). UNVERIFIED
+// API (projectMilestoneCreate) — the caller catches and degrades. Idempotent: skips existing milestones by
+// name, and re-attaches an issue only when its projectMilestoneId drifts from the target.
+export async function syncMilestones(root, io) {
+  const graph = loadGraph(roadmapPaths(root).yaml);
+  const plan = milestonePlan(graph);
+  if (!plan.pis.length) return { milestones: [] };
+  const milestones = [], created = [], attached = [];
+  for (const p of plan.pis) {
+    const pi = (graph.pis || []).find((x) => x.id === p.pi);
+    const projectId = pi && pi.linear && pi.linear.project;
+    if (!projectId) continue;   // PI has no project — nothing to attach milestones to
+    const data = await gql(`query { project(id: "${projectId}") { projectMilestones { nodes { id name } } } }`, {}, io);
+    const byName = new Map(((data.project && data.project.projectMilestones && data.project.projectMilestones.nodes) || []).map((m) => [m.name, m.id]));
+    for (const name of p.milestones) {
+      milestones.push(`${p.pi}/${name}`);
+      if (byName.has(name)) continue;
+      // sortOrder = current milestone count (append after existing), NOT the plan-local index — else a
+      // milestone added between two existing ones on a later run would collide with an existing sortOrder.
+      const d = await gql(`mutation($input: ProjectMilestoneCreateInput!) { projectMilestoneCreate(input: $input) { projectMilestone { id } } }`,
+        { input: { projectId, name, sortOrder: byName.size } }, io);
+      byName.set(name, d.projectMilestoneCreate.projectMilestone.id);
+      created.push(`${p.pi}/${name}`);
+    }
+    const mapped = p.slices.filter((s) => s.linear);
+    if (!mapped.length) continue;
+    const cur = await fetchIssueMilestones(mapped.map((s) => s.linear), io);
+    for (const s of mapped) {
+      const targetId = byName.get(s.milestone);
+      const c = cur[s.linear];
+      if (!c || !targetId || c.milestoneId === targetId) continue;   // unmapped-in-snapshot or already attached
+      await gql(`mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { issue { id } } }`,
+        { id: c.id, input: { projectMilestoneId: targetId } }, io);
+      attached.push(`${s.invoke} → ${s.milestone}`);
+    }
+  }
+  return { milestones, created, attached };
 }
 
 // ── dispatch transport (the only-network-file rule: dispatch.mjs owns the capsule, this
@@ -589,6 +644,8 @@ if (isMain) {
       }
       if (r.initiatives) console.log(`initiatives: ${r.initiatives.initiatives.length} grouped${r.initiatives.created.length ? ` (created ${r.initiatives.created.join(", ")})` : ""}${r.initiatives.styled && r.initiatives.styled.length ? ` · styled ${r.initiatives.styled.length}` : ""}${r.initiatives.attached.length ? ` · attached ${r.initiatives.attached.length} project(s)` : ""}`);
       if (r.initiativesError) console.log(`initiatives skipped: ${r.initiativesError} — pending live verification of the initiative API.`);
+      if (r.milestones) console.log(`milestones: ${r.milestones.milestones.length} across projects${r.milestones.created.length ? ` (created ${r.milestones.created.length})` : ""}${r.milestones.attached.length ? ` · attached ${r.milestones.attached.length} issue(s)` : ""}`);
+      if (r.milestonesError) console.log(`milestones skipped: ${r.milestonesError} — pending live verification of the projectMilestone API.`);
       if (r.startStamped && r.startStamped.length) console.log(`start dates: stamped ${r.startStamped.length} active PI(s) (${r.startStamped.join(", ")}) — the Linear timeline now has a start.`);
       if (r.plateDrained && r.plateDrained.length) console.log(`plate: drained ${r.plateDrained.length} completed (${r.plateDrained.join(", ")}) — off My Issues.`);
       if (r.unmatchedPlate && r.unmatchedPlate.length) console.log(`plate: ${r.unmatchedPlate.join(", ")} match no slice/backlog item — typo in meta.plate? ('roadmap plate' lists it).`);

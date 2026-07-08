@@ -36,12 +36,12 @@ import {
   issueDescription, machineFooter, buildPushPlan, buildPullProposals, validateLinearConfig, holdsFor,
   desiredLabels, projectDescription, projectSubtitleRaw, projectName, projectContent, normalizeLinearMarkdown,
   projectColorFor, projectIconFor, MARKER_LABEL, PLATE_LABEL, LINEAR_PROJECT_NAME_MAX, LINEAR_PROJECT_DESC_MAX,
-  initiativePlan, initiativeStyle, startStampTargets, HELD_STATUSES,
+  initiativePlan, initiativeStyle, startStampTargets, milestonePlan, HELD_STATUSES,
   provisionPlan, manualViewChecklist, dispatchGuidance, STANDARD_VIEWS,
 } from "../lib/linear-core.mjs";
 import { platedKeys, plateDrainKeys, setPlateDoc, validatePlate } from "../lib/plate-core.mjs";
 import { addPi, setPlate, addPlate, removePlate } from "../lib/mcp-core.mjs";
-import { runSync, runProvision, syncInitiatives, readCursor, runNote, runNotes, runProjectUpdate } from "../linear.mjs";
+import { runSync, runProvision, syncInitiatives, syncMilestones, readCursor, runNote, runNotes, runProjectUpdate } from "../linear.mjs";
 import { noteBody, sliceForBranch, gitSnapshot, autoPostPlan } from "../lib/journal-core.mjs";
 import { runDispatch, runFanCloud, resolveRoutine, fireRoutine, routineEndpoint } from "../dispatch.mjs";
 import { graphDiff, backlogDiff, reviewDigest, pisInFlight } from "../lib/review-core.mjs";
@@ -1834,6 +1834,83 @@ test("initiativePlan groups PIs by their declared initiative", () => {
   eq(plan.assignments.filter((a) => a.initiative === "Launch readiness").map((a) => a.pi), ["a", "b"], "both PIs grouped");
 });
 
+// ── milestones (stages within a project) ──────────────────────────────────────
+// WHY: milestones are PROJECT-scoped stages (per-slice sp.milestone); the pure planner must collect distinct
+// names PER PI (same name under two PIs = two milestones) with each mapped slice, or syncMilestones mis-groups.
+test("milestonePlan: per-PI distinct milestone names + mapped-slice assignments", () => {
+  const g = { meta: { schema_version: 1, program: "T" }, pis: [
+    { id: "a", title: "A", status: "active", sprints: [
+      { id: "s1", title: "S", status: "active", invoke: "a1", milestone: "harness", linear: "ENG-1" },
+      { id: "s2", title: "T", status: "next", invoke: "a2", milestone: "harness" },
+      { id: "s3", title: "U", status: "next", invoke: "a3", milestone: "ship", linear: "ENG-3" },
+      { id: "s4", title: "V", status: "next", invoke: "a4" } ]},                       // no milestone → excluded
+    { id: "b", title: "B", status: "active", sprints: [
+      { id: "s1", title: "W", status: "active", invoke: "b1", milestone: "harness" } ]} ]};   // same NAME, different PI
+  const plan = milestonePlan(g);
+  eq(plan.pis.length, 2, "both PIs with milestone-tagged slices");
+  const a = plan.pis.find((p) => p.pi === "a");
+  eq(a.milestones, ["harness", "ship"], "distinct names, first-seen order (untagged slice excluded)");
+  eq(a.slices.length, 3, "3 milestone-tagged slices under a");
+  eq(a.slices[0], { invoke: "a1", linear: "ENG-1", milestone: "harness" }, "assignment carries slice + linear + milestone");
+  eq(plan.pis.find((p) => p.pi === "b").milestones, ["harness"], "same name under b is its own (project-scoped)");
+});
+
+// WHY: a non-string milestone would break the project-scoped create; validate must catch it.
+test("validate: sp.milestone must be a string", () => {
+  const g = { meta: { schema_version: 1, program: "T", linear: { team: "ENG" } }, pis: [
+    { id: "p", title: "P", status: "active", sprints: [{ id: "s1", title: "S", status: "active", invoke: "x", milestone: 3 }] }] };
+  ok(validateGraph(g).errors.some((e) => e.includes("milestone must be a string")), "numeric milestone errors");
+});
+
+// WHY: syncMilestones must create each PI's declared milestones on its project + attach issues, and be
+// idempotent (skip existing by name, re-attach only on drift) — else every sync re-creates/re-attaches.
+test("syncMilestones: creates missing, skips existing, attaches on drift, idempotent, degrades on rejection", async () => {
+  const root = mkdtempSync(join(tmpdir(), "roadmap-milestones-"));
+  mkdirSync(join(root, "docs", "roadmap"), { recursive: true });
+  writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"),
+    `meta:\n  schema_version: 1\n  program: T\n  linear:\n    team: ENG\npis:\n  - id: p\n    title: P\n    status: active\n    linear: { project: proj-1 }\n    sprints:\n      - { id: s1, title: A, status: active, invoke: a1, milestone: harness, linear: ENG-1 }\n      - { id: s2, title: B, status: active, invoke: a2, milestone: ship, linear: ENG-2 }\n`, "utf8");
+  // "harness" already exists (pm-h) with ENG-1 already on it (no re-attach); "ship" is new; ENG-2 unattached.
+  const fake = fakeLinear({
+    projectMilestones: { "proj-1": [{ id: "pm-h", name: "harness" }] },
+    snapshot: {
+      "ENG-1": { id: "u1", identifier: "ENG-1", projectMilestone: { id: "pm-h" } },
+      "ENG-2": { id: "u2", identifier: "ENG-2", projectMilestone: null },
+    },
+  });
+  const r = await syncMilestones(root, { apiKey: "k", fetchImpl: fake.fetchImpl });
+  eq(r.created, ["p/ship"], "only the missing milestone is created (harness existed)");
+  eq(r.attached, ["a2 → ship"], "only the drifted issue is attached (ENG-1 already on harness)");
+  eq([fake.calls.filter((c) => c.query.includes("projectMilestoneCreate")).length, fake.calls.filter((c) => c.query.includes("issueUpdate")).length], [1, 1], "one create + one attach — no redundant work");
+  rmSync(root, { recursive: true, force: true });
+  // degrade: a rejected create propagates so runSync's call-site try/catch records milestonesError.
+  const root2 = mkdtempSync(join(tmpdir(), "roadmap-ms-degrade-"));
+  mkdirSync(join(root2, "docs", "roadmap"), { recursive: true });
+  writeFileSync(join(root2, "docs", "roadmap", "roadmap.yaml"),
+    `meta:\n  schema_version: 1\n  program: T\n  linear:\n    team: ENG\npis:\n  - id: p\n    title: P\n    status: active\n    linear: { project: proj-1 }\n    sprints: [ { id: s1, title: A, status: active, invoke: a1, milestone: new, linear: ENG-1 } ]\n`, "utf8");
+  const fail = fakeLinear({ failOn: "projectMilestoneCreate", snapshot: { "ENG-1": { id: "u1", identifier: "ENG-1", projectMilestone: null } } });
+  await syncMilestones(root2, { apiKey: "k", fetchImpl: fail.fetchImpl }).then(() => { throw new Error("should throw"); }, (e) => ok(/milestone/i.test(e.message), "rejected create propagates (caller degrades)"));
+  rmSync(root2, { recursive: true, force: true });
+});
+
+// WHY: a milestone created on a LATER run must take the next slot after existing ones (byName.size), not
+// its plan-local index — else inserting a stage between two existing milestones collides sortOrders and
+// corrupts the stage ordering the feature exists to produce.
+test("syncMilestones sortOrder appends after existing milestones (no index collision)", async () => {
+  const root = mkdtempSync(join(tmpdir(), "roadmap-ms-order-"));
+  mkdirSync(join(root, "docs", "roadmap"), { recursive: true });
+  // plan order [ship, harness]; harness already exists. ship is NEW and FIRST in plan order (index 0) —
+  // the buggy index would give sortOrder 0; correct is byName.size (1, after the existing harness).
+  writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"),
+    `meta:\n  schema_version: 1\n  program: T\n  linear:\n    team: ENG\npis:\n  - id: p\n    title: P\n    status: active\n    linear: { project: proj-1 }\n    sprints:\n      - { id: s1, title: A, status: active, invoke: a1, milestone: ship, linear: ENG-1 }\n      - { id: s2, title: B, status: active, invoke: a2, milestone: harness, linear: ENG-2 }\n`, "utf8");
+  const fake = fakeLinear({
+    projectMilestones: { "proj-1": [{ id: "pm-h", name: "harness" }] },
+    snapshot: { "ENG-1": { id: "u1", identifier: "ENG-1", projectMilestone: null }, "ENG-2": { id: "u2", identifier: "ENG-2", projectMilestone: { id: "pm-h" } } },
+  });
+  await syncMilestones(root, { apiKey: "k", fetchImpl: fake.fetchImpl });
+  eq(fake.calls.find((c) => c.query.includes("projectMilestoneCreate")).variables.input.sortOrder, 1, "new milestone appends after the existing one (byName.size=1), not its plan index (0)");
+  rmSync(root, { recursive: true, force: true });
+});
+
 // WHY: validate is the only net for hand-edited YAML — bad enums and non-string ids must
 // error, and a stored PI override must at least warn so the mismatch is never invisible.
 test("validateLinearConfig: enum/team errors, PI-mismatch warning, non-string sprint linear", () => {
@@ -1876,11 +1953,12 @@ function linearRepo() {
     `meta:\n  schema_version: 1\n  program: T\n  linear:\n    team: ENG\n    pull: propose\n    watch:\n      - { team: PUB, project: Submit an issue, kind: bug, priority: {tier: P3} }\npis:\n  - id: auth\n    title: Authentication\n    status: active\n    sprints:\n      - { id: s1, title: Login, status: active, invoke: auth-login }\n`, "utf8");
   return root;
 }
-function fakeLinear({ failOn = null, snapshot = {}, projectSnapshot = {}, issueComments = {}, inboundByTeam = null, teamLabels = [], teamProjects = [], existingViews = [], existingInitiatives = [] } = {}) {
+function fakeLinear({ failOn = null, snapshot = {}, projectSnapshot = {}, issueComments = {}, projectMilestones = {}, inboundByTeam = null, teamLabels = [], teamProjects = [], existingViews = [], existingInitiatives = [] } = {}) {
   const calls = [];
   const createdIssues = {};   // identifier → snapshot shape, so later issue(id:) lookups resolve
   const createdProjects = {};   // id → snapshot shape, so a second run's project(id:) drift diff sees what create pushed
   let created = 0;
+  let milestonesCreated = 0;
   let labelsCreated = 0;
   const fetchImpl = async (url, { body }) => {
     const { query, variables } = JSON.parse(body);
@@ -1934,6 +2012,14 @@ function fakeLinear({ failOn = null, snapshot = {}, projectSnapshot = {}, issueC
       const data = {};
       ids.forEach((id, j) => { data[`i${j}`] = lookup(id); });
       return respond(data);
+    }
+    if (query.includes("projectMilestones {")) {   // syncMilestones: existing milestones on a project
+      const id = (query.match(/project\(id: "([^"]+)"\)/) || [])[1];
+      return respond({ project: { projectMilestones: { nodes: projectMilestones[id] || [] } } });
+    }
+    if (query.includes("projectMilestoneCreate")) {
+      if (failOn === "projectMilestoneCreate") throw new Error("simulated milestone failure");
+      return respond({ projectMilestoneCreate: { projectMilestone: { id: `pm-${++milestonesCreated}` } } });
     }
     if (query.includes("project(id:")) {   // project drift snapshot (batched aliases) — mirrors issue(id:)
       const ids = [...query.matchAll(/project\(id: "([^"]+)"\)/g)].map((m) => m[1]);

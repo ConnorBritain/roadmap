@@ -198,6 +198,7 @@
         "execution": { "$ref": "#/$defs/execution" },
         "priority": { "$ref": "#/$defs/priority" },
         "prompt": { "type": "string", "description": "Author-stashed pickup instructions, embedded VERBATIM in the synthesized kickoff brief and shown by /slice and roadmap show. Update as new info comes in (set_fields / roadmap set)." },
+        "milestone": { "type": "string", "description": "Optional stage name within the PI's Linear project (e.g. 'harness', 'hardening', 'ship'). Sync creates the distinct milestones per project and attaches this slice's issue — turning a project's flat issue list into legible stages. Project-scoped: the same name under two PIs is two milestones. Opt-in; absent everywhere → no milestone sync." },
         "linear": { "type": "string", "description": "Linear issue identifier (e.g. ABC-123) this slice maps to — written back by the first push. The {linear} branch_convention token uses it so Linear auto-links the PR." }
       }
     },
