@@ -153,6 +153,7 @@ The plugin ships its own MCP server — named **`graph`** in `.mcp.json`, auto-s
 - **Mutate (roadmap):** `add_pi`, `add_sprint`, `set_status`, `set_fields`, `bulk_set` (atomic multi-slice edit: one validate, one write, one render — all-or-nothing), `prune` edit `roadmap.yaml` through the YAML Document API (comments preserved), refuse any edit that would corrupt the graph (duplicate invoke key, unresolved dependency, cycle, bad priority/execution block), and re-render `SLICES.md` in the same step.
 - **Mutate (backlog):** `backlog_add` (creates `backlog.yaml` on first capture), `backlog_set`, and `backlog_promote` (spans both files: both validated before either is written).
 - **Linear:** `linear_status` (zero-network state check) and `linear_sync { dry, push, pull }` — always registered, politely erroring with setup guidance when `meta.linear` is absent.
+- **Cloud dispatch:** `dispatch { key }` fires one cloud session; `fan_cloud { wave, cap, confirm }` conducts a whole wave — **previews by default, fires only on `confirm: true`**, returning the session URLs. This is the conductor pattern: a local session plans the wave, fires cloud workers on its own plan (no worktree/disk), and reconciles their PRs via `/sync`.
 
 Launched worker sessions are told to file leftovers before opening their PR — `backlog_add` if the MCP is available, `roadmap backlog add` if the CLI is linked, else a **Leftovers** section in the PR body that `/sync` harvests.
 
