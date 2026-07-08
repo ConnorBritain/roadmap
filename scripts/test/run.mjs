@@ -2564,7 +2564,7 @@ test("runNote / runNotes: post to + read the mapped issue; errors on unmapped/un
   eq(read.notes.length, 1, "notes returns the issue's comment stream");
   eq(read.notes[0].author, "Connor", "note author mapped");
   await runNote(root, "ghost", { text: "x" }, io).then(() => { throw new Error("should throw"); }, (e) => ok(e.message.includes('no slice or backlog item "ghost"'), "unknown key errors"));
-  await runNote(root, "tokens", { text: "x" }, io).then(() => { throw new Error("should throw"); }, (e) => ok(e.message.includes("isn't mapped"), "unmapped slice errors, doesn't post blind"));
+  eq((await runNote(root, "tokens", { text: "x" }, io)).skipped, "unmapped", "known-but-unmapped slice → soft-skip (no throw, no blind post)");
   rmSync(root, { recursive: true, force: true });
 });
 
