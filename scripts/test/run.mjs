@@ -1356,7 +1356,8 @@ test("issueDescription: verbosity levers, footer always last, prompt/read-order 
     prompt: "SECRET-INSTRUCTIONS", readOrder: ["docs/auth.md"], linear: null };
   const brief = issueDescription(node, L_CFG, { docsUrl: "https://github.com/x/y/blob/main" });
   ok(brief.endsWith(machineFooter({ type: "slice", key: "auth-sessions" }, "https://github.com/x/y/blob/main")), "footer last");
-  ok(brief.includes("Wire JWT refresh") && brief.includes("Est: ~3"), "brief carries what + est");
+  ok(brief.includes("Wire JWT refresh"), "brief carries the what");
+  ok(!brief.includes("Est:"), "est is NOT prose in the description anymore — it rides the native Linear estimate field (no duplication)");
   ok(!brief.includes("SECRET-INSTRUCTIONS") && !brief.includes("docs/auth.md"), "prompt/read-order never leak");
   ok(!brief.includes("launch blocker"), "brief verbosity omits the priority reason");
   const titleOnly = issueDescription(node, normalizeLinearConfig({ linear: { team: "ENG", verbosity: "title" } }), {});
@@ -1407,6 +1408,62 @@ test("buildPushPlan is idempotent: matching snapshot → only the missing-issue 
   const upd = drifted.ops.find((o) => o.op === "updateIssue");
   eq(upd.payload, { title: "Login" }, "only the drifted field is sent");
   eq(upd.id, "uuid-1", "update targets the Linear uuid");
+});
+
+// WHY: est_sessions is the roadmap's own estimate; as prose in the description it was unsortable and
+// couldn't roll up on the board. It must ride the native `estimate` field — rounded to an integer,
+// clamped to estimate_max so an oversize slice can't push an out-of-scale value, and 0/null left
+// unestimated (never a pushed 0, which needs the team's allow-zero setting).
+test("buildPushPlan pushes est_sessions as native estimate: rounded, clamped, zero-skipped, idempotent", () => {
+  const g = { meta: { schema_version: 1, program: "T", linear: { team: "ENG" } },   // estimate_max defaults to 5
+    pis: [{ id: "p", title: "P", status: "active", linear: { project: "proj-1" }, sprints: [
+      { id: "s1", title: "Small", status: "next", invoke: "small", est_sessions: 1.5 },   // → round → 2
+      { id: "s2", title: "Huge", status: "next", invoke: "huge", est_sessions: 16 },        // → clamp → 5
+      { id: "s3", title: "Zero", status: "next", invoke: "zero", est_sessions: 0 },          // → unestimated
+    ]}]};
+  const cfg = normalizeLinearConfig(g.meta);
+  const existing = { projects: { "proj-1": { id: "proj-1", name: "P" } }, issues: {} };
+  const plan = buildPushPlan({ graph: g, backlog: null, cfg, teamStates: L_STATES, existing, labels: {} });
+  const est = Object.fromEntries(plan.ops.filter((o) => o.op === "createIssue").map((o) => [o.writeBack.invoke, o.payload.estimate]));
+  eq(est.small, 2, "1.5 sessions rounds to 2 points");
+  eq(est.huge, 5, "16 sessions clamps to estimate_max (5) — validate warns to split it");
+  ok(!("estimate" in plan.ops.find((o) => o.writeBack.invoke === "zero").payload), "0 sessions → no estimate field (unestimated, not a pushed 0)");
+  // idempotent: a mapped issue whose Linear estimate already equals the pushed value → no update
+  const g2 = { meta: g.meta, pis: [{ id: "p", title: "P", status: "active", linear: { project: "proj-1" }, sprints: [
+    { id: "s1", title: "Small", status: "next", invoke: "small", est_sessions: 2, linear: "ENG-9" } ]}]};
+  const node = { invoke: "small", title: "Small", what: "Small", gate: "default" };   // flatten defaults gate → match it
+  const cur = { projects: { "proj-1": { id: "proj-1", name: "P" } }, issues: { "ENG-9": {
+    id: "u9", title: "Small", description: issueDescription(node, cfg, { target: { type: "slice", key: "small" } }),
+    priority: 0, estimate: 2, stateId: "st-u", projectId: "proj-1", labelIds: [] } } };
+  const noop = buildPushPlan({ graph: g2, backlog: null, cfg, teamStates: L_STATES, existing: cur, labels: {} });
+  eq(noop.ops.filter((o) => o.op === "updateIssue").length, 0, "matching estimate → zero updates");
+  // drifted estimate → exactly one update carrying ONLY estimate
+  const cur3 = JSON.parse(JSON.stringify(cur)); cur3.issues["ENG-9"].estimate = 4;
+  const drift = buildPushPlan({ graph: g2, backlog: null, cfg, teamStates: L_STATES, existing: cur3, labels: {} });
+  eq(drift.ops.find((o) => o.op === "updateIssue").payload, { estimate: 2 }, "only the drifted estimate is sent");
+  // a mapped issue that LOST its est_sessions keeps its stale Linear estimate — the points>0 guard
+  // must NOT emit an update to clear it to 0 (which would churn AND needs the team's allow-zero setting)
+  const g4 = { meta: g.meta, pis: [{ id: "p", title: "P", status: "active", linear: { project: "proj-1" }, sprints: [
+    { id: "s1", title: "Small", status: "next", invoke: "small", linear: "ENG-9" } ]}]};   // no est_sessions
+  const cur4 = JSON.parse(JSON.stringify(cur)); cur4.issues["ENG-9"].estimate = 3;
+  const removed = buildPushPlan({ graph: g4, backlog: null, cfg, teamStates: L_STATES, existing: cur4, labels: {} });
+  eq(removed.ops.filter((o) => o.op === "updateIssue").length, 0, "removed est_sessions → no update (stale estimate tolerated, never cleared)");
+});
+
+// WHY: a slice bigger than the estimate scale can't map to one estimate point and is too big to fan
+// out as one session — validate must surface it (where you'd split it), not let it clamp silently.
+test("validate warns on a slice whose est_sessions exceeds estimate_max", () => {
+  const over = { meta: { schema_version: 1, program: "T", linear: { team: "ENG" } },
+    pis: [{ id: "p", title: "P", status: "active", sprints: [
+      { id: "s1", title: "Big", status: "next", invoke: "big", est_sessions: 16 },
+      { id: "s2", title: "Done big", status: "complete", invoke: "donebig", est_sessions: 16 },   // done → no warning
+    ]}]};
+  const w = validateLinearConfig(over).warnings.filter((m) => m.includes("estimate_max"));
+  eq(w.length, 1, "exactly one oversize warning — the not-done slice only");
+  ok(w[0].includes("p/s1") && w[0].includes("split"), "names the slice and says split it");
+  // no meta.linear → no estimate concept → no warning even for a 16
+  const noLinear = { meta: { schema_version: 1, program: "T" }, pis: over.pis };
+  eq(validateLinearConfig(noLinear).warnings.filter((m) => m.includes("estimate_max")).length, 0, "no Linear config → no oversize warning");
 });
 
 // WHY: granularity is the leak-control lever — 'pis' must emit NO issues, and a per-PI
@@ -1614,6 +1671,7 @@ test("validateLinearConfig: enum/team errors, PI-mismatch warning, non-string sp
   ok(validateLinearConfig({ meta: { linear: { granularity: "slices" } }, pis: [] }).errors[0].includes("team is required"), "teamless errors");
   ok(validateLinearConfig({ meta: { linear: { team: "E", pull: "always" } }, pis: [] }).errors[0].includes("pull"), "bad enum errors");
   ok(validateLinearConfig({ meta: { linear: { team: "E", watch: [{ project: "X" }] } }, pis: [] }).errors[0].includes("needs a team"), "watch without team errors");
+  ok(validateLinearConfig({ meta: { linear: { team: "E", estimate_max: 0 } }, pis: [] }).errors.some((e) => e.includes("estimate_max")), "estimate_max < 1 errors");
   const g = { meta: { linear: { team: "E", granularity: "slices" } }, pis: [
     { id: "p", title: "P", status: "active", linear: { granularity: "pis" }, sprints: [{ id: "s1", title: "S", status: "active", invoke: "x", linear: 123 }] },
   ]};
@@ -1714,6 +1772,7 @@ function fakeLinear({ failOn = null, snapshot = {}, projectSnapshot = {}, inboun
       const identifier = `ENG-${100 + created}`;
       createdIssues[identifier] = { id: `uuid-${created}`, identifier, title: variables.input.title,
         description: variables.input.description || "", priority: variables.input.priority ?? 0,
+        estimate: variables.input.estimate ?? null,   // faithful: a real create persists the estimate
         state: { id: variables.input.stateId },
         project: variables.input.projectId ? { id: variables.input.projectId } : null,   // faithful: real creates persist the project
         labels: { nodes: (variables.input.labelIds || []).map((id) => ({ id })) } };

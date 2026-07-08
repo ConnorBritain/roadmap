@@ -22,6 +22,7 @@ export function normalizeLinearConfig(meta) {
     verbosity: raw.verbosity || "brief",
     pull: raw.pull || "off",
     push_on: raw.push_on || "sync",
+    estimate_max: raw.estimate_max != null ? raw.estimate_max : 5,   // Linear estimate scale max (linear=5, extended=7)
     status_map: raw.status_map || {},
     watch: (raw.watch || []).map((w) => ({
       team: w.team, project: w.project || null, capture: w.capture || "backlog",
@@ -48,6 +49,7 @@ export function validateLinearConfig(graph) {
       if (raw.verbosity != null && !VERBOSITIES.includes(raw.verbosity)) errors.push(`meta.linear.verbosity "${raw.verbosity}" is not one of ${VERBOSITIES.join("|")}`);
       if (raw.pull != null && !PULL_MODES.includes(raw.pull)) errors.push(`meta.linear.pull "${raw.pull}" is not one of ${PULL_MODES.join("|")}`);
       if (raw.push_on != null && !["sync", "manual"].includes(raw.push_on)) errors.push(`meta.linear.push_on "${raw.push_on}" is not sync|manual`);
+      if (raw.estimate_max != null && !(Number.isInteger(raw.estimate_max) && raw.estimate_max >= 1)) errors.push("meta.linear.estimate_max must be an integer >= 1 (the Linear estimate scale max; default 5)");
       for (const w of raw.watch || []) {
         if (!w.team) errors.push("meta.linear.watch: every entry needs a team key");
         if (w.capture != null && w.capture !== "backlog") errors.push(`meta.linear.watch: capture "${w.capture}" is not supported (only "backlog")`);
@@ -65,6 +67,12 @@ export function validateLinearConfig(graph) {
     }
     for (const sp of pi.sprints || []) {
       if (sp.linear != null && typeof sp.linear !== "string") errors.push(`${pi.id}/${sp.id}: linear must be a string issue identifier (e.g. ABC-123)`);
+      // The forcing function: a slice bigger than the estimate scale can't map to one estimate point
+      // and is too big to fan out as a single agent session — surface it here (where you'd split it)
+      // rather than silently clamping it on the board. Only when Linear's configured (cfg present).
+      if (cfg && !isDone(sp.status) && typeof sp.est_sessions === "number" && Math.round(sp.est_sessions) > cfg.estimate_max) {
+        warnings.push(`${pi.id}/${sp.id}: est_sessions ${sp.est_sessions} exceeds estimate_max ${cfg.estimate_max} — too big to fan out as one slice; split it (its Linear estimate clamps to ${cfg.estimate_max})`);
+      }
     }
   }
   return { errors, warnings };
@@ -172,7 +180,8 @@ export function issueDescription(node, cfg, { docsUrl = null, target } = {}) {
   const lines = [];
   if (node.what && node.what !== node.title) lines.push(oneLine(node.what));
   if (node.gate) lines.push(`Gate: ${node.gate === "default" ? "default gate" : oneLine(node.gate)}`);
-  if (node.estSessions != null) lines.push(`Est: ~${node.estSessions} session(s)`);
+  // est_sessions is NOT written here — it rides the issue's native `estimate` field (see buildPushPlan),
+  // so it stays sortable/roll-up-able on the board instead of being unsearchable prose.
   if (cfg.verbosity === "full") {
     if (node.priority && (node.priority.tier || node.priority.reason)) {
       lines.push(`Priority: ${[node.priority.tier, node.priority.weight != null ? `weight ${node.priority.weight}` : null].filter(Boolean).join(" · ")}${node.priority.reason ? ` — ${oneLine(node.priority.reason)}` : ""}`);
@@ -433,12 +442,17 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
   function pushIssueOp(node, target, status, resolver, projectRef, projectId = null) {
     const state = resolver(status, cfg, teamStates);
     const labelIds = labelIdsFor(target, node);
+    // est_sessions → native estimate: rounded to an integer, clamped to the scale max so an oversize
+    // slice never pushes an out-of-scale value (validate warns to split it). 0/null → unestimated (no
+    // field), never a pushed 0 (which needs the team's allow-zero setting). Use the "linear" scale.
+    const points = node.estSessions != null ? Math.min(Math.round(node.estSessions), cfg.estimate_max) : 0;
     const projection = {
       title: node.title,
       description: issueDescription(node, cfg, { docsUrl, target }),
       priority: priorityToLinear(node.priority),
       stateId: state.id,
       labelIds,
+      ...(points > 0 ? { estimate: points } : {}),
     };
     if (!node.linear) {
       const payload = { ...projection };
@@ -462,6 +476,9 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
     if (labelIds.length && labelIds.join(",") !== [...(cur.labelIds || [])].sort().join(",")) {
       changed.labelIds = labelIds;
     }
+    // estimate: only when we have a positive value that differs. A removed est_sessions leaving a
+    // stale estimate is acceptable (never clear to 0 — that needs the team's allow-zero setting).
+    if (points > 0 && (cur.estimate || 0) !== points) changed.estimate = points;
     // project attach — how a transferred issue (backlog item promoted to a sprint) moves
     // into its PI's project. Only when the project id is already known (post first push).
     if (projectId && cur.projectId !== projectId) changed.projectId = projectId;

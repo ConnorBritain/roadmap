@@ -89,11 +89,11 @@ async function fetchIssueSnapshot(identifiers, io) {
   const issues = {};
   for (let i = 0; i < identifiers.length; i += 50) {
     const chunk = identifiers.slice(i, i + 50);
-    const q = `query { ${chunk.map((id, j) => `i${j}: issue(id: "${id}") { id identifier title description priority state { id } project { id } labels { nodes { id } } }`).join(" ")} }`;
+    const q = `query { ${chunk.map((id, j) => `i${j}: issue(id: "${id}") { id identifier title description priority estimate state { id } project { id } labels { nodes { id } } }`).join(" ")} }`;
     const data = await gql(q, {}, io);
     chunk.forEach((_, j) => {
       const iss = data[`i${j}`];
-      if (iss) issues[iss.identifier] = { id: iss.id, title: iss.title, description: iss.description || "", priority: iss.priority, stateId: iss.state.id,
+      if (iss) issues[iss.identifier] = { id: iss.id, title: iss.title, description: iss.description || "", priority: iss.priority, estimate: iss.estimate ?? null, stateId: iss.state.id,
         projectId: iss.project ? iss.project.id : null,
         labelIds: ((iss.labels && iss.labels.nodes) || []).map((l) => l.id) };
     });

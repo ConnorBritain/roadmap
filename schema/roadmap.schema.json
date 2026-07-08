@@ -55,6 +55,7 @@
             "verbosity": { "enum": ["title", "brief", "full"], "default": "brief", "description": "Issue-description detail. Never copies read-order/prompt; always ends with the machine footer + docs link." },
             "pull": { "enum": ["off", "propose", "auto"], "default": "off", "description": "Inbound handling: propose = /sync walks the inbox with you; auto = applied directly." },
             "push_on": { "enum": ["sync", "manual"], "default": "sync", "description": "sync = /sync runs the Linear phase when authed; manual = only 'roadmap linear sync'." },
+            "estimate_max": { "type": "integer", "minimum": 1, "default": 5, "description": "Max value pushed to a slice's native Linear estimate (est_sessions is rounded, then clamped here). Set to your Linear team's estimate scale max — use the 'Linear' scale (1..5; extended adds 6,7) for a direct 1-point=1-session read. validate warns when a slice exceeds it: the signal to split it, not extend." },
             "status_map": { "type": "object", "additionalProperties": { "type": "string" }, "description": "roadmap status → exact Linear workflow-state NAME overrides; unmapped statuses use the state-TYPE defaults (scheduled→backlog, next→unstarted, active/blocked/paused/gated→started, complete→completed)." },
             "watch": {
               "type": "array",
