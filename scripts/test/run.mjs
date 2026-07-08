@@ -34,7 +34,8 @@ import {
   normalizeLinearConfig, effectiveGranularity, linearState, checkPiOverrideAck,
   resolvePushState, pullStatusFor, priorityToLinear, LINEAR_TO_PRIORITY,
   issueDescription, machineFooter, buildPushPlan, buildPullProposals, validateLinearConfig, holdsFor,
-  desiredLabels, projectDescription, projectName, MARKER_LABEL, LINEAR_PROJECT_NAME_MAX, LINEAR_PROJECT_DESC_MAX,
+  desiredLabels, projectDescription, projectName, projectContent, normalizeLinearMarkdown,
+  projectColorFor, projectIconFor, MARKER_LABEL, LINEAR_PROJECT_NAME_MAX, LINEAR_PROJECT_DESC_MAX,
   initiativePlan, HELD_STATUSES,
   provisionPlan, manualViewChecklist, dispatchGuidance, STANDARD_VIEWS,
 } from "../lib/linear-core.mjs";
@@ -1473,24 +1474,31 @@ test("buildPullProposals dedupes known identifiers, captures watch issues with s
 // WHY: live-caught — Linear rejects a project name > 80 or description > 255 with a hard
 // "Argument Validation Error" that aborts the whole push. Clip at the projection layer, and
 // clip on BOTH create and the drift diff so a clipped project stays idempotent (no re-churn).
-test("project name/description are clipped to Linear's limits and stay idempotent", () => {
+// WHY: the subtitle (Linear's 255-char `description`) is where the board truncates with "…";
+// cramming the full exit there is why projects read thin+cut-off. The full text belongs in the
+// uncapped `content` body. If either mis-sizes, or the snapshot re-drifts, the board regresses.
+test("project: name clips to 80, subtitle is a concise capped line, content is uncapped, idempotent", () => {
   const longTitle = "Account portal UX: onboarding, empty states, settings interactivity, billing depth, team management";
-  const longExit = "x".repeat(400);
   const g = { meta: { schema_version: 1, program: "T", linear: { team: "ENG" } },
-    pis: [{ id: "portal", title: longTitle, theme: "ux", exit_criteria: longExit, status: "active", sprints: [
+    pis: [{ id: "portal", title: longTitle, theme: "ux", exit_criteria: "Portal ships guided onboarding. " + "detail ".repeat(80), status: "active", sprints: [
       { id: "s1", title: "S", status: "next", invoke: "portal-s1" } ] }] };
   const cfg = normalizeLinearConfig(g.meta);
-  const name = projectName(g.pis[0]), desc = projectDescription(g.pis[0]);
+  const pi = g.pis[0];
+  const name = projectName(pi), desc = projectDescription(pi), content = projectContent(pi);
   ok(name.length <= LINEAR_PROJECT_NAME_MAX && name.endsWith("..."), "name clipped to <=80 with ellipsis");
-  ok(desc.length <= LINEAR_PROJECT_DESC_MAX && desc.endsWith("..."), "description clipped to <=255 with ellipsis");
+  eq(desc, "Portal ships guided onboarding.", "subtitle = exit's first sentence (concise, not truncated)");
+  ok(content.includes("detail detail") && content.length > LINEAR_PROJECT_DESC_MAX, "content holds the full body, uncapped by 255");
+  const clipped = projectDescription({ title: "T", exit_criteria: "x".repeat(400) });
+  ok(clipped.length <= LINEAR_PROJECT_DESC_MAX && clipped.endsWith("..."), "an unbroken long exit still clips the subtitle to 255");
   const create = buildPushPlan({ graph: g, backlog: null, cfg, teamStates: L_STATES, existing: { projects: {}, issues: {} }, labels: {} });
   const cp = create.ops.find((o) => o.op === "createProject");
-  eq(cp.payload.name.length <= 80 && cp.payload.description.length <= 255, true, "the create op carries clipped fields");
-  // idempotency: a snapshot storing the clipped values must produce ZERO project ops
-  g.pis[0].linear = { project: "proj-1" };
+  eq(cp.payload.description, desc, "create carries the subtitle");
+  eq(cp.payload.content, content, "create carries the full body");
+  // idempotency: a snapshot storing subtitle + content must produce ZERO project ops
+  pi.linear = { project: "proj-1" };
   const noop = buildPushPlan({ graph: g, backlog: null, cfg, teamStates: L_STATES,
-    existing: { projects: { "proj-1": { id: "proj-1", name, description: desc } }, issues: {} }, labels: {} });
-  ok(!noop.ops.some((o) => o.op === "updateProject"), "clipped values already in Linear → no re-update");
+    existing: { projects: { "proj-1": { id: "proj-1", name, description: desc, content } }, issues: {} }, labels: {} });
+  ok(!noop.ops.some((o) => o.op === "updateProject"), "stored values already in Linear → no re-update");
 });
 
 // WHY: live-caught — several roadmap statuses (gated/blocked/paused → started; scheduled/
@@ -1640,9 +1648,10 @@ function linearRepo() {
     `meta:\n  schema_version: 1\n  program: T\n  linear:\n    team: ENG\n    pull: propose\n    watch:\n      - { team: PUB, project: Submit an issue, kind: bug, priority: {tier: P3} }\npis:\n  - id: auth\n    title: Authentication\n    status: active\n    sprints:\n      - { id: s1, title: Login, status: active, invoke: auth-login }\n`, "utf8");
   return root;
 }
-function fakeLinear({ failOn = null, snapshot = {}, inboundByTeam = null, teamLabels = [], teamProjects = [], existingViews = [], existingInitiatives = [] } = {}) {
+function fakeLinear({ failOn = null, snapshot = {}, projectSnapshot = {}, inboundByTeam = null, teamLabels = [], teamProjects = [], existingViews = [], existingInitiatives = [] } = {}) {
   const calls = [];
   const createdIssues = {};   // identifier → snapshot shape, so later issue(id:) lookups resolve
+  const createdProjects = {};   // id → snapshot shape, so a second run's project(id:) drift diff sees what create pushed
   let created = 0;
   let labelsCreated = 0;
   const fetchImpl = async (url, { body }) => {
@@ -1686,7 +1695,19 @@ function fakeLinear({ failOn = null, snapshot = {}, inboundByTeam = null, teamLa
       ids.forEach((id, j) => { data[`i${j}`] = lookup(id); });
       return respond(data);
     }
-    if (query.includes("projectCreate")) return respond({ projectCreate: { project: { id: "proj-new" } } });
+    if (query.includes("project(id:")) {   // project drift snapshot (batched aliases) — mirrors issue(id:)
+      const ids = [...query.matchAll(/project\(id: "([^"]+)"\)/g)].map((m) => m[1]);
+      const lookup = (id) => projectSnapshot[id] || createdProjects[id] || null;
+      const data = {};
+      ids.forEach((id, j) => { data[`p${j}`] = lookup(id); });
+      return respond(data);
+    }
+    if (query.includes("projectCreate")) {
+      const p = variables.input;
+      createdProjects["proj-new"] = { id: "proj-new", name: p.name, description: p.description || "", content: p.content || "",
+        color: p.color || "", icon: p.icon || "", priority: p.priority || 0, targetDate: p.targetDate || null };   // faithful: create persists its payload
+      return respond({ projectCreate: { project: { id: "proj-new" } } });
+    }
     if (query.includes("issueCreate")) {
       if (failOn === "issueCreate") throw new Error("simulated transport failure");
       created += 1;
@@ -2038,17 +2059,72 @@ test("desiredLabels routes marker+kind for items, marker+track for sprints", () 
 
 // WHY: PI theme/exit_criteria is the only strategic context Linear viewers get — it must
 // land on create, update on drift, and stay quiet when matching (idempotency).
-test("project description: composed on create, updates on drift, idempotent when matching", () => {
-  eq(projectDescription({ theme: "Own the login flow", exit_criteria: "all\nauth e2e green" }),
-    "Own the login flow\n\nExit: all auth e2e green", "theme + one-lined exit");
+test("project subtitle prefers exit's first sentence; content composes full body; drift + idempotent", () => {
+  eq(projectDescription({ theme: "Own the login flow", exit_criteria: "Auth e2e is green. Plus MFA." }),
+    "Auth e2e is green.", "subtitle = first sentence of exit");
+  eq(projectDescription({ theme: "Own the login flow" }), "Own the login flow", "no exit → falls back to theme");
+  eq(projectContent({ theme: "Own the login flow", exit_criteria: "Auth e2e is green.\nMFA too." }),
+    "**Theme:** Own the login flow\n\n**Exit criteria**\nAuth e2e is green.\nMFA too.", "content = theme + full (un-one-lined) exit");
   const g = pushGraph();
   g.pis[0].theme = "Own the login flow";
   const cfg = normalizeLinearConfig(g.meta);
-  const snap = (desc) => ({ projects: { "proj-1": { id: "proj-1", name: "Authentication", description: desc } }, issues: SNAP().issues });
-  const drift = buildPushPlan({ graph: g, backlog: null, cfg, teamStates: L_STATES, existing: snap(""), labels: {} });
-  eq(drift.ops.find((o) => o.op === "updateProject").payload, { description: "Own the login flow" }, "drifted description alone updates");
-  const match = buildPushPlan({ graph: g, backlog: null, cfg, teamStates: L_STATES, existing: snap("Own the login flow"), labels: {} });
-  ok(!match.ops.some((o) => o.op === "updateProject"), "matching description → no op");
+  const content = projectContent(g.pis[0]);
+  const snap = (over) => ({ projects: { "proj-1": { id: "proj-1", name: "Authentication", description: "", content: "", ...over } }, issues: SNAP().issues });
+  const drift = buildPushPlan({ graph: g, backlog: null, cfg, teamStates: L_STATES, existing: snap({}), labels: {} });
+  eq(drift.ops.find((o) => o.op === "updateProject").payload, { description: "Own the login flow", content }, "drifted subtitle + content update together");
+  const match = buildPushPlan({ graph: g, backlog: null, cfg, teamStates: L_STATES, existing: snap({ description: "Own the login flow", content }), labels: {} });
+  ok(!match.ops.some((o) => o.op === "updateProject"), "matching subtitle + content → no op");
+});
+
+// WHY: Linear auto-links URLs/domains in stored text; without normalizing BOTH sides the
+// description/content diff never converges and re-pushes every issue+project each sync.
+test("normalizeLinearMarkdown collapses Linear's stored auto-link form to plain text", () => {
+  eq(normalizeLinearMarkdown("see [Fly.io](<http://Fly.io>) now"), "see Fly.io now", "angle-bracket auto-link → its text");
+  eq(normalizeLinearMarkdown("[a](b) and [c](<d>)"), "a and c", "both markdown link forms collapse");
+  eq(normalizeLinearMarkdown("plain text"), "plain text", "plain text untouched");
+});
+
+// WHY: random per-project icon/color is scattered noise; grouping by initiative is the whole
+// point. Same initiative → same color/icon; distinct initiatives (up to palette size) differ.
+test("project color/icon are deterministic by initiative index, null when ungrouped", () => {
+  eq(projectColorFor(0), projectColorFor(0), "stable for the same index");
+  ok(projectColorFor(0) !== projectColorFor(1), "distinct initiatives get distinct colors");
+  eq(projectColorFor(-1), null, "ungrouped PI → no color override");
+  eq(projectIconFor(-1), null, "ungrouped PI → no icon override");
+  ok(typeof projectColorFor(0) === "string" && projectColorFor(0).startsWith("#"), "color is a hex string Linear stores verbatim");
+});
+
+// WHY: a PI's STRATEGIC priority + target date fill Linear's empty Priority/Target columns; an
+// untagged PI must stay honestly "No priority" (not a faked value), and same-initiative projects
+// must share a color so the board groups.
+test("buildPushPlan enriches projects with priority, target date, and initiative color/icon", () => {
+  const g = { meta: { schema_version: 1, program: "T", linear: { team: "ENG" } }, pis: [
+    { id: "a", title: "A", initiative: "Copilot", priority: { tier: "P0" }, target_date: "2026-09-01", status: "active", sprints: [{ id: "s1", title: "S", status: "next", invoke: "a-s1" }] },
+    { id: "b", title: "B", initiative: "Copilot", status: "active", sprints: [{ id: "s1", title: "S", status: "next", invoke: "b-s1" }] },
+  ]};
+  const cfg = normalizeLinearConfig(g.meta);
+  const plan = buildPushPlan({ graph: g, backlog: null, cfg, teamStates: L_STATES, existing: { projects: {}, issues: {} }, labels: {} });
+  const a = plan.ops.find((o) => o.op === "createProject" && o.projectRef === "a");
+  const b = plan.ops.find((o) => o.op === "createProject" && o.projectRef === "b");
+  eq(a.payload.priority, 1, "P0 → Linear priority 1 (Urgent)");
+  eq(a.payload.targetDate, "2026-09-01", "target_date → targetDate");
+  eq(a.payload.color, b.payload.color, "same initiative → same color");
+  ok(a.payload.icon && a.payload.color, "grouped project gets both an icon and a color");
+  ok(!("priority" in b.payload), "a PI with no priority stays No priority (not faked)");
+});
+
+// WHY: content carries URLs/file refs Linear auto-links on store; without the normalized compare
+// every project re-pushes its content each sync (the 92→10 idempotency class, generalized).
+test("project content re-push is suppressed when only Linear's auto-linking differs", () => {
+  const g = { meta: { schema_version: 1, program: "T", linear: { team: "ENG" } }, pis: [
+    { id: "a", title: "A", linear: { project: "proj-1" }, exit_criteria: "Ship at updates.pidgeon.health today.", status: "active", sprints: [{ id: "s1", title: "S", status: "next", invoke: "a-s1" }] },
+  ]};
+  const cfg = normalizeLinearConfig(g.meta);
+  const pi = g.pis[0];
+  const stored = projectContent(pi).replace("updates.pidgeon.health", "[updates.pidgeon.health](<http://updates.pidgeon.health>)");
+  const plan = buildPushPlan({ graph: g, backlog: null, cfg, teamStates: L_STATES,
+    existing: { projects: { "proj-1": { id: "proj-1", name: "A", description: projectDescription(pi), content: stored } }, issues: {} }, labels: {} });
+  ok(!plan.ops.some((o) => o.op === "updateProject"), "auto-link-only difference in content → no re-push");
 });
 
 // WHY: the plan is paper until the IO forwards it — the end-to-end must show labelIds

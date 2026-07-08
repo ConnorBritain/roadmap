@@ -219,18 +219,49 @@ export function projectName(pi) {
   return clip(headline, LINEAR_PROJECT_NAME_MAX);
 }
 
-// PI theme + exit criteria (+ the full title when the name was a headline split off it) —
-// the strategic context a Linear-side viewer gets that the short project name drops.
+// Linear rewrites bare URLs and domain-shaped tokens ("Fly.io", "install.rs") to the markdown
+// auto-link form "[X](<...>)" on store, so an exact-string diff of a description/content never
+// converges and re-pushes every sync. Collapse that form back to its text on BOTH sides before
+// comparing — matching Linear's fuzzy heuristic token-by-token is a dead end, this sidesteps it.
+export const normalizeLinearMarkdown = (s) =>
+  String(s || "").replace(/\[([^\]]*)\]\(<[^>]*>\)/g, "$1").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1");
+
+const firstSentence = (s) => {
+  const t = oneLine(s);
+  const m = t.match(/^.*?[.!?](?=\s|$)/);
+  return (m ? m[0] : t).trim();
+};
+
+// Project SUBTITLE (Linear's short `description`, hard-capped at 255 and truncated with "…" in the
+// UI). Keep it to one crisp essence line — the exit's first sentence beats the bare theme word.
 export function projectDescription(pi) {
-  const full = String(pi.title);
-  const nameIsSplit = projectName(pi) !== clip(full, LINEAR_PROJECT_NAME_MAX);
-  const desc = [
-    nameIsSplit ? full : null,   // preserve the subhead the name dropped
-    pi.theme || null,
-    pi.exit_criteria ? `Exit: ${oneLine(pi.exit_criteria)}` : null,
-  ].filter(Boolean).join("\n\n");
-  return clip(desc, LINEAR_PROJECT_DESC_MAX);
+  const subhead = projectName(pi) !== clip(String(pi.title), LINEAR_PROJECT_NAME_MAX)
+    ? String(pi.title).split(/\s+[—–]\s+/).slice(1).join(" — ").trim() : "";
+  const line = (pi.exit_criteria ? firstSentence(pi.exit_criteria) : "") || subhead || pi.theme || "";
+  return clip(line, LINEAR_PROJECT_DESC_MAX);
 }
+
+// Project BODY (Linear's rich `content`, effectively unbounded) — the full strategic context the
+// 255-char subtitle can't hold. This is where the whole exit criteria + theme + deps live.
+export function projectContent(pi) {
+  const nameIsSplit = projectName(pi) !== clip(String(pi.title), LINEAR_PROJECT_NAME_MAX);
+  const blocks = [
+    nameIsSplit ? `**${String(pi.title)}**` : null,
+    pi.theme ? `**Theme:** ${oneLine(pi.theme)}` : null,
+    pi.exit_criteria ? `**Exit criteria**\n${String(pi.exit_criteria).trim()}` : null,
+    pi.estimate_weeks ? `**Estimate:** ${oneLine(pi.estimate_weeks)}` : null,
+    Array.isArray(pi.deps) && pi.deps.length ? `**Depends on:** ${pi.deps.join(", ")}` : null,
+  ].filter(Boolean);
+  return blocks.join("\n\n");
+}
+
+// Deterministic project color + icon BY INITIATIVE, so a Linear viewer reads grouping from the
+// visual (every "Copilot" project shares a hue) instead of Linear's random per-project assignment.
+// Indexed by the initiative's first-seen position → distinct for up to PALETTE-length initiatives.
+const PROJECT_COLORS = ["#5e6ad2", "#26b5ce", "#4cb782", "#f2c94c", "#f2994a", "#eb5757", "#bb87fc", "#95a2b3", "#db6e9a", "#82b536"];
+const PROJECT_ICONS = ["Rocket", "Settings", "Beaker", "Bot", "Satellite", "Shield", "Compass", "Package", "Link", "Bolt"];
+export const projectColorFor = (idx) => (idx < 0 || idx == null ? null : PROJECT_COLORS[idx % PROJECT_COLORS.length]);
+export const projectIconFor = (idx) => (idx < 0 || idx == null ? null : PROJECT_ICONS[idx % PROJECT_ICONS.length]);
 
 // ── initiatives (the grouping tier above projects) ───────────────────────────
 // A PI declares its initiative via `pi.initiative` (a display name). Sync ensures each distinct
@@ -326,6 +357,7 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
   const ops = [];
   const missing = new Set();
   const model = flatten(graph);
+  const initiativeOrder = initiativePlan(graph).initiatives;   // first-seen order → stable color/icon index
 
   for (const pi of graph.pis || []) {
     const gran = effectiveGranularity(cfg, pi);
@@ -335,16 +367,37 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
     // (not-done, or already mapped) — or granularity is 'pis' (the project is the deliverable).
     // Without this, a fully-shipped PI creates a bare 0-issue project (46% of pidgeon's board).
     const hasWork = gran === "pis" || piNodes.some((n) => n.linear || !isDone(n.status));
-    const desc = projectDescription(pi);
     const name = projectName(pi);
+    const desc = projectDescription(pi);
+    const content = projectContent(pi);
+    const iIdx = pi.initiative ? initiativeOrder.indexOf(pi.initiative) : -1;
+    const color = projectColorFor(iIdx);
+    const icon = projectIconFor(iIdx);
+    const priority = pi.priority ? priorityToLinear(pi.priority) : null;   // null → leave Linear's (No priority)
+    const targetDate = pi.target_date || null;
+    const desired = {   // the full projection; create takes it whole, update diffs field-by-field
+      name,
+      ...(desc ? { description: desc } : {}),
+      ...(content ? { content } : {}),
+      ...(color ? { color } : {}),
+      ...(icon ? { icon } : {}),
+      ...(priority != null ? { priority } : {}),
+      ...(targetDate ? { targetDate } : {}),
+    };
     if (!projId) {
-      if (hasWork) ops.push({ op: "createProject", payload: { name, ...(desc ? { description: desc } : {}) }, projectRef: pi.id,
+      if (hasWork) ops.push({ op: "createProject", payload: desired, projectRef: pi.id,
         writeBack: { kind: "pi", pi: pi.id, field: "project" } });
     } else if (existing.projects[projId]) {   // already mapped → keep it in sync (never orphan)
       const cur = existing.projects[projId];
       const changed = {};
       if (cur.name !== name) changed.name = name;
       if ((cur.description || "") !== desc) changed.description = desc;
+      // content compares under markdown-normalization (Linear auto-links URLs/domains on store)
+      if (content && normalizeLinearMarkdown(cur.content || "") !== normalizeLinearMarkdown(content)) changed.content = content;
+      if (color && (cur.color || "") !== color) changed.color = color;
+      if (icon && (cur.icon || "") !== icon) changed.icon = icon;
+      if (priority != null && (cur.priority || 0) !== priority) changed.priority = priority;
+      if (targetDate && (cur.targetDate || null) !== targetDate) changed.targetDate = targetDate;
       if (Object.keys(changed).length) ops.push({ op: "updateProject", id: projId, payload: changed });
     }
     if (gran === "pis") continue;   // projects only — no issue leaks for this PI
@@ -399,7 +452,11 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
     const changed = {};
     for (const k of ["title", "description", "priority", "stateId"]) {
       if (holds.has(`${node.linear}:${k}`)) continue;   // pending inbound proposal owns this field
-      if (projection[k] !== cur[k]) changed[k] = projection[k];
+      // description compares under markdown-normalization (Linear auto-links URLs/domains on store)
+      const same = k === "description"
+        ? normalizeLinearMarkdown(projection[k]) === normalizeLinearMarkdown(cur[k])
+        : projection[k] === cur[k];
+      if (!same) changed[k] = projection[k];
     }
     // labels compare as SETS (order-insensitive — Linear returns them in its own order)
     if (labelIds.length && labelIds.join(",") !== [...(cur.labelIds || [])].sort().join(",")) {

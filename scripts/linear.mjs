@@ -54,8 +54,7 @@ async function fetchTeamBundle(teamKey, io) {
     `query($key: String!) { teams(filter: { key: { eq: $key } }) { nodes {
        id key name
        states { nodes { id name type position } }
-       labels { nodes { id name } }
-       projects { nodes { id name description } } } } }`,
+       labels { nodes { id name } } } } }`,
     { key: teamKey }, io);
   const team = data.teams.nodes[0];
   if (!team) throw new Error(`no Linear team with key "${teamKey}" (check meta.linear.team)`);
@@ -63,8 +62,26 @@ async function fetchTeamBundle(teamKey, io) {
     id: team.id,
     states: [...team.states.nodes].sort((a, b) => a.position - b.position),
     labels: Object.fromEntries(((team.labels && team.labels.nodes) || []).map((l) => [l.name, l.id])),
-    projects: Object.fromEntries(team.projects.nodes.map((p) => [p.id, { id: p.id, name: p.name, description: p.description || "" }])),
   };
+}
+
+// Project drift snapshot, keyed by the mapped project ids only (NOT all team projects). `content`
+// is a heavy rich-text field — fetching it for every project inside the team bundle blows Linear's
+// 10k query-complexity ceiling, so it lives here, batched small, exactly like fetchIssueSnapshot.
+const mappedProjectIds = (graph) => (graph.pis || []).map((p) => p.linear && p.linear.project).filter(Boolean);
+async function fetchProjectSnapshot(ids, io) {
+  const projects = {};
+  for (let i = 0; i < ids.length; i += 10) {
+    const chunk = ids.slice(i, i + 10);
+    const q = `query { ${chunk.map((id, j) => `p${j}: project(id: "${id}") { id name description content color icon priority targetDate }`).join(" ")} }`;
+    const data = await gql(q, {}, io);
+    chunk.forEach((_, j) => {
+      const p = data[`p${j}`];
+      if (p) projects[p.id] = { id: p.id, name: p.name, description: p.description || "", content: p.content || "",
+        color: p.color || "", icon: p.icon || "", priority: p.priority || 0, targetDate: p.targetDate || null };
+    });
+  }
+  return projects;
 }
 
 // Snapshot of our mapped issues, batched via aliases (identifiers are valid issue(id:) args).
@@ -116,7 +133,7 @@ export async function runSync(root, opts = {}) {
   const backlog = loadBacklog(root);
   const team = await fetchTeamBundle(cfg.team, io);
   const mapped = collectIdentifiers(graph, backlog);
-  const existing = { issues: await fetchIssueSnapshot(mapped, io), projects: team.projects };
+  const existing = { issues: await fetchIssueSnapshot(mapped, io), projects: await fetchProjectSnapshot(mappedProjectIds(graph), io) };
   const docsUrl = repoDocsUrl(root, graph);
 
   const result = { pushed: [], proposals: null, cursorAdvanced: false, dry: !!opts.dry };
@@ -158,18 +175,29 @@ export async function runSync(root, opts = {}) {
     } else if (ops.length) {
       const projectIds = projectIdsByPi(pushGraph);
       const writeBacks = { pis: [], sprints: [], items: [] };
+      // Icon names are a fixed Linear set we can't introspect without write-probing the board; a bad
+      // palette entry would abort the whole push. Retry once without `icon` so it degrades to "no
+      // icon" (color still groups) instead of failing the sync. Only icon needs this — every other
+      // field is a validated shape.
+      const isIconErr = (e) => /icon|argument validation/i.test(e.message || "");
+      const stripIcon = (p) => { const { icon, ...rest } = p; return rest; };
       // finally-flush: if an op throws mid-push, everything Linear already created still gets
       // its id written back — otherwise the next sync would create duplicates for those nodes.
       try {
         for (const op of ops) {
           if (op.op === "createProject") {
-            const d = await gql(`mutation($input: ProjectCreateInput!) { projectCreate(input: $input) { project { id } } }`,
-              { input: { ...op.payload, teamIds: [team.id] } }, io);   // spread: dropping fields here caused live churn (description)
+            const mk = (payload) => gql(`mutation($input: ProjectCreateInput!) { projectCreate(input: $input) { project { id } } }`,
+              { input: { ...payload, teamIds: [team.id] } }, io);   // spread: dropping fields here caused live churn (description)
+            let d;
+            try { d = await mk(op.payload); }
+            catch (e) { if (op.payload.icon && isIconErr(e)) d = await mk(stripIcon(op.payload)); else throw e; }
             projectIds[op.projectRef] = d.projectCreate.project.id;
             writeBacks.pis.push({ pi: op.writeBack.pi, project: d.projectCreate.project.id });
           } else if (op.op === "updateProject") {
-            await gql(`mutation($id: String!, $input: ProjectUpdateInput!) { projectUpdate(id: $id, input: $input) { project { id } } }`,
-              { id: op.id, input: op.payload }, io);
+            const mk = (payload) => gql(`mutation($id: String!, $input: ProjectUpdateInput!) { projectUpdate(id: $id, input: $input) { project { id } } }`,
+              { id: op.id, input: payload }, io);
+            try { await mk(op.payload); }
+            catch (e) { if (op.payload.icon && isIconErr(e)) await mk(stripIcon(op.payload)); else throw e; }
           } else if (op.op === "createIssue") {
             const input = { teamId: team.id, ...op.payload, ...(op.projectRef && projectIds[op.projectRef] ? { projectId: projectIds[op.projectRef] } : {}) };
             const d = await gql(`mutation($input: IssueCreateInput!) { issueCreate(input: $input) { issue { id identifier } } }`,

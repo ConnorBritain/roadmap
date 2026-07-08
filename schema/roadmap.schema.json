@@ -137,6 +137,8 @@
         "detail": { "type": "string", "description": "Pointer to the sprint dir / detail doc" },
         "exec_hint": { "type": ["string", "null"], "description": "Optional human override of the derived exec-plan line; rendered alongside the derived line" },
         "initiative": { "type": "string", "description": "Groups this PI under a Linear Initiative of this name (the tier above projects). Sync creates the initiative and attaches this PI's project. Several PIs sharing a name group together." },
+        "priority": { "$ref": "#/$defs/priority", "description": "STRATEGIC priority of this bet (not derived from slice heat) → Linear project priority. tier P0=Urgent … P3=Low." },
+        "target_date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "Target date (YYYY-MM-DD) → Linear project targetDate. A deliberate commitment date; omit when there's no dated commitment." },
         "linear": {
           "type": "object", "additionalProperties": false,
           "description": "Per-PI Linear override + the pushed-back project id. A granularity conflicting with the global requires the yes_linear_override ack at creation; validate warns on stored mismatches.",
