@@ -318,7 +318,13 @@ export function projectName(pi) {
 // converges and re-pushes every sync. Collapse that form back to its text on BOTH sides before
 // comparing — matching Linear's fuzzy heuristic token-by-token is a dead end, this sidesteps it.
 export const normalizeLinearMarkdown = (s) =>
-  String(s || "").replace(/\[([^\]]*)\]\(<[^>]*>\)/g, "$1").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1");
+  String(s || "")
+    .replace(/\[([^\]]*)\]\(<[^>]*>\)/g, "$1")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    // Linear also rewrites underscore-bold to asterisk-bold on store (live-caught: a gate naming
+    // a __tests__ directory came back as **tests**, re-pushing forever). Canonicalize both sides;
+    // single-underscore italics left alone until observed live.
+    .replace(/__([^_]+)__/g, "**$1**");
 
 // A "." that ends a common abbreviation is not a sentence end — without this the derived
 // subtitle for "…seeds every node DB (incl. Flock…)" ships as the fragment "…DB (incl."
