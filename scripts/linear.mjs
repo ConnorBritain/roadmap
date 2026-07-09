@@ -227,7 +227,7 @@ export async function runSync(root, opts = {}) {
 
   // ── push ──
   if (!opts.pullOnly) {
-    const { ops, missingLabels, unmatchedPlate } = buildPushPlan({ graph: pushGraph, backlog: pushBacklog, cfg, teamStates: team.states, existing, docsUrl, holds, labels: team.labels, viewerId, projectStatuses });
+    const { ops, missingLabels, unmatchedPlate } = buildPushPlan({ graph: pushGraph, backlog: pushBacklog, cfg, teamStates: team.states, existing, docsUrl, holds, labels: team.labels, viewerId, projectStatuses, now });
     if (missingLabels.length) result.missingLabels = missingLabels;
     if (unmatchedPlate && unmatchedPlate.length) result.unmatchedPlate = unmatchedPlate;
     if (opts.dry) {
@@ -260,8 +260,18 @@ export async function runSync(root, opts = {}) {
             catch (e) { if (op.payload.icon && isIconErr(e)) await mk(stripIcon(op.payload)); else throw e; }
           } else if (op.op === "createIssue") {
             const input = { teamId: team.id, ...op.payload, ...(op.projectRef && projectIds[op.projectRef] ? { projectId: projectIds[op.projectRef] } : {}) };
-            const d = await gql(`mutation($input: IssueCreateInput!) { issueCreate(input: $input) { issue { id identifier } } }`,
-              { input }, io);
+            const mkIssue = (inp) => gql(`mutation($input: IssueCreateInput!) { issueCreate(input: $input) { issue { id identifier } } }`,
+              { input: inp }, io);
+            // completedAt (history backfill) is a verified FIELD but the value semantics aren't —
+            // retry without it like the project-icon degrade: worst case Done-at-creation-time.
+            let d;
+            try { d = await mkIssue(input); }
+            catch (e) {
+              if (input.completedAt && /completedAt|argument validation/i.test(e.message || "")) {
+                const { completedAt, ...rest } = input;
+                d = await mkIssue(rest);
+              } else throw e;
+            }
             const identifier = d.issueCreate.issue.identifier;
             if (op.writeBack.kind === "sprint") writeBacks.sprints.push({ invoke: op.writeBack.invoke, identifier });
             else writeBacks.items.push({ id: op.writeBack.id, identifier });

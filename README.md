@@ -321,6 +321,7 @@ meta:
     horizon: all                   # all | near — near keeps scheduled/optionality slices off the board until promoted
     verbosity: brief               # title | brief | full — issue-description detail
     cycles: off                    # off | on — on mirrors the team's active cycle from slice status (active+next = this week's batch)
+    history: off                   # off | window | full — whether DONE slices project as completed issues (progress % becomes real)
     pull: propose                  # off | propose (walk the inbox in /sync) | auto
     status_map: { blocked: "Blocked" }   # optional exact-name overrides; defaults map by state TYPE
     watch:                         # inbound sources — e.g. a public "Submit an issue" team

@@ -26,6 +26,7 @@ export function normalizeLinearConfig(meta) {
     horizon: raw.horizon || "all",
     verbosity: raw.verbosity || "brief",
     cycles: raw.cycles || "off",
+    history: raw.history || "off",
     pull: raw.pull || "off",
     push_on: raw.push_on || "sync",
     estimate_max: raw.estimate_max != null ? raw.estimate_max : 5,   // Linear estimate scale max (linear=5, extended=7)
@@ -59,6 +60,7 @@ export function validateLinearConfig(graph) {
       if (raw.granularity != null && !GRANULARITIES.includes(raw.granularity)) errors.push(`meta.linear.granularity "${raw.granularity}" is not one of ${GRANULARITIES.join("|")}`);
       if (raw.horizon != null && !HORIZONS.includes(raw.horizon)) errors.push(`meta.linear.horizon "${raw.horizon}" is not one of ${HORIZONS.join("|")}`);
       if (raw.cycles != null && !["off", "on"].includes(raw.cycles)) errors.push(`meta.linear.cycles "${raw.cycles}" is not off|on`);
+      if (raw.history != null && !["off", "window", "full"].includes(raw.history)) errors.push(`meta.linear.history "${raw.history}" is not off|window|full`);
       if (raw.verbosity != null && !VERBOSITIES.includes(raw.verbosity)) errors.push(`meta.linear.verbosity "${raw.verbosity}" is not one of ${VERBOSITIES.join("|")}`);
       if (raw.pull != null && !PULL_MODES.includes(raw.pull)) errors.push(`meta.linear.pull "${raw.pull}" is not one of ${PULL_MODES.join("|")}`);
       if (raw.push_on != null && !["sync", "manual"].includes(raw.push_on)) errors.push(`meta.linear.push_on "${raw.push_on}" is not sync|manual`);
@@ -382,6 +384,19 @@ export function initiativeStyle(meta, name) {
   return e && typeof e === "object" ? { icon: e.icon || null, color: e.color || null } : { icon: null, color: null };
 }
 
+// ── done history (shipped work stays visible in the system) ───────────────────
+// Which DONE slices still project as completed issues. "off" = none (pre-history behavior);
+// "full" = all — what makes a project's progress % real (completed/total inside the project);
+// "window" = completed_on within meta.completed_window_days (default 14) of the sync time.
+// Unknown dates never resurrect: window without completed_on (or without now) stays off-board.
+export function withinHistory(cfg, node, meta, now = null) {
+  if (cfg.history === "full") return true;
+  if (cfg.history !== "window") return false;
+  if (!node.completedOn || !now) return false;
+  const days = (meta && meta.completed_window_days) || 14;
+  return Date.parse(now) - Date.parse(node.completedOn) <= days * 86400000;
+}
+
 // ── cycles (the weekly work-unit filter) ──────────────────────────────────────
 // The current Linear cycle is a PROJECTION of slice status: active + next ARE the elected
 // batch ("next" = committed this cycle — the election ritual is what promotes scheduled→next).
@@ -527,7 +542,7 @@ export function dispatchGuidance() {
 // clobbered while the proposal is unresolved (live-verified failure mode).
 // labels: name→id from the team bundle (fresh each sync, no YAML caching). Unresolvable
 // names are dropped from payloads and reported once via missingLabels (fix = provision).
-export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsUrl = null, holds = new Set(), labels = {}, viewerId = null, projectStatuses = null }) {
+export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsUrl = null, holds = new Set(), labels = {}, viewerId = null, projectStatuses = null, now = null }) {
   const ops = [];
   const missing = new Set();
   const model = flatten(graph);
@@ -542,9 +557,10 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
     const projId = pi.linear && pi.linear.project;
     const piNodes = model.nodes.filter((n) => n.piId === pi.id);
     // A PI earns a project only if it has PROJECTABLE work — a slice that will get an issue
-    // (not-done, or already mapped) — or granularity is 'pis' (the project is the deliverable).
-    // Without this, a fully-shipped PI creates a bare 0-issue project (46% of pidgeon's board).
-    const hasWork = gran === "pis" || piNodes.some((n) => n.linear || !isDone(n.status));
+    // (not-done, already mapped, or done-within-history) — or granularity is 'pis' (the project
+    // is the deliverable). Without this, a fully-shipped PI creates a bare 0-issue project
+    // (46% of pidgeon's board). With history on, a shipped PI's project is created AND populated.
+    const hasWork = gran === "pis" || piNodes.some((n) => n.linear || !isDone(n.status) || withinHistory(cfg, n, graph.meta, now));
     const name = projectName(pi);
     const desc = projectDescription(pi);
     const content = projectContent(pi);
@@ -592,8 +608,9 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
     const effVerb = effectiveVerbosity(cfg, pi);
     const descCfg = effVerb === cfg.verbosity ? cfg : { ...cfg, verbosity: effVerb };
     for (const node of piNodes) {
-      // create only not-done work (issues for finished history are noise); always update mapped.
-      if (!node.linear && isDone(node.status)) continue;
+      // create not-done work, plus done work inside the history window (Done issues are what
+      // make progress % real); always update mapped.
+      if (!node.linear && isDone(node.status) && !withinHistory(cfg, node, graph.meta, now)) continue;
       // horizon "near": far-future work (scheduled/optionality) stays YAML-only until elected —
       // no NEW issues. Already-mapped ones keep updating: never orphan, never let a visible issue rot.
       if (!node.linear && cfg.horizon === "near" && HORIZON_FUTURE_STATUSES.includes(node.status)) continue;
@@ -650,6 +667,9 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
     if (!node.linear) {
       const payload = { ...projection };
       if (!labelIds.length) delete payload.labelIds;
+      // History backfill: carry the true completion date (live-verified IssueCreateInput field;
+      // the IO layer strip-retries if the VALUE is rejected — worst case: Done at creation time).
+      if (isDone(status) && node.completedOn) payload.completedAt = node.completedOn;
       ops.push({ op: "createIssue", payload, projectRef,
         writeBack: target.type === "slice" ? { kind: "sprint", invoke: target.key } : { kind: "item", id: target.key } });
       return;

@@ -1488,6 +1488,39 @@ test("horizon near: gates new far-future issues, keeps mapped ones updating, def
   ok(v.errors.some((e) => e.includes('horizon "soon"')), "invalid horizon blocks at validate");
 });
 
+// ── linear-core: done history ─────────────────────────────────────────────────
+// WHY: history is what makes a project's progress % real (completed/total inside the project) —
+// "off" must stay byte-identical (no Done-issue noise for existing users), "full" must project
+// shipped work as completed issues carrying the true completion date, "window" must honor
+// meta.completed_window_days, and a shipped PI's project must be created AND populated.
+test("history knob: off skips done work, full projects it Done with completedAt, window honors the meta knob", () => {
+  const g = (history) => ({ meta: { schema_version: 1, program: "T", completed_window_days: 7, linear: { team: "ENG", ...(history ? { history } : {}) } },
+    pis: [{ id: "shipped", title: "Shipped", status: "complete", sprints: [
+      { id: "s1", title: "Old", status: "complete", invoke: "old", completed_on: "2026-07-01" },
+      { id: "s2", title: "Ancient", status: "complete", invoke: "ancient", completed_on: "2026-06-01" },
+      { id: "s3", title: "Undated", status: "complete", invoke: "undated" },
+    ]}]});
+  const NOW = "2026-07-05T12:00:00Z";
+  const empty = { projects: {}, issues: {} };
+  const mk = (history) => buildPushPlan({ graph: g(history), backlog: null, cfg: normalizeLinearConfig(g(history).meta), teamStates: L_STATES, existing: empty, now: NOW });
+  // off (default): the fully-shipped PI earns neither project nor issues — byte-identical to before
+  eq(mk(null).ops.length, 0, "history off → a fully-shipped PI stays off the board entirely");
+  // full: project created AND populated with Done issues carrying completedAt
+  const full = mk("full");
+  eq(full.ops.filter((o) => o.op === "createProject").length, 1, "full → the shipped PI's project is created");
+  const creates = full.ops.filter((o) => o.op === "createIssue");
+  eq(creates.map((o) => o.writeBack.invoke).sort(), ["ancient", "old", "undated"], "full → every done slice projects");
+  const old = creates.find((o) => o.writeBack.invoke === "old");
+  eq(old.payload.stateId, "st-c", "done slice lands in the completed state");
+  eq(old.payload.completedAt, "2026-07-01", "true completion date rides the create");
+  ok(!("completedAt" in creates.find((o) => o.writeBack.invoke === "undated").payload), "no completed_on → no completedAt field");
+  // window: 7-day meta knob — old (4 days ago) inside, ancient (34 days) and undated outside
+  const win = mk("window");
+  eq(win.ops.filter((o) => o.op === "createIssue").map((o) => o.writeBack.invoke), ["old"], "window honors meta.completed_window_days, undated never resurrects");
+  const v = validateLinearConfig({ meta: { schema_version: 1, program: "T", linear: { team: "ENG", history: "always" } }, pis: [] });
+  ok(v.errors.some((e) => e.includes('history "always"')), "invalid history value blocks at validate");
+});
+
 // ── linear-core: cycles ───────────────────────────────────────────────────────
 // WHY: the active cycle IS the elected weekly batch — if assignment oscillates, clears a human's
 // future-cycle parking, or lets demotions linger, the cycle chart lies and "this week" silently
@@ -2210,6 +2243,7 @@ function fakeLinear({ failOn = null, snapshot = {}, projectSnapshot = {}, issueC
     }
     if (query.includes("issueCreate")) {
       if (failOn === "issueCreate") throw new Error("simulated transport failure");
+      if (failOn === "completedAt" && variables.input.completedAt) throw new Error("argument validation error: completedAt");
       created += 1;
       const identifier = `ENG-${100 + created}`;
       createdIssues[identifier] = { id: `uuid-${created}`, identifier, title: variables.input.title,
@@ -2357,6 +2391,33 @@ test("runSync cycles: assigns active+next, clears demotions, converges, degrades
   await runSync(root4, { fetchImpl: fake4.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-09T12:00:00Z" });
   ok(!fake4.calls.some((c) => c.query.includes("activeCycle")), "cycles off → activeCycle never requested");
   rmSync(root4, { recursive: true, force: true });
+});
+
+// WHY: the history backfill must ride the LIVE pipeline — a Done issue lands with its true
+// completion date, the id write-back makes the second run a no-op (resumability IS the batching
+// strategy for a 300-issue backfill), and a rejected completedAt VALUE degrades to
+// Done-at-creation instead of failing the whole backfill.
+test("runSync history full: backfills Done with completedAt, converges, degrades on value rejection", async () => {
+  const yaml = `meta:\n  schema_version: 1\n  program: T\n  linear:\n    team: ENG\n    history: full\npis:\n  - id: p\n    title: P\n    status: complete\n    sprints:\n      - { id: s1, title: Done thing, status: complete, invoke: done-thing, completed_on: "2026-07-01" }\n`;
+  const mkRoot = () => { const root = mkdtempSync(join(tmpdir(), "roadmap-history-")); mkdirSync(join(root, "docs", "roadmap"), { recursive: true }); writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"), yaml, "utf8"); return root; };
+  const root = mkRoot();
+  const fake = fakeLinear();
+  await runSync(root, { fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-09T12:00:00Z" });
+  const create = fake.calls.find((c) => c.query.includes("issueCreate"));
+  eq(create.variables.input.completedAt, "2026-07-01", "the true completion date rides the create");
+  eq(create.variables.input.stateId, "st-c", "backfilled issue lands Done");
+  ok(readFileSync(join(root, "docs", "roadmap", "roadmap.yaml"), "utf8").includes("linear: ENG-101"), "id written back — the resume point");
+  const r2 = await runSync(root, { fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-09T13:00:00Z" });
+  eq(r2.pushed, [], "second run creates nothing (backfill converged)");
+  rmSync(root, { recursive: true, force: true });
+  const root2 = mkRoot();
+  const fake2 = fakeLinear({ failOn: "completedAt" });
+  await runSync(root2, { fetchImpl: fake2.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-09T12:00:00Z" });
+  const createCalls = fake2.calls.filter((c) => c.query.includes("issueCreate"));
+  eq(createCalls.length, 2, "value rejection → one retry");
+  ok(!("completedAt" in createCalls[1].variables.input), "retry drops completedAt (Done-at-creation fallback)");
+  ok(readFileSync(join(root2, "docs", "roadmap", "roadmap.yaml"), "utf8").includes("linear: ENG-101"), "issue still created + written back");
+  rmSync(root2, { recursive: true, force: true });
 });
 
 // WHY: the LIVE-verified clobber race — push ran before pull and overwrote a human's
