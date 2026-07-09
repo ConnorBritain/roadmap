@@ -34,7 +34,7 @@ import { runEstimate, resolveEngine, runTimeline, runLog, resolveHistory } from 
 import { mutateRoadmap, mutateBacklog, mutateBoth } from "../lib/store.mjs";
 import {
   normalizeLinearConfig, effectiveGranularity, linearState, checkPiOverrideAck,
-  resolvePushState, pullStatusFor, priorityToLinear, LINEAR_TO_PRIORITY,
+  resolvePushState, resolveProjectStatus, pullStatusFor, priorityToLinear, LINEAR_TO_PRIORITY,
   issueDescription, machineFooter, buildPushPlan, buildPullProposals, validateLinearConfig, holdsFor,
   desiredLabels, projectDescription, projectSubtitleRaw, projectName, projectContent, normalizeLinearMarkdown,
   projectColorFor, projectIconFor, MARKER_LABEL, PLATE_LABEL, LINEAR_PROJECT_NAME_MAX, LINEAR_PROJECT_DESC_MAX,
@@ -1414,6 +1414,64 @@ test("buildPushPlan is idempotent: matching snapshot → only the missing-issue 
   eq(upd.id, "uuid-1", "update targets the Linear uuid");
 });
 
+// ── linear-core: PI status → project status ──────────────────────────────────
+// Mirrors the live workspace inventory (organization.projectStatuses): stock has NO paused type.
+const P_STATUSES = [
+  { id: "ps-b", name: "Backlog", type: "backlog", position: 0 },
+  { id: "ps-p", name: "Planned", type: "planned", position: 1 },
+  { id: "ps-s", name: "In Progress", type: "started", position: 2 },
+  { id: "ps-c", name: "Completed", type: "completed", position: 3 },
+  { id: "ps-x", name: "Canceled", type: "canceled", position: 4 },
+];
+
+// WHY: every project reading "Backlog" regardless of PI status makes the initiative rollup — the
+// first screen a human reads — lie about what's shipped vs in flight (live board: 64/64 stuck).
+test("resolveProjectStatus maps PI status to project-status TYPE, held falls back past a missing paused", () => {
+  eq(resolveProjectStatus("complete", P_STATUSES).id, "ps-c", "complete → completed");
+  eq(resolveProjectStatus("active", P_STATUSES).id, "ps-s", "active → started");
+  eq(resolveProjectStatus("next", P_STATUSES).id, "ps-p", "next → planned");
+  eq(resolveProjectStatus("scheduled", P_STATUSES).id, "ps-b", "scheduled → backlog");
+  eq(resolveProjectStatus("optionality", P_STATUSES).id, "ps-b", "optionality → backlog");
+  eq(resolveProjectStatus("gated", P_STATUSES).id, "ps-p", "held → planned when the workspace has no paused type");
+  const withPaused = [...P_STATUSES, { id: "ps-z", name: "Paused", type: "paused", position: 5 }];
+  eq(resolveProjectStatus("gated", withPaused).id, "ps-z", "held → paused when the workspace declares it");
+  eq(resolveProjectStatus("active", null), null, "null inventory → null (status projection off)");
+});
+
+// WHY: a workspace whose inventory misses every type in a chain can't be silently skipped — the
+// push would keep "correcting" nothing forever; fail naming what exists, mirroring resolvePushState.
+test("resolveProjectStatus throws listing the available statuses when no chain type exists", () => {
+  const weird = [{ id: "ps-only", name: "Odd", type: "triage", position: 0 }];
+  throws(() => resolveProjectStatus("complete", weird), "no project status of type completed");
+  throws(() => resolveProjectStatus("complete", weird), "Odd:triage");
+});
+
+// WHY: statusId must diff like every other project field or every sync spams projectUpdate on
+// all 64 projects; and with a null inventory the plan must be byte-identical to the pre-feature
+// tool so a degraded fetch (or an old test fixture) changes nothing.
+test("buildPushPlan projects statusId: drift → one update, match → zero ops, null inventory → absent", () => {
+  const cfg = normalizeLinearConfig(pushGraph().meta);
+  const snapAt = (statusId) => {
+    const s = SNAP();
+    s.projects["proj-1"] = { ...s.projects["proj-1"], statusId };
+    return s;
+  };
+  // active PI whose project sits in backlog status → exactly one updateProject carrying only statusId
+  const drift = buildPushPlan({ graph: pushGraph(), backlog: null, cfg, teamStates: L_STATES, existing: snapAt("ps-b"), projectStatuses: P_STATUSES });
+  const upd = drift.ops.find((o) => o.op === "updateProject");
+  eq(upd.payload, { statusId: "ps-s" }, "only the drifted statusId is sent (active → started)");
+  // matching status → no project op at all
+  const match = buildPushPlan({ graph: pushGraph(), backlog: null, cfg, teamStates: L_STATES, existing: snapAt("ps-s"), projectStatuses: P_STATUSES });
+  eq(match.ops.filter((o) => o.op === "updateProject").length, 0, "matching statusId → zero project updates");
+  // null inventory (degraded fetch) → plan identical to the pre-feature shape: no statusId anywhere
+  const off = buildPushPlan({ graph: pushGraph(), backlog: null, cfg, teamStates: L_STATES, existing: snapAt("ps-b"), projectStatuses: null });
+  eq(off.ops.filter((o) => o.op === "updateProject").length, 0, "null inventory → no status correction attempted");
+  // a new project carries its statusId on create
+  const g = pushGraph(); delete g.pis[0].linear;
+  const create = buildPushPlan({ graph: g, backlog: null, cfg, teamStates: L_STATES, existing: { projects: {}, issues: {} }, projectStatuses: P_STATUSES });
+  eq(create.ops.find((o) => o.op === "createProject").payload.statusId, "ps-s", "create includes the mapped statusId");
+});
+
 // WHY: est_sessions is the roadmap's own estimate; as prose in the description it was unsortable and
 // couldn't roll up on the board. It must ride the native `estimate` field — rounded to an integer,
 // clamped to estimate_max so an oversize slice can't push an out-of-scale value, and 0/null left
@@ -1955,7 +2013,7 @@ function linearRepo() {
     `meta:\n  schema_version: 1\n  program: T\n  linear:\n    team: ENG\n    pull: propose\n    watch:\n      - { team: PUB, project: Submit an issue, kind: bug, priority: {tier: P3} }\npis:\n  - id: auth\n    title: Authentication\n    status: active\n    sprints:\n      - { id: s1, title: Login, status: active, invoke: auth-login }\n`, "utf8");
   return root;
 }
-function fakeLinear({ failOn = null, snapshot = {}, projectSnapshot = {}, issueComments = {}, projectMilestones = {}, inboundByTeam = null, teamLabels = [], teamProjects = [], existingViews = [], existingInitiatives = [] } = {}) {
+function fakeLinear({ failOn = null, snapshot = {}, projectSnapshot = {}, issueComments = {}, projectMilestones = {}, inboundByTeam = null, teamLabels = [], teamProjects = [], existingViews = [], existingInitiatives = [], projectStatuses = null } = {}) {
   const calls = [];
   const createdIssues = {};   // identifier → snapshot shape, so later issue(id:) lookups resolve
   const createdProjects = {};   // id → snapshot shape, so a second run's project(id:) drift diff sees what create pushed
@@ -2015,6 +2073,10 @@ function fakeLinear({ failOn = null, snapshot = {}, projectSnapshot = {}, issueC
       ids.forEach((id, j) => { data[`i${j}`] = lookup(id); });
       return respond(data);
     }
+    if (query.includes("projectStatuses {")) {   // workspace inventory (PI status → project status)
+      if (!projectStatuses) throw new Error("simulated: project-status inventory unavailable");   // degrade path
+      return respond({ organization: { projectStatuses } });
+    }
     if (query.includes("projectMilestones {")) {   // syncMilestones: existing milestones on a project
       const id = (query.match(/project\(id: "([^"]+)"\)/) || [])[1];
       return respond({ project: { projectMilestones: { nodes: projectMilestones[id] || [] } } });
@@ -2033,12 +2095,16 @@ function fakeLinear({ failOn = null, snapshot = {}, projectSnapshot = {}, issueC
     if (query.includes("projectCreate")) {
       const p = variables.input;
       createdProjects["proj-new"] = { id: "proj-new", name: p.name, description: p.description || "", content: p.content || "",
-        color: p.color || "", icon: p.icon || "", priority: p.priority || 0, startDate: p.startDate || null, targetDate: p.targetDate || null };   // faithful: create persists its payload
+        color: p.color || "", icon: p.icon || "", priority: p.priority || 0, startDate: p.startDate || null, targetDate: p.targetDate || null,
+        status: p.statusId ? { id: p.statusId } : null };   // faithful: create persists its payload
       return respond({ projectCreate: { project: { id: "proj-new" } } });
     }
     if (query.includes("projectUpdate")) {   // faithful: persist the patch so a re-fetch converges (idempotency)
       const rec = createdProjects[variables.id] || projectSnapshot[variables.id];
-      if (rec) Object.assign(rec, variables.input);
+      if (rec) {
+        Object.assign(rec, variables.input);
+        if (variables.input.statusId) rec.status = { id: variables.input.statusId };   // re-fetch reads status { id }
+      }
       return respond({ projectUpdate: { project: { id: variables.id } } });
     }
     if (query.includes("issueCreate")) {
@@ -2118,6 +2184,33 @@ test("runSync flushes write-backs on a mid-push throw and leaves the cursor unto
   ok(!yaml.includes("ENG-10"), "the failed issue wrote nothing back");
   eq(readCursor(root), null, "cursor untouched on failure");
   rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: PI status must flow through the LIVE sync path — create carries statusId, a second run
+// converges, and an inventory-fetch failure degrades to a recorded note without aborting or
+// distorting the push (a workspace-query hiccup must never take the sync down with it).
+test("runSync projects PI status → project status, converges, and degrades without the inventory", async () => {
+  const root = linearRepo();
+  const fake = fakeLinear({ projectStatuses: [
+    { id: "ps-b", name: "Backlog", type: "backlog", position: 0 },
+    { id: "ps-p", name: "Planned", type: "planned", position: 1 },
+    { id: "ps-s", name: "In Progress", type: "started", position: 2 },
+    { id: "ps-c", name: "Completed", type: "completed", position: 3 },
+  ] });
+  await runSync(root, { fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-06T12:00:00Z" });
+  const create = fake.calls.find((c) => c.query.includes("projectCreate"));
+  eq(create.variables.input.statusId, "ps-s", "active PI creates its project In Progress, not Backlog");
+  const r2 = await runSync(root, { fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-06T13:00:00Z" });
+  eq(r2.pushed, [], "second run converges — the projected status round-trips, no churn");
+  rmSync(root, { recursive: true, force: true });
+  // degrade: no inventory in this fake → the organization query fails → sync completes anyway
+  const root2 = linearRepo();
+  const fake2 = fakeLinear();
+  const r3 = await runSync(root2, { fetchImpl: fake2.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-06T12:00:00Z" });
+  ok(r3.projectStatusError, "inventory failure recorded on the result, not thrown");
+  ok(!fake2.calls.some((c) => c.query.includes("projectCreate") && c.variables.input.statusId), "degraded push sends no statusId");
+  ok(readFileSync(join(root2, "docs", "roadmap", "roadmap.yaml"), "utf8").includes("project: proj-new"), "the push itself still ran");
+  rmSync(root2, { recursive: true, force: true });
 });
 
 // WHY: the LIVE-verified clobber race — push ran before pull and overwrote a human's
