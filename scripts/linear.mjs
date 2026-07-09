@@ -23,7 +23,7 @@ import { noteBody } from "./lib/journal-core.mjs";
 import {
   normalizeLinearConfig, linearState, linearStatusLine, buildPushPlan, buildPullProposals, holdsFor,
   provisionPlan, manualViewChecklist, agentGuidanceText, dispatchGuidance, initiativePlan, initiativeStyle,
-  startStampTargets, milestonePlan,
+  startStampTargets, milestonePlan, cyclePlan, cycleCandidates,
 } from "./lib/linear-core.mjs";
 
 const ENDPOINT = "https://api.linear.app/graphql";
@@ -56,6 +56,7 @@ async function fetchTeamBundle(teamKey, io) {
   const data = await gql(
     `query($key: String!) { teams(filter: { key: { eq: $key } }) { nodes {
        id key name
+       activeCycle { id }
        states { nodes { id name type position } }
        labels { nodes { id name } } } } }`,
     { key: teamKey }, io);
@@ -63,6 +64,7 @@ async function fetchTeamBundle(teamKey, io) {
   if (!team) throw new Error(`no Linear team with key "${teamKey}" (check meta.linear.team)`);
   return {
     id: team.id,
+    activeCycleId: team.activeCycle ? team.activeCycle.id : null,   // null: cycles off in Linear, or between cycles
     states: [...team.states.nodes].sort((a, b) => a.position - b.position),
     labels: Object.fromEntries(((team.labels && team.labels.nodes) || []).map((l) => [l.name, l.id])),
   };
@@ -294,6 +296,14 @@ export async function runSync(root, opts = {}) {
     // milestones run AFTER initiatives (both post-push): the project ids exist and issues are mapped.
     try { const mr = await syncMilestones(root, io); if (mr.milestones.length) result.milestones = mr; }
     catch (e) { result.milestonesError = e.message; }
+    // cycles run last: the team's ACTIVE cycle mirrors active+next slice status (the elected batch).
+    if (cfg.cycles === "on") {
+      if (!team.activeCycleId) result.cyclesNote = "cycles on but the team has no active cycle in Linear — check Team Settings → Cycles";
+      else {
+        try { const cr = await syncCycles(root, io, team.activeCycleId); if (cr.assigned.length || cr.cleared.length) result.cycles = cr; }
+        catch (e) { result.cyclesError = e.message; }
+      }
+    }
   }
 
   // ── cursor ── advance only when the inbox is handled (auto) or empty — in propose mode a
@@ -406,6 +416,45 @@ export async function syncMilestones(root, io) {
     }
   }
   return { milestones, created, attached };
+}
+
+// Mapped issues' current cycle, batched (identifier → { id: uuid, cycleId }) — like fetchIssueMilestones.
+async function fetchIssueCycles(identifiers, io) {
+  const out = {};
+  for (let i = 0; i < identifiers.length; i += 50) {
+    const chunk = identifiers.slice(i, i + 50);
+    const q = `query { ${chunk.map((id, j) => `i${j}: issue(id: "${id}") { id identifier cycle { id } }`).join(" ")} }`;
+    const data = await gql(q, {}, io);
+    chunk.forEach((_, j) => { const iss = data[`i${j}`]; if (iss) out[iss.identifier] = { id: iss.id, cycleId: iss.cycle ? iss.cycle.id : null }; });
+  }
+  return out;
+}
+
+// Keep the team's ACTIVE cycle = the projection of active+next (CYCLE_STATUSES). Runs post-push,
+// so issues created this run (fresh write-backs) get their cycle in the same sync. UNVERIFIED
+// mutation surface (issueUpdate cycleId) — the caller catches and degrades like initiatives/
+// milestones. Idempotent: assign only on drift; clear only CURRENT-cycle membership (a human's
+// future-cycle parking is deliberate planning and stays untouched — cyclePlan's contract).
+export async function syncCycles(root, io, activeCycleId) {
+  const graph = loadGraph(roadmapPaths(root).yaml);
+  const candidates = cycleCandidates(graph);
+  if (!candidates.length) return { assigned: [], cleared: [] };
+  const issues = await fetchIssueCycles(candidates.map((n) => n.linear), io);
+  const plan = cyclePlan({ graph, activeCycleId, issues });
+  const assigned = [], cleared = [];
+  for (const a of plan.assign) {
+    if (!a.id) continue;   // mapped but not in Linear (deleted?) — leave for the human
+    await gql(`mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { issue { id } } }`,
+      { id: a.id, input: { cycleId: activeCycleId } }, io);
+    assigned.push(a.invoke);
+  }
+  for (const c of plan.clear) {
+    if (!c.id) continue;
+    await gql(`mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { issue { id } } }`,
+      { id: c.id, input: { cycleId: null } }, io);
+    cleared.push(c.invoke);
+  }
+  return { assigned, cleared };
 }
 
 // ── dispatch transport (the only-network-file rule: dispatch.mjs owns the capsule, this
@@ -662,6 +711,9 @@ if (isMain) {
       if (r.projectStatusError) console.log(`project status skipped: ${r.projectStatusError} — projects keep their current Linear status this sync.`);
       if (r.milestones) console.log(`milestones: ${r.milestones.milestones.length} across projects${r.milestones.created.length ? ` (created ${r.milestones.created.length})` : ""}${r.milestones.attached.length ? ` · attached ${r.milestones.attached.length} issue(s)` : ""}`);
       if (r.milestonesError) console.log(`milestones skipped: ${r.milestonesError} — pending live verification of the projectMilestone API.`);
+      if (r.cycles) console.log(`cycle: assigned ${r.cycles.assigned.join(", ") || "none"}${r.cycles.cleared.length ? ` · cleared ${r.cycles.cleared.join(", ")}` : ""} — the active cycle mirrors active+next.`);
+      if (r.cyclesError) console.log(`cycles skipped: ${r.cyclesError} — pending live verification of the cycle API.`);
+      if (r.cyclesNote) console.log(`cycles: ${r.cyclesNote}`);
       if (r.startStamped && r.startStamped.length) console.log(`start dates: stamped ${r.startStamped.length} active PI(s) (${r.startStamped.join(", ")}) — the Linear timeline now has a start.`);
       if (r.plateDrained && r.plateDrained.length) console.log(`plate: drained ${r.plateDrained.length} completed (${r.plateDrained.join(", ")}) — off My Issues.`);
       if (r.unmatchedPlate && r.unmatchedPlate.length) console.log(`plate: ${r.unmatchedPlate.join(", ")} match no slice/backlog item — typo in meta.plate? ('roadmap plate' lists it).`);

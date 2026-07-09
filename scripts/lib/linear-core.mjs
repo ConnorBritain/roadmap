@@ -25,6 +25,7 @@ export function normalizeLinearConfig(meta) {
     granularity: raw.granularity || "slices",
     horizon: raw.horizon || "all",
     verbosity: raw.verbosity || "brief",
+    cycles: raw.cycles || "off",
     pull: raw.pull || "off",
     push_on: raw.push_on || "sync",
     estimate_max: raw.estimate_max != null ? raw.estimate_max : 5,   // Linear estimate scale max (linear=5, extended=7)
@@ -57,6 +58,7 @@ export function validateLinearConfig(graph) {
       if (!raw.team) errors.push("meta.linear.team is required (the push-target team key)");
       if (raw.granularity != null && !GRANULARITIES.includes(raw.granularity)) errors.push(`meta.linear.granularity "${raw.granularity}" is not one of ${GRANULARITIES.join("|")}`);
       if (raw.horizon != null && !HORIZONS.includes(raw.horizon)) errors.push(`meta.linear.horizon "${raw.horizon}" is not one of ${HORIZONS.join("|")}`);
+      if (raw.cycles != null && !["off", "on"].includes(raw.cycles)) errors.push(`meta.linear.cycles "${raw.cycles}" is not off|on`);
       if (raw.verbosity != null && !VERBOSITIES.includes(raw.verbosity)) errors.push(`meta.linear.verbosity "${raw.verbosity}" is not one of ${VERBOSITIES.join("|")}`);
       if (raw.pull != null && !PULL_MODES.includes(raw.pull)) errors.push(`meta.linear.pull "${raw.pull}" is not one of ${PULL_MODES.join("|")}`);
       if (raw.push_on != null && !["sync", "manual"].includes(raw.push_on)) errors.push(`meta.linear.push_on "${raw.push_on}" is not sync|manual`);
@@ -380,6 +382,36 @@ export function initiativeStyle(meta, name) {
   return e && typeof e === "object" ? { icon: e.icon || null, color: e.color || null } : { icon: null, color: null };
 }
 
+// ── cycles (the weekly work-unit filter) ──────────────────────────────────────
+// The current Linear cycle is a PROJECTION of slice status: active + next ARE the elected
+// batch ("next" = committed this cycle — the election ritual is what promotes scheduled→next).
+// No separate bookkeeping list; demote a slice and it leaves the cycle on the next sync.
+export const CYCLE_STATUSES = ["active", "next"];
+
+// Mapped, not-done slices — the only issues cycle sync ever touches.
+export const cycleCandidates = (graph) => flatten(graph).nodes.filter((n) => n.linear && !isDone(n.status));
+
+// PURE plan: which mapped issues to assign to / clear from the ACTIVE cycle.
+// issues: { [identifier]: { id, cycleId } } (cycleId null when uncycled). Only CURRENT-cycle
+// membership is ever cleared — an issue a human parked in a FUTURE cycle is deliberate planning
+// and stays untouched. Converges with Linear's native rollover + auto-add: a still-active issue
+// rolled forward gets re-assigned the same cycle (no-op); a demoted one gets cleared.
+export function cyclePlan({ graph, activeCycleId, issues = {} }) {
+  if (!activeCycleId) return { assign: [], clear: [] };
+  const assign = [];
+  const clear = [];
+  for (const n of cycleCandidates(graph)) {
+    const cur = issues[n.linear] || {};
+    const cycleId = cur.cycleId || null;
+    if (CYCLE_STATUSES.includes(n.status)) {
+      if (cycleId !== activeCycleId) assign.push({ invoke: n.invoke, identifier: n.linear, id: cur.id || null });
+    } else if (cycleId === activeCycleId) {
+      clear.push({ invoke: n.invoke, identifier: n.linear, id: cur.id || null });
+    }
+  }
+  return { assign, clear };
+}
+
 // ── initiatives (the grouping tier above projects) ───────────────────────────
 // A PI declares its initiative via `pi.initiative` (a display name). Sync ensures each distinct
 // initiative exists in Linear and each mapped PI's project is attached to it — turning a flat
@@ -435,11 +467,15 @@ function trackViews(graph) {
   return tracks.map((t) => ({ name: `Track ${t}`, hint: `issues labeled track:${t} — the ${t} fanout lane` }));
 }
 
+// The cycle-era view — only offered when cycles are on (provision degrades like STANDARD_VIEWS).
+const THIS_CYCLE_VIEW = { name: "This cycle", hint: "current-cycle issues labeled roadmap — the elected batch the sync maintains (active + next)" };
+
 export function provisionPlan({ graph, teamLabels }) {
   const have = new Set(Object.keys(teamLabels || {}));
   const nodes = flatten(graph).nodes;
   const tracks = new Set(nodes.map((n) => n.track).filter(Boolean));
   const heldPresent = HELD_STATUSES.filter((s) => nodes.some((n) => n.status === s));
+  const cfg = normalizeLinearConfig(graph.meta || {});
   const wanted = [
     MARKER_LABEL, ...KIND_LABELS,
     ...[...tracks].sort().map((t) => `track:${t}`),
@@ -449,7 +485,7 @@ export function provisionPlan({ graph, teamLabels }) {
   return {
     createLabels: wanted.filter((n) => !have.has(n)),
     existingLabels: wanted.filter((n) => have.has(n)),
-    views: [...STANDARD_VIEWS, ...trackViews(graph)],
+    views: [...STANDARD_VIEWS, ...(cfg && cfg.cycles === "on" ? [THIS_CYCLE_VIEW] : []), ...trackViews(graph)],
   };
 }
 

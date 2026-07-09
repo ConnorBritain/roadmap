@@ -38,7 +38,7 @@ import {
   issueDescription, machineFooter, buildPushPlan, buildPullProposals, validateLinearConfig, holdsFor,
   desiredLabels, projectDescription, projectSubtitleRaw, projectName, projectContent, normalizeLinearMarkdown,
   projectColorFor, projectIconFor, MARKER_LABEL, PLATE_LABEL, LINEAR_PROJECT_NAME_MAX, LINEAR_PROJECT_DESC_MAX,
-  initiativePlan, initiativeStyle, startStampTargets, milestonePlan, HELD_STATUSES,
+  initiativePlan, initiativeStyle, startStampTargets, milestonePlan, HELD_STATUSES, cyclePlan,
   provisionPlan, manualViewChecklist, dispatchGuidance, STANDARD_VIEWS,
 } from "../lib/linear-core.mjs";
 import { platedKeys, plateDrainKeys, setPlateDoc, validatePlate } from "../lib/plate-core.mjs";
@@ -1488,6 +1488,33 @@ test("horizon near: gates new far-future issues, keeps mapped ones updating, def
   ok(v.errors.some((e) => e.includes('horizon "soon"')), "invalid horizon blocks at validate");
 });
 
+// ── linear-core: cycles ───────────────────────────────────────────────────────
+// WHY: the active cycle IS the elected weekly batch — if assignment oscillates, clears a human's
+// future-cycle parking, or lets demotions linger, the cycle chart lies and "this week" silently
+// re-inflates; and with no active cycle the sync must never guess one.
+test("cyclePlan assigns active/next on drift, clears only current-cycle demotions, spares future parking", () => {
+  const g = { meta: { schema_version: 1, program: "T", linear: { team: "ENG", cycles: "on" } },
+    pis: [{ id: "p", title: "P", status: "active", linear: { project: "proj-1" }, sprints: [
+      { id: "s1", title: "A", status: "active", invoke: "a", linear: "ENG-1" },      // uncycled → assign
+      { id: "s2", title: "B", status: "next", invoke: "b", linear: "ENG-2" },        // already in → no-op
+      { id: "s3", title: "C", status: "scheduled", invoke: "c", linear: "ENG-3" },   // demoted, in current → clear
+      { id: "s4", title: "D", status: "scheduled", invoke: "d", linear: "ENG-4" },   // parked in FUTURE cycle → untouched
+      { id: "s5", title: "E", status: "complete", invoke: "e", linear: "ENG-5" },    // done → never a candidate
+      { id: "s6", title: "F", status: "next", invoke: "f" },                          // unmapped → not a candidate
+    ]}]};
+  const issues = { "ENG-1": { id: "u1", cycleId: null }, "ENG-2": { id: "u2", cycleId: "cyc-1" },
+    "ENG-3": { id: "u3", cycleId: "cyc-1" }, "ENG-4": { id: "u4", cycleId: "cyc-2" }, "ENG-5": { id: "u5", cycleId: "cyc-1" } };
+  const plan = cyclePlan({ graph: g, activeCycleId: "cyc-1", issues });
+  eq(plan.assign.map((x) => x.invoke), ["a"], "only the drifted active/next issue assigns");
+  eq(plan.clear.map((x) => x.invoke), ["c"], "only the current-cycle demotion clears — future parking and done work untouched");
+  eq(cyclePlan({ graph: g, activeCycleId: null, issues }), { assign: [], clear: [] }, "no active cycle → nothing");
+  ok(provisionPlan({ graph: g, teamLabels: {} }).views.some((v) => v.name === "This cycle"), "cycles on → This cycle view offered");
+  const off = { meta: { ...g.meta, linear: { team: "ENG" } }, pis: g.pis };
+  ok(!provisionPlan({ graph: off, teamLabels: {} }).views.some((v) => v.name === "This cycle"), "cycles off → view not offered");
+  const v = validateLinearConfig({ meta: { schema_version: 1, program: "T", linear: { team: "ENG", cycles: "weekly" } }, pis: [] });
+  ok(v.errors.some((e) => e.includes('cycles "weekly"')), "invalid cycles value blocks at validate");
+});
+
 // ── linear-core: PI status → project status ──────────────────────────────────
 // Mirrors the live workspace inventory (organization.projectStatuses): stock has NO paused type.
 const P_STATUSES = [
@@ -2087,7 +2114,7 @@ function linearRepo() {
     `meta:\n  schema_version: 1\n  program: T\n  linear:\n    team: ENG\n    pull: propose\n    watch:\n      - { team: PUB, project: Submit an issue, kind: bug, priority: {tier: P3} }\npis:\n  - id: auth\n    title: Authentication\n    status: active\n    sprints:\n      - { id: s1, title: Login, status: active, invoke: auth-login }\n`, "utf8");
   return root;
 }
-function fakeLinear({ failOn = null, snapshot = {}, projectSnapshot = {}, issueComments = {}, projectMilestones = {}, inboundByTeam = null, teamLabels = [], teamProjects = [], existingViews = [], existingInitiatives = [], projectStatuses = null } = {}) {
+function fakeLinear({ failOn = null, snapshot = {}, projectSnapshot = {}, issueComments = {}, projectMilestones = {}, inboundByTeam = null, teamLabels = [], teamProjects = [], existingViews = [], existingInitiatives = [], projectStatuses = null, activeCycle = null } = {}) {
   const calls = [];
   const createdIssues = {};   // identifier → snapshot shape, so later issue(id:) lookups resolve
   const createdProjects = {};   // id → snapshot shape, so a second run's project(id:) drift diff sees what create pushed
@@ -2100,6 +2127,7 @@ function fakeLinear({ failOn = null, snapshot = {}, projectSnapshot = {}, issueC
     const respond = (data) => ({ ok: true, json: async () => ({ data }) });
     if (query.includes("viewer {")) return respond({ viewer: { id: "viewer-me" } });   // plate: whose My Issues
     if (query.includes("teams(filter")) return respond({ teams: { nodes: [{ id: "team-1", key: "ENG", name: "Eng",
+      activeCycle: activeCycle,
       states: { nodes: [
         { id: "st-b", name: "Backlog", type: "backlog", position: 0 },
         { id: "st-s", name: "In Progress", type: "started", position: 1 },
@@ -2193,7 +2221,14 @@ function fakeLinear({ failOn = null, snapshot = {}, projectSnapshot = {}, issueC
         labels: { nodes: (variables.input.labelIds || []).map((id) => ({ id })) } };
       return respond({ issueCreate: { issue: { id: `uuid-${created}`, identifier } } });
     }
-    if (query.includes("issueUpdate")) return respond({ issueUpdate: { issue: { id: "x" } } });
+    if (query.includes("issueUpdate")) {
+      if (failOn === "cycleUpdate" && "cycleId" in (variables.input || {})) throw new Error("simulated cycle rejection");
+      if ("cycleId" in (variables.input || {})) {   // faithful: persist so a second run's cycle fetch converges
+        const rec = Object.values({ ...snapshot, ...createdIssues }).find((r) => r && r.id === variables.id);
+        if (rec) rec.cycle = variables.input.cycleId ? { id: variables.input.cycleId } : null;
+      }
+      return respond({ issueUpdate: { issue: { id: variables.id } } });
+    }
     if (query.includes("issues(filter")) {
       const team = variables.filter.team.key.eq;
       if (inboundByTeam) return respond({ issues: { nodes: inboundByTeam[team] || [] } });
@@ -2285,6 +2320,38 @@ test("runSync projects PI status → project status, converges, and degrades wit
   ok(!fake2.calls.some((c) => c.query.includes("projectCreate") && c.variables.input.statusId), "degraded push sends no statusId");
   ok(readFileSync(join(root2, "docs", "roadmap", "roadmap.yaml"), "utf8").includes("project: proj-new"), "the push itself still ran");
   rmSync(root2, { recursive: true, force: true });
+});
+
+// WHY: cycles must ride the live sync end-to-end — assign + clear post-push, convergence on the
+// second run (no oscillation against Linear's native rollover), a note instead of a guess when no
+// cycle is active, and an unverified-API rejection degrading without touching the core push.
+test("runSync cycles: assigns active+next, clears demotions, converges, degrades on rejection", async () => {
+  const yaml = `meta:\n  schema_version: 1\n  program: T\n  linear:\n    team: ENG\n    cycles: on\npis:\n  - id: p\n    title: P\n    status: active\n    linear: { project: proj-1 }\n    sprints:\n      - { id: s1, title: A, status: active, invoke: a, linear: ENG-1 }\n      - { id: s2, title: C, status: scheduled, invoke: c, linear: ENG-3 }\n`;
+  const mkRoot = () => { const root = mkdtempSync(join(tmpdir(), "roadmap-cycles-")); mkdirSync(join(root, "docs", "roadmap"), { recursive: true }); writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"), yaml, "utf8"); return root; };
+  const iss = (idf, cycle) => ({ id: `u-${idf}`, identifier: idf, title: "X", description: "", priority: 0, estimate: null, state: { id: "st-s" }, project: { id: "proj-1" }, assignee: null, cycle, labels: { nodes: [] } });
+  const snap = () => ({ "ENG-1": iss("ENG-1", null), "ENG-3": iss("ENG-3", { id: "cyc-1" }) });
+  const proj = () => ({ "proj-1": { id: "proj-1", name: "P" } });
+  const cycleOps = (f) => f.calls.filter((cl) => cl.query.includes("issueUpdate") && "cycleId" in (cl.variables.input || {}));
+  const root = mkRoot();
+  const fake = fakeLinear({ snapshot: snap(), projectSnapshot: proj(), activeCycle: { id: "cyc-1" } });
+  const r1 = await runSync(root, { fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-09T12:00:00Z" });
+  eq(r1.cycles, { assigned: ["a"], cleared: ["c"] }, "active joins the cycle, demoted scheduled leaves it");
+  eq(cycleOps(fake).map((cl) => [cl.variables.id, cl.variables.input.cycleId]), [["u-ENG-1", "cyc-1"], ["u-ENG-3", null]], "assign carries the active cycle id; clear sends null");
+  const r2 = await runSync(root, { fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-09T13:00:00Z" });
+  eq(cycleOps(fake).length, 2, "second run adds no cycle ops (converged via the fake's persistence)");
+  ok(!r2.cycles, "second run reports no cycle work");
+  rmSync(root, { recursive: true, force: true });
+  const root2 = mkRoot();
+  const fake2 = fakeLinear({ snapshot: snap(), projectSnapshot: proj(), activeCycle: { id: "cyc-1" }, failOn: "cycleUpdate" });
+  const r3 = await runSync(root2, { fetchImpl: fake2.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-09T12:00:00Z" });
+  ok(r3.cyclesError && r3.cyclesError.includes("simulated cycle rejection"), "cycle rejection recorded; sync completed");
+  rmSync(root2, { recursive: true, force: true });
+  const root3 = mkRoot();
+  const fake3 = fakeLinear({ snapshot: snap(), projectSnapshot: proj() });   // no active cycle in Linear
+  const r4 = await runSync(root3, { fetchImpl: fake3.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-09T12:00:00Z" });
+  ok(r4.cyclesNote && r4.cyclesNote.includes("no active cycle"), "no active cycle → a note, never a guess");
+  eq(cycleOps(fake3).length, 0, "zero cycle mutations without an active cycle");
+  rmSync(root3, { recursive: true, force: true });
 });
 
 // WHY: the LIVE-verified clobber race — push ran before pull and overwrote a human's
