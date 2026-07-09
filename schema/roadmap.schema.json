@@ -73,7 +73,7 @@
             "push_on": { "enum": ["sync", "manual"], "default": "sync", "description": "sync = /sync runs the Linear phase when authed; manual = only 'roadmap linear sync'." },
             "estimate_max": { "type": "integer", "minimum": 1, "default": 5, "description": "Max value pushed to a slice's native Linear estimate (est_sessions is rounded, then clamped here). Set to your Linear team's estimate scale max — use the 'Linear' scale (1..5; extended adds 6,7) for a direct 1-point=1-session read. validate warns when a slice exceeds it: the signal to split it, not extend." },
             "plate_max": { "type": "integer", "minimum": 1, "default": 7, "description": "Cap on the EXPLICIT meta.plate list — validate warns above it so Linear's My Issues stays signal (active work adds on top, uncapped)." },
-            "status_map": { "type": "object", "additionalProperties": { "type": "string" }, "description": "roadmap status → exact Linear workflow-state NAME overrides; unmapped statuses use the state-TYPE defaults (scheduled→backlog, next→unstarted, active/blocked/paused/gated→started, complete→completed)." },
+            "status_map": { "type": "object", "additionalProperties": { "type": "string" }, "description": "roadmap status → exact Linear workflow-state NAME overrides; unmapped statuses use the state-TYPE defaults (scheduled→backlog, next/blocked/paused/gated→unstarted, active→started, complete→completed). Only active means In Progress; held statuses read Todo + a status:<held> label." },
             "watch": {
               "type": "array",
               "description": "Inbound sources (multiple teams/projects, e.g. a public 'Submit an issue' team). New issues become proposed backlog items carrying source.linear demarcation.",
@@ -173,9 +173,10 @@
         "projected_target_date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "DERIVED target date (YYYY-MM-DD) computed by 'roadmap estimate timeline' from rolled-up slice estimates — the estimate-driven timeline. Never overwrites an explicit target_date (which always wins); the Linear projection uses target_date || projected_target_date. Recomputed each run; don't hand-author." },
         "linear": {
           "type": "object", "additionalProperties": false,
-          "description": "Per-PI Linear override + the pushed-back project id. A granularity conflicting with the global requires the yes_linear_override ack at creation; validate warns on stored mismatches.",
+          "description": "Per-PI Linear override + the pushed-back project id. A granularity or verbosity conflicting with the global requires the yes_linear_override ack at creation; validate warns on stored mismatches.",
           "properties": {
             "granularity": { "enum": ["pis", "slices", "slices+backlog"] },
+            "verbosity": { "enum": ["title", "brief", "full"], "description": "Per-PI issue-description detail override — quiet a noisy PI to title, or richen an active one to full, without moving the global." },
             "project": { "type": "string", "description": "Linear project id — written back by the first push; don't hand-author" }
           }
         },

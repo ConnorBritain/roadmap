@@ -37,6 +37,10 @@ export function effectiveGranularity(cfg, pi) {
   return (pi && pi.linear && pi.linear.granularity) || cfg.granularity;
 }
 
+export function effectiveVerbosity(cfg, pi) {
+  return (pi && pi.linear && pi.linear.verbosity) || cfg.verbosity;
+}
+
 // Validation for validate-core (errors block, warnings surface). Watch `kind` is NOT
 // validated here — an invalid kind is caught by the backlog pre-write gate at capture time.
 export function validateLinearConfig(graph) {
@@ -89,6 +93,12 @@ export function validateLinearConfig(graph) {
         warnings.push(`PI ${pi.id}: linear.granularity "${pi.linear.granularity}" differs from meta.linear.granularity "${cfg.granularity}" — per-PI override in effect`);
       }
     }
+    if (pi.linear && pi.linear.verbosity != null) {
+      if (!VERBOSITIES.includes(pi.linear.verbosity)) errors.push(`PI ${pi.id}: linear.verbosity "${pi.linear.verbosity}" is not one of ${VERBOSITIES.join("|")}`);
+      else if (cfg && pi.linear.verbosity !== cfg.verbosity) {
+        warnings.push(`PI ${pi.id}: linear.verbosity "${pi.linear.verbosity}" differs from meta.linear.verbosity "${cfg.verbosity}" — per-PI override in effect`);
+      }
+    }
     // The Linear subtitle truncates at 255 with "…"; when it's DERIVED (no pi.summary) and the exit's
     // first sentence overflows, nudge to author a summary. An explicit over-length summary errors (validate-core).
     if (cfg && !pi.summary && projectSubtitleRaw(pi).length > LINEAR_PROJECT_DESC_MAX) {
@@ -128,16 +138,18 @@ export function linearStatusLine(state) {
 }
 
 // ── PI-override ack (mirrors the --yes-spawn-autonomous double-ack) ───────────
+// Covers every per-PI Linear override field (granularity, verbosity) with one ack.
 export function checkPiOverrideAck(globalLinear, piLinear, acked, piId) {
-  if (!globalLinear || !piLinear || piLinear.granularity == null) return;
-  if (piLinear.granularity === globalLinear.granularity) return;
-  if (acked) return;
-  throw new Error(
-    `PI "${piId}" overrides Linear granularity ("${piLinear.granularity}") against the global ` +
-    `meta.linear.granularity ("${globalLinear.granularity}") — this PI will push to Linear differently ` +
-    `from the rest of the roadmap. Re-run with yes_linear_override: true to confirm the override, ` +
-    `or drop linear.granularity from the PI to inherit the global. (Nothing was written.)`
-  );
+  if (!globalLinear || !piLinear || acked) return;
+  for (const f of ["granularity", "verbosity"]) {
+    if (piLinear[f] == null || piLinear[f] === globalLinear[f]) continue;
+    throw new Error(
+      `PI "${piId}" overrides Linear ${f} ("${piLinear[f]}") against the global ` +
+      `meta.linear.${f} ("${globalLinear[f]}") — this PI will push to Linear differently ` +
+      `from the rest of the roadmap. Re-run with yes_linear_override: true to confirm the override, ` +
+      `or drop linear.${f} from the PI to inherit the global. (Nothing was written.)`
+    );
+  }
 }
 
 // ── status / priority mapping ─────────────────────────────────────────────────
@@ -296,10 +308,18 @@ export function projectName(pi) {
 export const normalizeLinearMarkdown = (s) =>
   String(s || "").replace(/\[([^\]]*)\]\(<[^>]*>\)/g, "$1").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1");
 
+// A "." that ends a common abbreviation is not a sentence end — without this the derived
+// subtitle for "…seeds every node DB (incl. Flock…)" ships as the fragment "…DB (incl."
+// (live-hit on a real board: reads like truncation, fires no over-length warning).
+const ABBREV_END = /\b(?:incl|etc|vs|approx|cf|e\.g|i\.e)\.$/i;
 const firstSentence = (s) => {
   const t = oneLine(s);
-  const m = t.match(/^.*?[.!?](?=\s|$)/);
-  return (m ? m[0] : t).trim();
+  const re = /[.!?](?=\s|$)/g;
+  for (let m; (m = re.exec(t)); ) {
+    const candidate = t.slice(0, m.index + 1);
+    if (!ABBREV_END.test(candidate)) return candidate.trim();
+  }
+  return t.trim();
 };
 
 // The RAW (pre-clip) subtitle. An explicit `pi.summary` wins (it's authored to be the subtitle);
@@ -530,10 +550,14 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
     }
     if (gran === "pis") continue;   // projects only — no issue leaks for this PI
 
+    // Per-PI verbosity override rides the same cfg the description builder already reads;
+    // identical → the shared cfg object (no spread), so the default path stays byte-identical.
+    const effVerb = effectiveVerbosity(cfg, pi);
+    const descCfg = effVerb === cfg.verbosity ? cfg : { ...cfg, verbosity: effVerb };
     for (const node of piNodes) {
       // create only not-done work (issues for finished history are noise); always update mapped.
       if (!node.linear && isDone(node.status)) continue;
-      pushIssueOp(node, { type: "slice", key: node.invoke }, node.status, resolvePushState, pi.id, projId || null);
+      pushIssueOp(node, { type: "slice", key: node.invoke }, node.status, resolvePushState, pi.id, projId || null, descCfg);
     }
   }
 
@@ -565,7 +589,7 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
     return ids.sort();
   }
 
-  function pushIssueOp(node, target, status, resolver, projectRef, projectId = null) {
+  function pushIssueOp(node, target, status, resolver, projectRef, projectId = null, descCfg = cfg) {
     const state = resolver(status, cfg, teamStates);
     const onPlate = plate ? plate.has(target.key) : false;
     const plated = onPlate && !!viewerId;   // we will actually assign + label (label never lies about assignment)
@@ -576,7 +600,7 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
     const points = node.estSessions != null ? Math.min(Math.round(node.estSessions), cfg.estimate_max) : 0;
     const projection = {
       title: node.title,
-      description: issueDescription(node, cfg, { docsUrl, target }),
+      description: issueDescription(node, descCfg, { docsUrl, target }),   // descCfg carries a per-PI verbosity override
       priority: priorityToLinear(node.priority),
       stateId: state.id,
       labelIds,

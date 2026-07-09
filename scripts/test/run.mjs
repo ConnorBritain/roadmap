@@ -33,7 +33,7 @@ import { estimationConfig, estimateArgs, parseEstimateRecord, applyEstimate, val
 import { runEstimate, resolveEngine, runTimeline, runLog, resolveHistory } from "../estimate.mjs";
 import { mutateRoadmap, mutateBacklog, mutateBoth } from "../lib/store.mjs";
 import {
-  normalizeLinearConfig, effectiveGranularity, linearState, checkPiOverrideAck,
+  normalizeLinearConfig, effectiveGranularity, effectiveVerbosity, linearState, checkPiOverrideAck,
   resolvePushState, resolveProjectStatus, pullStatusFor, priorityToLinear, LINEAR_TO_PRIORITY,
   issueDescription, machineFooter, buildPushPlan, buildPullProposals, validateLinearConfig, holdsFor,
   desiredLabels, projectDescription, projectSubtitleRaw, projectName, projectContent, normalizeLinearMarkdown,
@@ -1412,6 +1412,54 @@ test("buildPushPlan is idempotent: matching snapshot → only the missing-issue 
   const upd = drifted.ops.find((o) => o.op === "updateIssue");
   eq(upd.payload, { title: "Login" }, "only the drifted field is sent");
   eq(upd.id, "uuid-1", "update targets the Linear uuid");
+});
+
+// ── linear-core: per-PI verbosity ─────────────────────────────────────────────
+// WHY: a silently-ignored per-PI verbosity override makes the board lie about detail level —
+// the user quiets a noisy PI to title (or richens an active one to full) and nothing changes.
+test("per-PI verbosity overrides the global for that PI's issues only", () => {
+  const g = { meta: { schema_version: 1, program: "T", linear: { team: "ENG", verbosity: "title" } },
+    pis: [
+      { id: "loud", title: "Loud", status: "active", linear: { project: "proj-1", verbosity: "brief" }, sprints: [
+        { id: "s1", title: "A", status: "next", invoke: "loud-a", what: "does a thing", gate: "gate a" } ]},
+      { id: "quiet", title: "Quiet", status: "active", linear: { project: "proj-2" }, sprints: [
+        { id: "s1", title: "B", status: "next", invoke: "quiet-b", what: "does b", gate: "gate b" } ]},
+    ]};
+  const cfg = normalizeLinearConfig(g.meta);
+  eq(effectiveVerbosity(cfg, g.pis[0]), "brief", "per-PI verbosity wins");
+  eq(effectiveVerbosity(cfg, g.pis[1]), "title", "no override → global");
+  const existing = { projects: { "proj-1": { id: "proj-1", name: "Loud" }, "proj-2": { id: "proj-2", name: "Quiet" } }, issues: {} };
+  const plan = buildPushPlan({ graph: g, backlog: null, cfg, teamStates: L_STATES, existing });
+  const desc = Object.fromEntries(plan.ops.filter((o) => o.op === "createIssue").map((o) => [o.writeBack.invoke, o.payload.description]));
+  ok(desc["loud-a"].includes("Gate: gate a"), "overridden PI carries brief detail (what + gate)");
+  ok(!desc["quiet-b"].includes("Gate"), "global-title PI stays footer-only");
+});
+
+// WHY: an unacked per-PI override is how two sessions diverge on what Linear shows — verbosity
+// must gate through the SAME ack as granularity, and validate must flag the stored mismatch.
+test("verbosity override is ack-gated and validate flags invalid/differing values", () => {
+  const globalCfg = normalizeLinearConfig({ linear: { team: "ENG" } });   // verbosity default brief
+  throws(() => checkPiOverrideAck(globalCfg, { verbosity: "title" }, false, "x"), 'overrides Linear verbosity ("title")');
+  checkPiOverrideAck(globalCfg, { verbosity: "title" }, true, "x");   // acked → passes
+  checkPiOverrideAck(globalCfg, { verbosity: "brief" }, false, "x");  // matches global → no ack needed
+  const g = { meta: { schema_version: 1, program: "T", linear: { team: "ENG" } }, pis: [
+    { id: "bad", title: "B", status: "active", linear: { verbosity: "loud" }, sprints: [{ id: "s1", title: "A", status: "next", invoke: "bad-a" }] },
+    { id: "diff", title: "D", status: "active", linear: { verbosity: "full" }, sprints: [{ id: "s1", title: "A", status: "next", invoke: "diff-a" }] },
+  ]};
+  const v = validateLinearConfig(g);
+  ok(v.errors.some((e) => e.includes('linear.verbosity "loud"')), "invalid per-PI verbosity is an error");
+  ok(v.warnings.some((w) => w.includes("PI diff") && w.includes("verbosity")), "differing per-PI verbosity warns (override in effect)");
+});
+
+// WHY: a "." inside an abbreviation ended the derived subtitle mid-parenthetical — the one line
+// humans read on the project card shipped as "…DB (incl." on a live board and read as truncation.
+test("firstSentence-derived subtitle survives abbreviations (incl., e.g.) and still splits real sentences", () => {
+  const pi = { id: "net", title: "Live Network", exit_criteria: "Flock deterministically seeds every node DB (incl. Bridge sidecars) on turnkey hosts. Second sentence here." };
+  eq(projectSubtitleRaw(pi), "Flock deterministically seeds every node DB (incl. Bridge sidecars) on turnkey hosts.", "abbreviation does not end the sentence; the real period does");
+  const eg = { id: "x", title: "X", exit_criteria: "Covers hosts (e.g. approved VMs) end to end. More detail." };
+  eq(projectSubtitleRaw(eg), "Covers hosts (e.g. approved VMs) end to end.", "e.g. survives too");
+  const noEnd = { id: "y", title: "Y", exit_criteria: "Ends on an abbreviation incl." };
+  eq(projectSubtitleRaw(noEnd), "Ends on an abbreviation incl.", "no real sentence end → whole line, never empty");
 });
 
 // ── linear-core: PI status → project status ──────────────────────────────────
