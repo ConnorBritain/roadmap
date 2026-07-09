@@ -65,6 +65,7 @@ export function flatten(graph) {
         statusLabel: sp.status_label || null,
         what: sp.what || sp.title,
         estSessions: typeof sp.est_sessions === "number" ? sp.est_sessions : null,
+        estMinutes: sp.estimate && sp.estimate.minutes ? sp.estimate.minutes : null,   // { low, expected, high } from agent-time; drives the timeline rollup
         rawDeps: sp.deps || [],
         deps: [],        // resolved sprint nodeKeys
         piDeps: [],      // resolved PI ids this sprint waits on

@@ -469,7 +469,7 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
     const icon = declared.icon || projectIconFor(iIdx);
     const priority = pi.priority ? priorityToLinear(pi.priority) : null;   // null → leave Linear's (No priority)
     const startDate = pi.start_date || null;   // explicit, or auto-stamped when the PI went active (sync write-back)
-    const targetDate = pi.target_date || null;
+    const targetDate = pi.target_date || pi.projected_target_date || null;   // explicit commitment wins; else the estimate-derived projection ('roadmap estimate timeline')
     const desired = {   // the full projection; create takes it whole, update diffs field-by-field
       name,
       ...(desc ? { description: desc } : {}),

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // roadmap estimate — bridges agent-time's estimator.py into the roadmap.
-//   roadmap estimate <slice> [--force]   estimate one slice (skips if already estimated)
-//   roadmap estimate --all [--force]     estimate every classified, un-estimated slice
+//   roadmap estimate <slice> [--force]      estimate one slice (skips if already estimated)
+//   roadmap estimate --all [--force]        estimate every classified, un-estimated slice
+//   roadmap estimate timeline [--now DATE]  roll durations up into projected_target_date per PI
 // The brain is lib/estimate-core.mjs (pure). This layer resolves the engine, spawns python
 // (injectable for tests), and writes the est_minutes block back via lib/store.mjs.
 
@@ -13,7 +14,7 @@ import { fileURLToPath } from "node:url";
 import { loadGraph } from "./lib/graph.mjs";
 import { mutateRoadmap, roadmapPaths } from "./lib/store.mjs";
 import { setFields } from "./lib/mcp-core.mjs";
-import { estimationConfig, estimateArgs, parseEstimateRecord, applyEstimate } from "./lib/estimate-core.mjs";
+import { estimationConfig, estimateArgs, parseEstimateRecord, applyEstimate, timelinePlan } from "./lib/estimate-core.mjs";
 
 // Resolve estimator.py: explicit meta.estimation.engine → $AGENT_TIME_ENGINE → the installed skill.
 export function resolveEngine(cfg, env = process.env, exists = existsSync) {
@@ -90,16 +91,57 @@ export function runEstimate(root, opts = {}) {
   return { estimated, skipped, errors };
 }
 
+// Roll the per-slice estimates up into a projected_target_date per PI and write it back (never
+// touching an explicit target_date — a separate field, so the commitment always wins). Only PIs
+// whose projection changed are written. `now` is injectable for deterministic tests. Returns the
+// plan plus `changed` (the PI ids whose projected_target_date moved).
+export function runTimeline(root, opts = {}) {
+  const graph = loadGraph(roadmapPaths(root).yaml);
+  const now = opts.now || new Date().toISOString();
+  const plan = timelinePlan(graph, { now, concurrency: opts.concurrency });
+  const wanted = new Map(plan.pis.map((p) => [p.pi, p.projected_target_date]));
+  const changed = [];
+  for (const pi of graph.pis || []) {
+    const cur = pi.projected_target_date || null;
+    const want = wanted.has(pi.id) ? wanted.get(pi.id) : null;
+    if (cur !== want) changed.push(pi.id);
+  }
+  if (changed.length) {
+    mutateRoadmap(root, (doc) => {
+      const items = (doc.get("pis") || {}).items || [];
+      for (let i = 0; i < items.length; i++) {
+        const id = String(items[i].get("id"));
+        const want = wanted.has(id) ? wanted.get(id) : null;
+        if (want) doc.setIn(["pis", i, "projected_target_date"], want);
+        else if (items[i].get("projected_target_date") != null) doc.deleteIn(["pis", i, "projected_target_date"]);
+      }
+      return { projected: plan.pis.length };
+    });
+  }
+  return { ...plan, changed };
+}
+
 // ── CLI ───────────────────────────────────────────────────────────────────────
 const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
   const args = process.argv.slice(2);
   const has = (n) => args.includes(n);
+  const val = (n) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : undefined; };
   const positional = args.filter((a) => !a.startsWith("-"));
   const sub = positional[0];
   const root = process.cwd();
   try {
-    if (sub === "timeline" || sub === "log") { console.error(`roadmap estimate ${sub}: not yet (lands in a later phase).`); process.exit(2); }
+    if (sub === "timeline") {
+      const nowArg = val("--now");
+      const r = runTimeline(root, nowArg ? { now: nowArg } : {});
+      console.log(`timeline: anchored ${r.anchor} · ${r.concurrency}-wide · ${r.point} · ${r.hoursPerDay}h/day`);
+      for (const p of r.pis) console.log(`  ${p.pi} → ${p.projected_target_date}`);
+      console.log(r.changed.length ? `projected_target_date updated on ${r.changed.length} PI(s): ${r.changed.join(", ")}` : "projected_target_date: already current (no change).");
+      if (r.unpriced.length) console.log(`unpriced (no estimate — 0 span, run 'roadmap estimate --all'): ${[...new Set(r.unpriced)].join(", ")}`);
+      if (r.held.length) console.log(`held (blocked / gated — not scheduled, excluded): ${r.held.join(", ")}`);
+      process.exit(0);
+    }
+    if (sub === "log") { console.error("roadmap estimate log: not yet (Phase 3)."); process.exit(2); }
     const opts = { force: has("--force") };
     if (has("--all")) opts.all = true;
     else if (sub) opts.invoke = sub;

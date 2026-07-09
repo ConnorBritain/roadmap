@@ -7,6 +7,8 @@
 // agent-time owns the shape/risk vocabulary — its SHAPES/RISKS tables validate and reject
 // unknown values — so the roadmap deliberately does NOT duplicate the enum (no drift).
 
+import { flatten, computeWaves, isDone } from "./graph.mjs";
+
 const DEFAULTS = { python: "python3", hours_per_day: 6, point: "expected", model: "opus-4.8" };
 
 // meta.estimation → a filled config (defaults applied). Estimation is an explicit command,
@@ -65,6 +67,76 @@ export function applyEstimate(record) {
     at: record.ts,
     basis: record.calibration_basis,
   };
+}
+
+// A calendar date `offsetMinutes` of agent wall-clock after `anchor`, at `hoursPerDay`
+// productive hours/day. Calendar days (ceil), not business days (a deferred knob). `anchor`
+// is a fixed YYYY-MM-DD string, so this stays deterministic (no wall-clock read).
+export function calendarFromMinutes(offsetMinutes, { hoursPerDay, anchor }) {
+  const days = Math.ceil(Math.max(0, offsetMinutes) / (hoursPerDay * 60));
+  const d = new Date(`${anchor}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+// Roll per-slice durations up into a projected target date per PI. Uses the SAME wave
+// schedule the fanout runs (computeWaves: dependency + concurrency + file-contention order),
+// so the projection matches how work actually flows. A wave runs concurrently → its span is
+// the MAX slice duration in it (not the sum); waves are sequential → spans accumulate. Each PI's
+// finish is its last scheduled slice's cumulative offset, laid on the calendar from `anchor`.
+//
+// Honest bounds (surfaced, never a silent hole in the DATE):
+//  · Unpriced slice (no estimate) → it's scheduled work of unknown length, so it SUPPRESSES its
+//    PI's date entirely (a PI is dated only when every remaining slice is priced) and is listed in
+//    `unpriced`. We never emit a date that quietly omits it.
+//  · Held slice (blocked / gated-on-human) → not schedulable, so computeWaves excludes it from the
+//    makespan; it's listed in `held`. The date reflects the schedulable frontier, deliberately
+//    optimistic there — but that's a labelled, surfaced exclusion, not a zero folded into the number.
+export function timelinePlan(graph, opts = {}) {
+  const cfg = estimationConfig(graph.meta || {});
+  const point = opts.point || cfg.point;
+  const hoursPerDay = opts.hoursPerDay || cfg.hours_per_day;
+  const concurrency = opts.concurrency || (graph.meta && graph.meta.default_concurrency) || 3;
+  const activeStarts = (graph.pis || []).filter((p) => p.status === "active" && p.start_date).map((p) => p.start_date).sort();
+  const anchor = opts.anchor || activeStarts[0] || (opts.now ? opts.now.slice(0, 10) : null);
+  if (!anchor) throw new Error("timelinePlan needs an anchor: no active start_date and no `now` supplied");
+
+  const minsAt = (minutes) => (minutes && typeof minutes[point] === "number") ? minutes[point] : null;
+
+  // Pricing gate from the GRAPH (authoritative — covers held slices too, which never reach the waves):
+  // a PI earns a date only when it has a priced remaining slice AND no unpriced one.
+  const unpriced = [];
+  const hasPriced = new Set();
+  const hasUnpriced = new Set();
+  for (const pi of graph.pis || []) {
+    for (const sp of pi.sprints || []) {
+      if (isDone(sp.status)) continue;
+      if (minsAt(sp.estimate && sp.estimate.minutes) == null) { unpriced.push(sp.invoke); hasUnpriced.add(pi.id); }
+      else hasPriced.add(pi.id);
+    }
+  }
+
+  // Makespan from the wave schedule: span = slowest slice (parallel), waves accumulate (sequential).
+  // Every scheduled node registers its PI's finish (Math.max, so a 0-min wave still records offset 0).
+  const model = flatten(graph);
+  const { waves, held } = computeWaves(model, concurrency);
+  const finishByPi = new Map();
+  let cumulative = 0;
+  for (const wave of waves) {
+    let span = 0;
+    for (const n of wave) { const m = minsAt(n.estMinutes); if (m != null && m > span) span = m; }
+    cumulative += span;
+    for (const n of wave) finishByPi.set(n.piId, Math.max(finishByPi.get(n.piId) ?? 0, cumulative));
+  }
+
+  const pis = [];
+  for (const pi of graph.pis || []) {
+    if (!hasPriced.has(pi.id) || hasUnpriced.has(pi.id)) continue;   // needs a basis AND no unpriced hole
+    if (!finishByPi.has(pi.id)) continue;   // priced but every slice is held (none scheduled) → no makespan
+    pis.push({ pi: pi.id, projected_target_date: calendarFromMinutes(finishByPi.get(pi.id), { hoursPerDay, anchor }) });
+  }
+  const heldInvokes = [...(held.onHuman || []), ...(held.blocked || [])].map((n) => n.invoke);
+  return { anchor, concurrency, hoursPerDay, point, pis, unpriced, held: heldInvokes };
 }
 
 // Optional estimation config + per-slice estimate fields. Absent → no-op. Mirrors

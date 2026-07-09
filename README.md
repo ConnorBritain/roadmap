@@ -365,6 +365,18 @@ The recommended workspace shape at agent scale: **one team per actively-managed 
 
 ---
 
+## Estimation & timeline (optional) — pairs with [agent-time](https://github.com/ConnorBritain/agent-time)
+
+`target_date` is the one roadmap date that's usually a guess. [**agent-time**](https://github.com/ConnorBritain/agent-time) — a local-first estimation skill — prices a task in calibrated *agent-rounds → wall-clock minutes* (never human hours) and self-corrects from logged outcomes. Wire it in and the roadmap turns those durations into a **projected timeline**:
+
+- **`roadmap estimate <slice|--all>`** tags each classified slice (`shape` + optional `risks`) with a cached `estimate` (low/expected/high minutes + confidence). Idempotent; `--force` refreshes. An unclassified slice is skipped, not guessed.
+- **`roadmap estimate timeline`** rolls those durations up along the **same wave / dependency / concurrency schedule the fanout actually runs** — a wave counts as its slowest slice, waves accumulate — into a `projected_target_date` per PI. That fills Linear's `targetDate` wherever you haven't set an explicit commitment (**an explicit `target_date` always wins**). Honesty is enforced at the date, not just the report: an **unpriced** slice *suppresses* its PI's date (a PI is dated only when every remaining slice is estimated), and **blocked/gated** slices are excluded as a labelled optimistic frontier — both are surfaced, never folded into the number as a silent zero.
+- `estimate` and `timeline` are also **MCP tools**, so a session picking up a slice can estimate it in-band.
+
+Config lives in `meta.estimation` (`engine` path, `hours_per_day` throughput, `expected|high` point). **agent-time itself is untouched** — the roadmap is just another caller of its `estimate --json` CLI. Install the [`agent-time-estimator`](https://github.com/ConnorBritain/agent-time) skill (or set `meta.estimation.engine`) and the default resolution finds it. The two are built to work hand-in-hand: the same calibrated numbers that size one task plan the whole program.
+
+---
+
 ## Riding the wave: discipline + the review ritual
 
 Two second-order effects of agent-scale work, both encoded:
