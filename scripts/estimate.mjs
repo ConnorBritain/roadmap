@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // roadmap estimate — bridges agent-time's estimator.py into the roadmap.
-//   roadmap estimate <slice> [--force]   estimate one slice (skips if already estimated)
-//   roadmap estimate --all [--force]     estimate every classified, un-estimated slice
+//   roadmap estimate <slice> [--force]      estimate one slice (skips if already estimated)
+//   roadmap estimate --all [--force]        estimate every classified, un-estimated slice
+//   roadmap estimate timeline [--now DATE]  roll durations up into projected_target_date per PI
 // The brain is lib/estimate-core.mjs (pure). This layer resolves the engine, spawns python
 // (injectable for tests), and writes the est_minutes block back via lib/store.mjs.
 

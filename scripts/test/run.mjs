@@ -3084,22 +3084,52 @@ test("timelinePlan: wave span is the max (parallel), accumulates across waves (s
   eq(r.unpriced, [], "all priced");
 });
 
-// WHY: an unpriced slice must not silently inflate a wave to zero-cost nor be hidden — and a PI with NO
-// priced slice must get no fabricated date. Silent-zero here is exactly the dishonest-timeline failure.
-test("timelinePlan: unpriced slices are surfaced not counted; an all-unpriced PI gets no date; now-anchor fallback", () => {
+// WHY: an unpriced slice is scheduled work of UNKNOWN length — letting its PI still emit a concrete
+// date pushes a silently-optimistic commitment to Linear. A PI is dated ONLY when every remaining
+// slice is priced; a single unestimated slice suppresses the PI's date and is surfaced instead.
+test("timelinePlan: any unpriced remaining slice suppresses its PI's date; unpriced surfaced; now-anchor fallback", () => {
   const g = { meta: { schema_version: 1, program: "T", default_concurrency: 3 }, pis: [
-    { id: "a", title: "A", status: "next", sprints: [
-      { id: "s1", title: "priced", status: "next", invoke: "a1", estimate: { minutes: { low: 60, expected: 180, high: 360 } } },
-      { id: "s2", title: "unpriced", status: "next", invoke: "a2" },
+    { id: "full", title: "Full", status: "next", sprints: [
+      { id: "s1", title: "priced", status: "next", invoke: "f1", estimate: { minutes: { low: 60, expected: 180, high: 360 } } },
     ]},
-    { id: "c", title: "C", status: "next", sprints: [
-      { id: "s1", title: "unpriced too", status: "next", invoke: "c1" },
+    { id: "mixed", title: "Mixed", status: "next", sprints: [
+      { id: "s1", title: "priced", status: "next", invoke: "m1", estimate: { minutes: { low: 60, expected: 180, high: 360 } } },
+      { id: "s2", title: "unpriced", status: "next", invoke: "m2" },
+    ]},
+    { id: "none", title: "None", status: "next", sprints: [
+      { id: "s1", title: "unpriced", status: "next", invoke: "n1" },
     ]},
   ]};
   const r = timelinePlan(g, { now: "2026-07-08T00:00:00Z" });
   eq(r.anchor, "2026-07-08", "no active start_date → anchored on now");
-  eq(r.pis, [{ pi: "a", projected_target_date: "2026-07-09" }], "span 180 (a1 only), not inflated by the unpriced sibling; C gets no date");
-  eq([...r.unpriced].sort(), ["a2", "c1"], "unpriced slices surfaced for the coverage gap");
+  eq(r.pis.map((p) => p.pi), ["full"], "only the fully-priced PI is dated; one unpriced slice suppresses its PI (mixed + none)");
+  eq([...r.unpriced].sort(), ["m2", "n1"], "every unpriced remaining slice surfaced for the coverage gap");
+});
+
+// WHY: held (blocked/gated) work isn't schedulable, so it must be EXCLUDED from the makespan and
+// surfaced in `held` — not folded in as a zero. The PI still dates from its schedulable slices (a
+// labelled optimistic frontier), so held work never silently inflates or fabricates the number.
+test("timelinePlan: a held slice is excluded from the makespan and surfaced; the PI dates from its schedulable work", () => {
+  const g = { meta: { schema_version: 1, program: "T", default_concurrency: 3 }, pis: [
+    { id: "a", title: "A", status: "active", start_date: "2026-07-01", sprints: [
+      { id: "s1", title: "go", status: "next", invoke: "a1", estimate: { minutes: { low: 60, expected: 360, high: 720 } } },
+      { id: "s2", title: "wait", status: "gated", gated_on: "Connor", invoke: "a2", estimate: { minutes: { low: 60, expected: 360, high: 720 } } },
+    ]},
+  ]};
+  const r = timelinePlan(g, {});
+  ok(r.held.includes("a2"), "the gated slice surfaces in held");
+  eq(r.pis, [{ pi: "a", projected_target_date: "2026-07-02" }], "date from the schedulable slice (360 min → +1 day); the held slice is excluded, not zeroed");
+});
+
+// WHY: a degenerate 0-minute estimate must project to the anchor (zero work → done at the start), never
+// crash the whole timeline run with an Invalid Date throw — a real crash-on-edge at the estimate boundary.
+test("timelinePlan: a zero-minute priced slice projects to the anchor, never NaN/throw", () => {
+  const g = { meta: { schema_version: 1, program: "T" }, pis: [
+    { id: "a", title: "A", status: "active", start_date: "2026-07-01", sprints: [
+      { id: "s1", title: "trivial", status: "next", invoke: "a1", estimate: { minutes: { low: 0, expected: 0, high: 0 } } },
+    ]},
+  ]};
+  eq(timelinePlan(g, {}).pis, [{ pi: "a", projected_target_date: "2026-07-01" }], "zero work → the anchor date, not an Invalid Date");
 });
 
 // WHY: the write-back must fill the projection WITHOUT ever touching an explicit target_date (the human
