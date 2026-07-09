@@ -3,10 +3,11 @@
 //   roadmap estimate <slice> [--force]      estimate one slice (skips if already estimated)
 //   roadmap estimate --all [--force]        estimate every classified, un-estimated slice
 //   roadmap estimate timeline [--now DATE]  roll durations up into projected_target_date per PI
+//   roadmap estimate log <slice> --status … log a completed slice's outcome → agent-time calibration
 // The brain is lib/estimate-core.mjs (pure). This layer resolves the engine, spawns python
 // (injectable for tests), and writes the est_minutes block back via lib/store.mjs.
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -14,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import { loadGraph } from "./lib/graph.mjs";
 import { mutateRoadmap, roadmapPaths } from "./lib/store.mjs";
 import { setFields } from "./lib/mcp-core.mjs";
-import { estimationConfig, estimateArgs, parseEstimateRecord, applyEstimate, timelinePlan } from "./lib/estimate-core.mjs";
+import { estimationConfig, estimateArgs, parseEstimateRecord, applyEstimate, timelinePlan, logArgs, alreadyLogged } from "./lib/estimate-core.mjs";
 
 // Resolve estimator.py: explicit meta.estimation.engine → $AGENT_TIME_ENGINE → the installed skill.
 export function resolveEngine(cfg, env = process.env, exists = existsSync) {
@@ -121,6 +122,38 @@ export function runTimeline(root, opts = {}) {
   return { ...plan, changed };
 }
 
+// agent-time's history path for this repo — same resolution the estimator uses when spawned with
+// cwd=root (<root>/.claude/agent-time/history.jsonl), or $AGENT_TIME_DATA. Used only for idempotency.
+export function resolveHistory(root, env = process.env) {
+  return env.AGENT_TIME_DATA || join(root, ".claude", "agent-time", "history.jsonl");
+}
+
+// Log a completed slice's outcome to agent-time so its estimates self-correct (the calibration loop).
+// Idempotent per task_id via agent-time's own history — re-firing (e.g. the Stop hook on every session
+// end) never double-counts. Best-effort on the spawn: a failure is returned, never thrown through.
+// opts: { invoke, status?, force?, actualMinutes?, actualRounds?, runEstimator? }.
+export function runLog(root, opts = {}) {
+  const graph = loadGraph(roadmapPaths(root).yaml);
+  const cfg = estimationConfig(graph.meta || {});
+  let sprint = null;
+  for (const pi of graph.pis || []) for (const sp of pi.sprints || []) if (sp.invoke === opts.invoke) sprint = sp;
+  if (!sprint) throw new Error(`no slice "${opts.invoke}"`);
+  const status = opts.status || "pass";
+  const args = logArgs(sprint, status, { actualMinutes: opts.actualMinutes, actualRounds: opts.actualRounds });   // throws if not estimated
+
+  const histPath = resolveHistory(root);
+  if (!opts.force && existsSync(histPath) && alreadyLogged(readFileSync(histPath, "utf8"), sprint.estimate.task_id)) {
+    return { skipped: true, invoke: opts.invoke, reason: "already calibrated (use --force)" };
+  }
+  const run = opts.runEstimator || (() => { const e = resolveEngine(cfg); return (a, o) => spawnEstimator(cfg.python, e, a, o.cwd); })();
+  const r = run(args, { cwd: root });
+  if (!r || r.status !== 0) {
+    const detail = (r && (r.stderr || (r.error && r.error.message))) || "";
+    return { error: `estimator log exited ${r ? r.status : "?"}: ${String(detail).trim().slice(0, 200)}`, invoke: opts.invoke };
+  }
+  return { logged: opts.invoke, status, task_id: sprint.estimate.task_id };
+}
+
 // ── CLI ───────────────────────────────────────────────────────────────────────
 const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
@@ -141,7 +174,17 @@ if (isMain) {
       if (r.held.length) console.log(`held (blocked / gated — not scheduled, excluded): ${r.held.join(", ")}`);
       process.exit(0);
     }
-    if (sub === "log") { console.error("roadmap estimate log: not yet (Phase 3)."); process.exit(2); }
+    if (sub === "log") {
+      const invoke = positional[1];
+      if (!invoke) { console.error("usage: roadmap estimate log <slice> [--status pass|fail|partial|abandoned] [--actual-rounds N] [--actual-minutes M] [--force]"); process.exit(2); }
+      const ar = val("--actual-rounds"), am = val("--actual-minutes");
+      const r = runLog(root, { invoke, status: val("--status"), force: has("--force"),
+        actualRounds: ar != null ? Number(ar) : undefined, actualMinutes: am != null ? Number(am) : undefined });
+      if (r.skipped) console.log(`- ${r.invoke}: ${r.reason}`);
+      else if (r.error) { console.error(`✗ ${r.invoke}: ${r.error}`); process.exit(1); }
+      else console.log(`✓ ${r.logged}: outcome logged (${r.status}) → agent-time calibration updated.`);
+      process.exit(0);
+    }
     const opts = { force: has("--force") };
     if (has("--all")) opts.all = true;
     else if (sub) opts.invoke = sub;
