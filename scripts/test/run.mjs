@@ -33,12 +33,12 @@ import { estimationConfig, estimateArgs, parseEstimateRecord, applyEstimate, val
 import { runEstimate, resolveEngine, runTimeline, runLog, resolveHistory } from "../estimate.mjs";
 import { mutateRoadmap, mutateBacklog, mutateBoth } from "../lib/store.mjs";
 import {
-  normalizeLinearConfig, effectiveGranularity, linearState, checkPiOverrideAck,
+  normalizeLinearConfig, effectiveGranularity, effectiveVerbosity, linearState, checkPiOverrideAck,
   resolvePushState, resolveProjectStatus, pullStatusFor, priorityToLinear, LINEAR_TO_PRIORITY,
   issueDescription, machineFooter, buildPushPlan, buildPullProposals, validateLinearConfig, holdsFor,
-  desiredLabels, projectDescription, projectSubtitleRaw, projectName, projectContent, normalizeLinearMarkdown,
+  desiredLabels, projectDescription, projectSubtitleRaw, projectName, projectContent, normalizeLinearMarkdown, withinHistory, staleKeys,
   projectColorFor, projectIconFor, MARKER_LABEL, PLATE_LABEL, LINEAR_PROJECT_NAME_MAX, LINEAR_PROJECT_DESC_MAX,
-  initiativePlan, initiativeStyle, startStampTargets, milestonePlan, HELD_STATUSES,
+  initiativePlan, initiativeStyle, startStampTargets, milestonePlan, HELD_STATUSES, cyclePlan,
   provisionPlan, manualViewChecklist, dispatchGuidance, STANDARD_VIEWS,
 } from "../lib/linear-core.mjs";
 import { platedKeys, plateDrainKeys, setPlateDoc, validatePlate } from "../lib/plate-core.mjs";
@@ -46,6 +46,10 @@ import { addPi, setPlate, addPlate, removePlate } from "../lib/mcp-core.mjs";
 import { runSync, runProvision, syncInitiatives, syncMilestones, readCursor, runNote, runNotes, runProjectUpdate } from "../linear.mjs";
 import { noteBody, sliceForBranch, gitSnapshot, autoPostPlan } from "../lib/journal-core.mjs";
 import { runDispatch, runFanCloud, resolveRoutine, fireRoutine, routineEndpoint } from "../dispatch.mjs";
+import { electionPlan, outOfCycle } from "../lib/cycle-core.mjs";
+import { runCyclePlan, runCycleLock } from "../cycle.mjs";
+import { readReadyWave } from "../lib/mcp-core.mjs";
+import { loadGraph } from "../lib/graph.mjs";
 import { graphDiff, backlogDiff, reviewDigest, pisInFlight } from "../lib/review-core.mjs";
 import { parseDocument } from "yaml";
 import { join, resolve } from "node:path";
@@ -1414,6 +1418,220 @@ test("buildPushPlan is idempotent: matching snapshot → only the missing-issue 
   eq(upd.id, "uuid-1", "update targets the Linear uuid");
 });
 
+// ── linear-core: per-PI verbosity ─────────────────────────────────────────────
+// WHY: a silently-ignored per-PI verbosity override makes the board lie about detail level —
+// the user quiets a noisy PI to title (or richens an active one to full) and nothing changes.
+test("per-PI verbosity overrides the global for that PI's issues only", () => {
+  const g = { meta: { schema_version: 1, program: "T", linear: { team: "ENG", verbosity: "title" } },
+    pis: [
+      { id: "loud", title: "Loud", status: "active", linear: { project: "proj-1", verbosity: "brief" }, sprints: [
+        { id: "s1", title: "A", status: "next", invoke: "loud-a", what: "does a thing", gate: "gate a" } ]},
+      { id: "quiet", title: "Quiet", status: "active", linear: { project: "proj-2" }, sprints: [
+        { id: "s1", title: "B", status: "next", invoke: "quiet-b", what: "does b", gate: "gate b" } ]},
+    ]};
+  const cfg = normalizeLinearConfig(g.meta);
+  eq(effectiveVerbosity(cfg, g.pis[0]), "brief", "per-PI verbosity wins");
+  eq(effectiveVerbosity(cfg, g.pis[1]), "title", "no override → global");
+  const existing = { projects: { "proj-1": { id: "proj-1", name: "Loud" }, "proj-2": { id: "proj-2", name: "Quiet" } }, issues: {} };
+  const plan = buildPushPlan({ graph: g, backlog: null, cfg, teamStates: L_STATES, existing });
+  const desc = Object.fromEntries(plan.ops.filter((o) => o.op === "createIssue").map((o) => [o.writeBack.invoke, o.payload.description]));
+  ok(desc["loud-a"].includes("Gate: gate a"), "overridden PI carries brief detail (what + gate)");
+  ok(!desc["quiet-b"].includes("Gate"), "global-title PI stays footer-only");
+});
+
+// WHY: an unacked per-PI override is how two sessions diverge on what Linear shows — verbosity
+// must gate through the SAME ack as granularity, and validate must flag the stored mismatch.
+test("verbosity override is ack-gated and validate flags invalid/differing values", () => {
+  const globalCfg = normalizeLinearConfig({ linear: { team: "ENG" } });   // verbosity default brief
+  throws(() => checkPiOverrideAck(globalCfg, { verbosity: "title" }, false, "x"), 'overrides Linear verbosity ("title")');
+  checkPiOverrideAck(globalCfg, { verbosity: "title" }, true, "x");   // acked → passes
+  checkPiOverrideAck(globalCfg, { verbosity: "brief" }, false, "x");  // matches global → no ack needed
+  const g = { meta: { schema_version: 1, program: "T", linear: { team: "ENG" } }, pis: [
+    { id: "bad", title: "B", status: "active", linear: { verbosity: "loud" }, sprints: [{ id: "s1", title: "A", status: "next", invoke: "bad-a" }] },
+    { id: "diff", title: "D", status: "active", linear: { verbosity: "full" }, sprints: [{ id: "s1", title: "A", status: "next", invoke: "diff-a" }] },
+  ]};
+  const v = validateLinearConfig(g);
+  ok(v.errors.some((e) => e.includes('linear.verbosity "loud"')), "invalid per-PI verbosity is an error");
+  ok(v.warnings.some((w) => w.includes("PI diff") && w.includes("verbosity")), "differing per-PI verbosity warns (override in effect)");
+});
+
+// WHY: a "." inside an abbreviation ended the derived subtitle mid-parenthetical — the one line
+// humans read on the project card shipped as "…DB (incl." on a live board and read as truncation.
+test("firstSentence-derived subtitle survives abbreviations (incl., e.g.) and still splits real sentences", () => {
+  const pi = { id: "net", title: "Live Network", exit_criteria: "Flock deterministically seeds every node DB (incl. Bridge sidecars) on turnkey hosts. Second sentence here." };
+  eq(projectSubtitleRaw(pi), "Flock deterministically seeds every node DB (incl. Bridge sidecars) on turnkey hosts.", "abbreviation does not end the sentence; the real period does");
+  const eg = { id: "x", title: "X", exit_criteria: "Covers hosts (e.g. approved VMs) end to end. More detail." };
+  eq(projectSubtitleRaw(eg), "Covers hosts (e.g. approved VMs) end to end.", "e.g. survives too");
+  const noEnd = { id: "y", title: "Y", exit_criteria: "Ends on an abbreviation incl." };
+  eq(projectSubtitleRaw(noEnd), "Ends on an abbreviation incl.", "no real sentence end → whole line, never empty");
+});
+
+// ── linear-core: horizon gate ─────────────────────────────────────────────────
+// WHY: the untiered future mass is what floods the board (live: 50 of 92 issues were far-future
+// backlog-state) — "near" must stop NEW scheduled/optionality issues while committed/held work
+// still projects, mapped far-future issues keep updating, and the absent knob stays byte-identical.
+test("horizon near: gates new far-future issues, keeps mapped ones updating, default unchanged", () => {
+  const g = (horizon) => ({ meta: { schema_version: 1, program: "T", linear: { team: "ENG", ...(horizon ? { horizon } : {}) } },
+    pis: [{ id: "p", title: "P", status: "active", linear: { project: "proj-1" }, sprints: [
+      { id: "s1", title: "Sched", status: "scheduled", invoke: "sched" },
+      { id: "s2", title: "Opt", status: "optionality", invoke: "opt" },
+      { id: "s3", title: "Next", status: "next", invoke: "nxt" },
+      { id: "s4", title: "Gated", status: "gated", invoke: "gtd" },
+      { id: "s5", title: "Mapped sched", status: "scheduled", invoke: "mapped", linear: "ENG-7" },
+    ]}]});
+  const existing = { projects: { "proj-1": { id: "proj-1", name: "P" } }, issues: {
+    "ENG-7": { id: "u7", title: "OLD NAME", description: "", priority: 0, stateId: "st-b", projectId: "proj-1", labelIds: [] } } };
+  const near = buildPushPlan({ graph: g("near"), backlog: null, cfg: normalizeLinearConfig(g("near").meta), teamStates: L_STATES, existing });
+  const creates = near.ops.filter((o) => o.op === "createIssue").map((o) => o.writeBack.invoke).sort();
+  eq(creates, ["gtd", "nxt"], "near creates only committed/held work — scheduled/optionality stay YAML-only");
+  const upd = near.ops.find((o) => o.op === "updateIssue" && o.identifier === "ENG-7");
+  eq(upd.payload.title, "Mapped sched", "an already-mapped far-future issue still updates (create-side gate only)");
+  const all = buildPushPlan({ graph: g(null), backlog: null, cfg: normalizeLinearConfig(g(null).meta), teamStates: L_STATES, existing });
+  eq(all.ops.filter((o) => o.op === "createIssue").length, 4, "absent knob (default all) → every not-done slice creates, byte-identical to before");
+  const v = validateLinearConfig({ meta: { schema_version: 1, program: "T", linear: { team: "ENG", horizon: "soon" } }, pis: [] });
+  ok(v.errors.some((e) => e.includes('horizon "soon"')), "invalid horizon blocks at validate");
+});
+
+// ── linear-core: done history ─────────────────────────────────────────────────
+// WHY: history is what makes a project's progress % real (completed/total inside the project) —
+// "off" must stay byte-identical (no Done-issue noise for existing users), "full" must project
+// shipped work as completed issues carrying the true completion date, "window" must honor
+// meta.completed_window_days, and a shipped PI's project must be created AND populated.
+test("history knob: off skips done work, full projects it Done with completedAt, window honors the meta knob", () => {
+  const g = (history) => ({ meta: { schema_version: 1, program: "T", completed_window_days: 7, linear: { team: "ENG", ...(history ? { history } : {}) } },
+    pis: [{ id: "shipped", title: "Shipped", status: "complete", sprints: [
+      { id: "s1", title: "Old", status: "complete", invoke: "old", completed_on: "2026-07-01" },
+      { id: "s2", title: "Ancient", status: "complete", invoke: "ancient", completed_on: "2026-06-01" },
+      { id: "s3", title: "Undated", status: "complete", invoke: "undated" },
+    ]}]});
+  const NOW = "2026-07-05T12:00:00Z";
+  const empty = { projects: {}, issues: {} };
+  const mk = (history) => buildPushPlan({ graph: g(history), backlog: null, cfg: normalizeLinearConfig(g(history).meta), teamStates: L_STATES, existing: empty, now: NOW });
+  // off (default): the fully-shipped PI earns neither project nor issues — byte-identical to before
+  eq(mk(null).ops.length, 0, "history off → a fully-shipped PI stays off the board entirely");
+  // full: project created AND populated with Done issues carrying completedAt
+  const full = mk("full");
+  eq(full.ops.filter((o) => o.op === "createProject").length, 1, "full → the shipped PI's project is created");
+  const creates = full.ops.filter((o) => o.op === "createIssue");
+  eq(creates.map((o) => o.writeBack.invoke).sort(), ["ancient", "old", "undated"], "full → every done slice projects");
+  const old = creates.find((o) => o.writeBack.invoke === "old");
+  eq(old.payload.stateId, "st-c", "done slice lands in the completed state");
+  eq(old.payload.completedAt, "2026-07-01", "true completion date rides the create");
+  ok(!("completedAt" in creates.find((o) => o.writeBack.invoke === "undated").payload), "no completed_on → no completedAt field");
+  // window: 7-day meta knob — old (4 days ago) inside, ancient (34 days) and undated outside
+  const win = mk("window");
+  eq(win.ops.filter((o) => o.op === "createIssue").map((o) => o.writeBack.invoke), ["old"], "window honors meta.completed_window_days, undated never resurrects");
+  // pin the inclusive boundary: exactly N days ago is inside; 1ms older is outside
+  const wcfg = normalizeLinearConfig({ linear: { team: "ENG", history: "window" } });
+  ok(withinHistory(wcfg, { completedOn: "2026-06-28T12:00:00Z" }, { completed_window_days: 7 }, NOW), "exact 7-day boundary is inside (<=)");
+  ok(!withinHistory(wcfg, { completedOn: "2026-06-28T11:59:59.999Z" }, { completed_window_days: 7 }, NOW), "1ms past the boundary is outside");
+  const v = validateLinearConfig({ meta: { schema_version: 1, program: "T", linear: { team: "ENG", history: "always" } }, pis: [] });
+  ok(v.errors.some((e) => e.includes('history "always"')), "invalid history value blocks at validate");
+});
+
+// ── cycle-core: the election ──────────────────────────────────────────────────
+// WHY: the capacity cap IS the discipline — packing past it, silently packing unpriced work, or
+// proposing blocked/held work puts unstartable or unbounded commitments in the week; and the
+// lock must be one validated write, not a hand-edit that skips the store's gates.
+test("electionPlan: committed-first capacity, strict priority prefix, unestimated never packed, held/blocked never candidates", () => {
+  const g = { meta: { schema_version: 1, program: "T", linear: { team: "ENG", cycles: "on" } },
+    pis: [{ id: "p", title: "P", status: "active", sprints: [
+      { id: "s1", title: "Committed", status: "active", invoke: "committed", est_sessions: 3 },
+      { id: "s2", title: "Next up", status: "next", invoke: "nextup", est_sessions: 2 },
+      { id: "s3", title: "Small P1", status: "scheduled", invoke: "small", est_sessions: 2, priority: { tier: "P1" } },
+      { id: "s4", title: "Big P0", status: "scheduled", invoke: "big", est_sessions: 9, priority: { tier: "P0" } },
+      { id: "s5", title: "Unpriced", status: "scheduled", invoke: "unpriced" },
+      { id: "s6", title: "Gated", status: "gated", invoke: "gated", est_sessions: 1 },
+      { id: "s7", title: "Blocked dep", status: "scheduled", invoke: "depped", est_sessions: 1, deps: ["s6"] },
+      { id: "s8", title: "Maybe", status: "optionality", invoke: "maybe", est_sessions: 1 },
+    ]}]};
+  const p = electionPlan(g, { capacity: 10, staleInvokes: ["committed"] });
+  eq(p.elected.map((x) => x.invoke).sort(), ["committed", "nextup"], "elected = the committed set (active+next)");
+  ok(p.elected.find((x) => x.invoke === "committed").stale, "the stale flag rides the elected list — reviewed first");
+  eq(p.unpricedElected, [], "all committed work is priced here — no capacity blind spot");
+  const gUnpriced = { ...g, pis: [{ ...g.pis[0], sprints: [{ id: "s0", title: "Mystery", status: "active", invoke: "mystery" }, ...g.pis[0].sprints] }] };
+  eq(electionPlan(gUnpriced, { capacity: 10 }).unpricedElected.map((x) => x.invoke), ["mystery"], "committed-but-unpriced work is flagged, never a silent zero in the capacity math");
+  eq(p.candidates.map((x) => x.invoke), ["big", "small", "unpriced"], "candidates = READY scheduled only, priority-sorted, unpriced last (gated/dep-blocked/optionality excluded)");
+  // committed 5s + big 9s would blow 10 → strict prefix stops at big; small does NOT sneak past the P0
+  eq(p.packed, [], "a too-big P0 at the head blocks the prefix — the signal is split-it, not skip-it");
+  eq(p.overflow.map((x) => x.invoke), ["big", "small"], "everything estimable past the prefix is overflow");
+  eq(p.unestimated.map((x) => x.invoke), ["unpriced"], "unpriced work is surfaced, never silently packed");
+  eq(p.estUsed, 5, "usage = committed est_sessions when nothing packs");
+  const roomy = electionPlan(g, { capacity: 20 });
+  eq(roomy.packed.map((x) => x.invoke), ["big", "small"], "with room, the prefix packs in priority order");
+  eq(roomy.estUsed, 16, "usage counts committed + packed");
+});
+
+// WHY: outOfCycle is the dispatch/fan lock's whole decision — a false positive blocks legitimate
+// work, a false negative lets the cycle leak; cycles off must never lock anything (opt-in).
+test("outOfCycle: locks only non-committed statuses, only when cycles are on", () => {
+  const on = normalizeLinearConfig({ linear: { team: "ENG", cycles: "on" } });
+  const off = normalizeLinearConfig({ linear: { team: "ENG" } });
+  ok(outOfCycle(on, "scheduled") && outOfCycle(on, "gated") && outOfCycle(on, "complete"), "non-committed statuses lock when on");
+  ok(!outOfCycle(on, "active") && !outOfCycle(on, "next"), "the committed set never locks");
+  ok(!outOfCycle(off, "scheduled") && !outOfCycle(null, "scheduled"), "cycles off (or no Linear) → never locks");
+});
+
+// ── linear-core: staleness ────────────────────────────────────────────────────
+// WHY: a stale flag that flaps (our own push resetting the clock), flags unknown-activity work,
+// or sticks after a fresh note trains the human to ignore it — the one failure an advisory
+// indicator can't afford. Basis is journal activity; add/remove rides the ordinary label set-diff.
+test("staleKeys: journal-silence basis, committed-only scope, unknown never flags; label rides the set-diff", () => {
+  const g = { meta: { schema_version: 1, program: "T", linear: { team: "ENG", stale_days: 3 } },
+    pis: [{ id: "p", title: "P", status: "active", linear: { project: "proj-1" }, sprints: [
+      { id: "s1", title: "A", status: "active", invoke: "a", linear: "ENG-1" },      // silent 5 days → stale
+      { id: "s2", title: "B", status: "next", invoke: "b", linear: "ENG-2" },        // fresh note → not stale
+      { id: "s3", title: "C", status: "scheduled", invoke: "c", linear: "ENG-3" },   // not committed → never stale
+      { id: "s4", title: "D", status: "active", invoke: "d", linear: "ENG-4" },      // unknown activity → never stale
+    ]}]};
+  const cfg = normalizeLinearConfig(g.meta);
+  const NOW = "2026-07-09T12:00:00Z";
+  const activity = { "ENG-1": "2026-07-04T11:00:00Z", "ENG-2": "2026-07-09T09:00:00Z", "ENG-3": "2026-06-01T00:00:00Z" };
+  eq([...staleKeys({ graph: g, cfg, activity, now: NOW })], ["a"], "silent committed work flags; fresh, uncommitted, unknown don't");
+  eq(staleKeys({ graph: g, cfg: normalizeLinearConfig({ linear: { team: "ENG" } }), activity, now: NOW }).size, 0, "no stale_days → feature off");
+  const labels = { roadmap: "l-r", stale: "l-s" };
+  const oneSlice = { ...g, pis: [{ ...g.pis[0], sprints: [g.pis[0].sprints[0]] }] };
+  const existing = { projects: { "proj-1": { id: "proj-1", name: "P" } }, issues: {
+    "ENG-1": { id: "u1", title: "A", description: "x", priority: 0, stateId: "st-s", projectId: "proj-1", labelIds: ["l-r"] } } };
+  const flagged = buildPushPlan({ graph: oneSlice, backlog: null, cfg, teamStates: L_STATES, existing, labels, stale: new Set(["a"]) });
+  eq(flagged.ops.find((o) => o.op === "updateIssue").payload.labelIds, ["l-r", "l-s"], "flagging adds the stale label via the set-diff");
+  const relabeled = { ...existing, issues: { "ENG-1": { ...existing.issues["ENG-1"], labelIds: ["l-r", "l-s"] } } };
+  const cleared = buildPushPlan({ graph: oneSlice, backlog: null, cfg, teamStates: L_STATES, existing: relabeled, labels, stale: new Set() });
+  eq(cleared.ops.find((o) => o.op === "updateIssue").payload.labelIds, ["l-r"], "unflagging drops it the same way");
+  const pp = provisionPlan({ graph: g, teamLabels: {}, cfg });
+  ok(pp.createLabels.includes("stale") && pp.views.some((v) => v.name === "Stale"), "stale label + view provisioned when stale_days set");
+  const v = validateLinearConfig({ meta: { schema_version: 1, program: "T", linear: { team: "ENG", stale_days: 0 } }, pis: [] });
+  ok(v.errors.some((e) => e.includes("stale_days")), "stale_days 0 rejected — a bad knob must not silently disable the guardrail");
+});
+
+// ── linear-core: cycles ───────────────────────────────────────────────────────
+// WHY: the active cycle IS the elected weekly batch — if assignment oscillates, clears a human's
+// future-cycle parking, or lets demotions linger, the cycle chart lies and "this week" silently
+// re-inflates; and with no active cycle the sync must never guess one.
+test("cyclePlan assigns active/next on drift, clears only current-cycle demotions, spares future parking", () => {
+  const g = { meta: { schema_version: 1, program: "T", linear: { team: "ENG", cycles: "on" } },
+    pis: [{ id: "p", title: "P", status: "active", linear: { project: "proj-1" }, sprints: [
+      { id: "s1", title: "A", status: "active", invoke: "a", linear: "ENG-1" },      // uncycled → assign
+      { id: "s2", title: "B", status: "next", invoke: "b", linear: "ENG-2" },        // already in → no-op
+      { id: "s3", title: "C", status: "scheduled", invoke: "c", linear: "ENG-3" },   // demoted, in current → clear
+      { id: "s4", title: "D", status: "scheduled", invoke: "d", linear: "ENG-4" },   // parked in FUTURE cycle → untouched
+      { id: "s5", title: "E", status: "complete", invoke: "e", linear: "ENG-5" },    // done → never a candidate
+      { id: "s6", title: "F", status: "next", invoke: "f" },                          // unmapped → not a candidate
+    ]}]};
+  const issues = { "ENG-1": { id: "u1", cycleId: null }, "ENG-2": { id: "u2", cycleId: "cyc-1" },
+    "ENG-3": { id: "u3", cycleId: "cyc-1" }, "ENG-4": { id: "u4", cycleId: "cyc-2" }, "ENG-5": { id: "u5", cycleId: "cyc-1" } };
+  const plan = cyclePlan({ graph: g, activeCycleId: "cyc-1", issues });
+  eq(plan.assign.map((x) => x.invoke), ["a"], "only the drifted active/next issue assigns");
+  eq(plan.clear.map((x) => x.invoke), ["c"], "only the current-cycle demotion clears — future parking and done work untouched");
+  eq(cyclePlan({ graph: g, activeCycleId: null, issues }), { assign: [], clear: [] }, "no active cycle → nothing");
+  ok(provisionPlan({ graph: g, teamLabels: {}, cfg: normalizeLinearConfig(g.meta) }).views.some((v) => v.name === "This cycle"), "cycles on → This cycle view offered");
+  ok(!provisionPlan({ graph: g, teamLabels: {}, cfg: normalizeLinearConfig({ linear: { team: "ENG" } }) }).views.some((v) => v.name === "This cycle"), "cycles off → view not offered");
+  const v = validateLinearConfig({ meta: { schema_version: 1, program: "T", linear: { team: "ENG", cycles: "weekly" } }, pis: [] });
+  ok(v.errors.some((e) => e.includes('cycles "weekly"')), "invalid cycles value blocks at validate");
+  const vc = validateLinearConfig({ meta: { schema_version: 1, program: "T", linear: { team: "ENG", cycle_capacity: 0 } }, pis: [] });
+  ok(vc.errors.some((e) => e.includes("cycle_capacity")), "cycle_capacity 0 rejected — a bad knob must not silently disable the cap");
+});
+
 // ── linear-core: PI status → project status ──────────────────────────────────
 // Mirrors the live workspace inventory (organization.projectStatuses): stock has NO paused type.
 const P_STATUSES = [
@@ -2013,7 +2231,7 @@ function linearRepo() {
     `meta:\n  schema_version: 1\n  program: T\n  linear:\n    team: ENG\n    pull: propose\n    watch:\n      - { team: PUB, project: Submit an issue, kind: bug, priority: {tier: P3} }\npis:\n  - id: auth\n    title: Authentication\n    status: active\n    sprints:\n      - { id: s1, title: Login, status: active, invoke: auth-login }\n`, "utf8");
   return root;
 }
-function fakeLinear({ failOn = null, snapshot = {}, projectSnapshot = {}, issueComments = {}, projectMilestones = {}, inboundByTeam = null, teamLabels = [], teamProjects = [], existingViews = [], existingInitiatives = [], projectStatuses = null } = {}) {
+function fakeLinear({ failOn = null, snapshot = {}, projectSnapshot = {}, issueComments = {}, projectMilestones = {}, inboundByTeam = null, teamLabels = [], teamProjects = [], existingViews = [], existingInitiatives = [], projectStatuses = null, activeCycle = null } = {}) {
   const calls = [];
   const createdIssues = {};   // identifier → snapshot shape, so later issue(id:) lookups resolve
   const createdProjects = {};   // id → snapshot shape, so a second run's project(id:) drift diff sees what create pushed
@@ -2026,10 +2244,12 @@ function fakeLinear({ failOn = null, snapshot = {}, projectSnapshot = {}, issueC
     const respond = (data) => ({ ok: true, json: async () => ({ data }) });
     if (query.includes("viewer {")) return respond({ viewer: { id: "viewer-me" } });   // plate: whose My Issues
     if (query.includes("teams(filter")) return respond({ teams: { nodes: [{ id: "team-1", key: "ENG", name: "Eng",
+      activeCycle: activeCycle,
       states: { nodes: [
         { id: "st-b", name: "Backlog", type: "backlog", position: 0 },
-        { id: "st-s", name: "In Progress", type: "started", position: 1 },
-        { id: "st-c", name: "Done", type: "completed", position: 2 },
+        { id: "st-u", name: "Todo", type: "unstarted", position: 1 },
+        { id: "st-s", name: "In Progress", type: "started", position: 2 },
+        { id: "st-c", name: "Done", type: "completed", position: 3 },
       ] },
       labels: { nodes: teamLabels },
       projects: { nodes: teamProjects } }] } });
@@ -2060,6 +2280,16 @@ function fakeLinear({ failOn = null, snapshot = {}, projectSnapshot = {}, issueC
     if (query.includes("commentCreate")) {
       if (failOn === "commentCreate") throw new Error("simulated comment failure");
       return respond({ commentCreate: { comment: { id: "c-1" } } });
+    }
+    if (query.includes("createdAt comments(first:")) {   // staleness activity basis (aliased, batched)
+      if (failOn === "activity") throw new Error("simulated activity failure");
+      const ids = [...query.matchAll(/issue\(id: "([^"]+)"\)/g)].map((m) => m[1]);
+      const data = {};
+      ids.forEach((id, j) => {
+        const rec = snapshot[id] || createdIssues[id];
+        data[`i${j}`] = rec ? { identifier: id, createdAt: rec.createdAt || "2026-07-01T00:00:00Z", comments: { nodes: issueComments[id] || [] } } : null;
+      });
+      return respond(data);
     }
     if (query.includes("comments(first:")) {   // the journal read: issue(id){ comments { nodes } }
       const id = (query.match(/issue\(id: "([^"]+)"\)/) || [])[1];
@@ -2109,6 +2339,7 @@ function fakeLinear({ failOn = null, snapshot = {}, projectSnapshot = {}, issueC
     }
     if (query.includes("issueCreate")) {
       if (failOn === "issueCreate") throw new Error("simulated transport failure");
+      if (failOn === "completedAt" && variables.input.completedAt) throw new Error("argument validation error: completedAt");
       created += 1;
       const identifier = `ENG-${100 + created}`;
       createdIssues[identifier] = { id: `uuid-${created}`, identifier, title: variables.input.title,
@@ -2119,7 +2350,20 @@ function fakeLinear({ failOn = null, snapshot = {}, projectSnapshot = {}, issueC
         labels: { nodes: (variables.input.labelIds || []).map((id) => ({ id })) } };
       return respond({ issueCreate: { issue: { id: `uuid-${created}`, identifier } } });
     }
-    if (query.includes("issueUpdate")) return respond({ issueUpdate: { issue: { id: "x" } } });
+    if (query.includes("issueUpdate")) {
+      if (failOn === "cycleUpdate" && "cycleId" in (variables.input || {})) throw new Error("simulated cycle rejection");
+      const rec = Object.values({ ...snapshot, ...createdIssues }).find((r) => r && r.id === variables.id);
+      if (rec) {   // faithful: persist the patch (like projectUpdate above) so a second run converges
+        const inp = variables.input || {};
+        for (const k of ["title", "description", "priority", "estimate"]) if (k in inp) rec[k] = inp[k];
+        if ("stateId" in inp) rec.state = { id: inp.stateId };
+        if ("projectId" in inp) rec.project = inp.projectId ? { id: inp.projectId } : null;
+        if ("assigneeId" in inp) rec.assignee = inp.assigneeId ? { id: inp.assigneeId } : null;
+        if ("cycleId" in inp) rec.cycle = inp.cycleId ? { id: inp.cycleId } : null;
+        if (inp.labelIds) rec.labels = { nodes: inp.labelIds.map((id) => ({ id })) };
+      }
+      return respond({ issueUpdate: { issue: { id: variables.id } } });
+    }
     if (query.includes("issues(filter")) {
       const team = variables.filter.team.key.eq;
       if (inboundByTeam) return respond({ issues: { nodes: inboundByTeam[team] || [] } });
@@ -2213,6 +2457,107 @@ test("runSync projects PI status → project status, converges, and degrades wit
   rmSync(root2, { recursive: true, force: true });
 });
 
+// WHY: cycles must ride the live sync end-to-end — assign + clear post-push, convergence on the
+// second run (no oscillation against Linear's native rollover), a note instead of a guess when no
+// cycle is active, and an unverified-API rejection degrading without touching the core push.
+test("runSync cycles: assigns active+next, clears demotions, converges, degrades on rejection", async () => {
+  const yaml = `meta:\n  schema_version: 1\n  program: T\n  linear:\n    team: ENG\n    cycles: on\npis:\n  - id: p\n    title: P\n    status: active\n    linear: { project: proj-1 }\n    sprints:\n      - { id: s1, title: A, status: active, invoke: a, linear: ENG-1 }\n      - { id: s2, title: C, status: scheduled, invoke: c, linear: ENG-3 }\n`;
+  const mkRoot = () => { const root = mkdtempSync(join(tmpdir(), "roadmap-cycles-")); mkdirSync(join(root, "docs", "roadmap"), { recursive: true }); writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"), yaml, "utf8"); return root; };
+  const iss = (idf, cycle) => ({ id: `u-${idf}`, identifier: idf, title: "X", description: "", priority: 0, estimate: null, state: { id: "st-s" }, project: { id: "proj-1" }, assignee: null, cycle, labels: { nodes: [] } });
+  const snap = () => ({ "ENG-1": iss("ENG-1", null), "ENG-3": iss("ENG-3", { id: "cyc-1" }) });
+  const proj = () => ({ "proj-1": { id: "proj-1", name: "P" } });
+  const cycleOps = (f) => f.calls.filter((cl) => cl.query.includes("issueUpdate") && "cycleId" in (cl.variables.input || {}));
+  const root = mkRoot();
+  const fake = fakeLinear({ snapshot: snap(), projectSnapshot: proj(), activeCycle: { id: "cyc-1" } });
+  const r1 = await runSync(root, { fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-09T12:00:00Z" });
+  eq(r1.cycles, { assigned: ["a"], cleared: ["c"] }, "active joins the cycle, demoted scheduled leaves it");
+  eq(cycleOps(fake).map((cl) => [cl.variables.id, cl.variables.input.cycleId]), [["u-ENG-1", "cyc-1"], ["u-ENG-3", null]], "assign carries the active cycle id; clear sends null");
+  const r2 = await runSync(root, { fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-09T13:00:00Z" });
+  eq(cycleOps(fake).length, 2, "second run adds no cycle ops (converged via the fake's persistence)");
+  ok(!r2.cycles, "second run reports no cycle work");
+  rmSync(root, { recursive: true, force: true });
+  const root2 = mkRoot();
+  const fake2 = fakeLinear({ snapshot: snap(), projectSnapshot: proj(), activeCycle: { id: "cyc-1" }, failOn: "cycleUpdate" });
+  const r3 = await runSync(root2, { fetchImpl: fake2.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-09T12:00:00Z" });
+  ok(r3.cyclesError && r3.cyclesError.includes("simulated cycle rejection"), "cycle rejection recorded; sync completed");
+  ok(r3.pushed.some((p) => p.includes("updateIssue")), "the core push completed before the cycle rejection");
+  rmSync(root2, { recursive: true, force: true });
+  const root3 = mkRoot();
+  const fake3 = fakeLinear({ snapshot: snap(), projectSnapshot: proj() });   // no active cycle in Linear
+  const r4 = await runSync(root3, { fetchImpl: fake3.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-09T12:00:00Z" });
+  ok(r4.cyclesNote && r4.cyclesNote.includes("no active cycle"), "no active cycle → a note, never a guess");
+  eq(cycleOps(fake3).length, 0, "zero cycle mutations without an active cycle");
+  rmSync(root3, { recursive: true, force: true });
+  const root4 = linearRepo();   // cycles absent → even the teams QUERY must stay pre-cycles byte-identical
+  const fake4 = fakeLinear();
+  await runSync(root4, { fetchImpl: fake4.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-09T12:00:00Z" });
+  ok(!fake4.calls.some((c) => c.query.includes("activeCycle")), "cycles off → activeCycle never requested");
+  rmSync(root4, { recursive: true, force: true });
+});
+
+// WHY: the history backfill must ride the LIVE pipeline — a Done issue lands with its true
+// completion date, the id write-back makes the second run a no-op (resumability IS the batching
+// strategy for a 300-issue backfill), and a rejected completedAt VALUE degrades to
+// Done-at-creation instead of failing the whole backfill.
+test("runSync history full: backfills Done with completedAt, converges, degrades on value rejection", async () => {
+  const yaml = `meta:\n  schema_version: 1\n  program: T\n  linear:\n    team: ENG\n    history: full\npis:\n  - id: p\n    title: P\n    status: complete\n    sprints:\n      - { id: s1, title: Done thing, status: complete, invoke: done-thing, completed_on: "2026-07-01" }\n`;
+  const mkRoot = () => { const root = mkdtempSync(join(tmpdir(), "roadmap-history-")); mkdirSync(join(root, "docs", "roadmap"), { recursive: true }); writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"), yaml, "utf8"); return root; };
+  const root = mkRoot();
+  const fake = fakeLinear();
+  await runSync(root, { fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-09T12:00:00Z" });
+  const create = fake.calls.find((c) => c.query.includes("issueCreate"));
+  eq(create.variables.input.completedAt, "2026-07-01", "the true completion date rides the create");
+  eq(create.variables.input.stateId, "st-c", "backfilled issue lands Done");
+  ok(readFileSync(join(root, "docs", "roadmap", "roadmap.yaml"), "utf8").includes("linear: ENG-101"), "id written back — the resume point");
+  const r2 = await runSync(root, { fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-09T13:00:00Z" });
+  eq(r2.pushed, [], "second run creates nothing (backfill converged)");
+  rmSync(root, { recursive: true, force: true });
+  const root2 = mkRoot();
+  const fake2 = fakeLinear({ failOn: "completedAt" });
+  await runSync(root2, { fetchImpl: fake2.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-09T12:00:00Z" });
+  const createCalls = fake2.calls.filter((c) => c.query.includes("issueCreate"));
+  eq(createCalls.length, 2, "value rejection → one retry");
+  ok(!("completedAt" in createCalls[1].variables.input), "retry drops completedAt (Done-at-creation fallback)");
+  ok(readFileSync(join(root2, "docs", "roadmap", "roadmap.yaml"), "utf8").includes("linear: ENG-101"), "issue still created + written back");
+  rmSync(root2, { recursive: true, force: true });
+});
+
+// WHY: staleness must ride the LIVE sync — journal-comment basis through the wire, the flag
+// surviving our own label push (updatedAt-based logic would flap here), the set landing in the
+// cursor for the offline election, and an activity-fetch failure degrading to a note.
+test("runSync staleness: flags on journal silence, survives its own push, persists to cursor, degrades", async () => {
+  const yaml = `meta:\n  schema_version: 1\n  program: T\n  linear:\n    team: ENG\n    stale_days: 3\npis:\n  - id: p\n    title: P\n    status: active\n    linear: { project: proj-1 }\n    sprints:\n      - { id: s1, title: A, status: active, invoke: a, linear: ENG-1 }\n`;
+  const mkRoot = () => { const root = mkdtempSync(join(tmpdir(), "roadmap-stale-")); mkdirSync(join(root, "docs", "roadmap"), { recursive: true }); writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"), yaml, "utf8"); return root; };
+  const mkIss = () => ({ id: "u-1", identifier: "ENG-1", title: "A", description: "", priority: 0, estimate: null, state: { id: "st-s" }, project: { id: "proj-1" }, assignee: null, createdAt: "2026-07-01T00:00:00Z", labels: { nodes: [{ id: "l-r" }] } });
+  const labels = [{ id: "l-r", name: "roadmap" }, { id: "l-s", name: "stale" }];
+  const comments = { "ENG-1": [{ createdAt: "2026-07-02T00:00:00Z" }] };
+  const root = mkRoot();
+  const fake = fakeLinear({ snapshot: { "ENG-1": mkIss() }, projectSnapshot: { "proj-1": { id: "proj-1", name: "P" } }, teamLabels: labels, issueComments: comments });
+  const r1 = await runSync(root, { fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-09T12:00:00Z" });
+  eq(r1.stale, ["a"], "journal silence past stale_days flags the slice");
+  ok(fake.calls.some((c) => c.query.includes("issueUpdate") && (c.variables.input.labelIds || []).includes("l-s")), "the stale label pushed");
+  const cursor1 = readCursor(root);
+  eq(cursor1.stale, ["a"], "stale set persisted to the cursor — the election's offline basis");
+  eq(typeof cursor1.lastSync, "string", "patch-merge kept lastSync beside stale (neither clobbers the other)");
+  // the flap trap is closed STRUCTURALLY: the basis query never even requests updatedAt
+  const actQ = fake.calls.find((c) => c.query.includes("createdAt comments(first:"));
+  ok(actQ && !actQ.query.includes("updatedAt"), "activity basis never requests updatedAt — our own pushes cannot reset the clock");
+  const r2 = await runSync(root, { fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-09T13:00:00Z" });
+  eq(r2.stale, ["a"], "second run recomputes the same journal basis — still stale while the journal is silent");
+  eq(r2.pushed, [], "still-stale second run is a no-op (label already present)");
+  comments["ENG-1"].push({ createdAt: "2026-07-09T12:30:00Z" });   // a fresh journal note lands
+  const r3 = await runSync(root, { fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-09T14:00:00Z" });
+  ok(!r3.stale, "fresh note clears the flag");
+  ok(fake.calls.some((c) => c.query.includes("issueUpdate") && c.variables.input.labelIds && !c.variables.input.labelIds.includes("l-s")), "the label removal pushed");
+  eq(readCursor(root).stale, [], "cursor reflects the cleared set");
+  rmSync(root, { recursive: true, force: true });
+  const root2 = mkRoot();
+  const fake2 = fakeLinear({ snapshot: { "ENG-1": mkIss() }, projectSnapshot: { "proj-1": { id: "proj-1", name: "P" } }, teamLabels: labels, issueComments: comments, failOn: "activity" });
+  const r4 = await runSync(root2, { fetchImpl: fake2.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-09T12:00:00Z" });
+  ok(r4.staleError && r4.staleError.includes("simulated activity failure"), "activity failure recorded; sync completed");
+  rmSync(root2, { recursive: true, force: true });
+});
+
 // WHY: the LIVE-verified clobber race — push ran before pull and overwrote a human's
 // Urgent edit in Linear before it could even be proposed. Pull must run first and push
 // must hold any field with an open inbound proposal, or Linear-side edits silently lose.
@@ -2252,6 +2597,27 @@ test("runSync errors are the setup-guidance contract", async () => {
 // ── sprawl guardrail ──────────────────────────────────────────────────────────
 // WHY: unchecked capture growth is how a roadmap silently doubles between reviews — the
 // ratio must fire above threshold, stay quiet at/below it, and never fire on an empty window.
+// WHY: composition drift is how a 64-project wall of one-slice PIs happens (capture_ratio guards
+// growth RATE, not shape) — the lint must be ONE aggregated line (signal, not a warning wall),
+// exempt finished history, stay off when unset, and reject a knob value that would silently
+// disable the guardrail.
+test("composition lint: one aggregated warning under pi_min_slices; complete PIs exempt; off when absent; 0 rejected", () => {
+  const g = (discipline) => ({ meta: { schema_version: 1, program: "T", ...(discipline ? { discipline } : {}) }, pis: [
+    { id: "thin1", title: "T1", status: "active", sprints: [{ id: "s1", title: "A", status: "active", invoke: "t1-a" }] },
+    { id: "thin2", title: "T2", status: "scheduled", sprints: [{ id: "s1", title: "B", status: "scheduled", invoke: "t2-b" }, { id: "s2", title: "C", status: "scheduled", invoke: "t2-c" }] },
+    { id: "shipped", title: "S", status: "complete", sprints: [{ id: "s1", title: "D", status: "complete", invoke: "s-d" }] },
+    { id: "full", title: "F", status: "active", sprints: [
+      { id: "s1", title: "E", status: "active", invoke: "f-e" }, { id: "s2", title: "G", status: "next", invoke: "f-g" }, { id: "s3", title: "H", status: "scheduled", invoke: "f-h" } ] },
+  ]});
+  const warns = validateGraph(g({ pi_min_slices: 3 })).warnings.filter((w) => w.startsWith("composition:"));
+  eq(warns.length, 1, "one aggregated line, not one per PI");
+  ok(warns[0].includes("2 non-complete PI(s)") && warns[0].includes("thin1") && warns[0].includes("thin2"), "names the thin live PIs");
+  ok(!warns[0].includes("shipped"), "complete PIs are exempt — history is what it is");
+  ok(!warns[0].includes("full"), "PIs at/over the floor don't warn");
+  eq(validateGraph(g(null)).warnings.filter((w) => w.startsWith("composition:")).length, 0, "absent knob → lint off (no warning wall on unopted repos)");
+  ok(validateGraph(g({ pi_min_slices: 0 })).errors.some((e) => e.includes("pi_min_slices")), "0 rejected — a bad knob must not silently disable the guardrail");
+});
+
 test("sprawlWarnings: ratio fires above threshold, quiet at it, quiet on an empty window", () => {
   const hot = sprawlWarnings({ completed: 2, captured: 5, addedSprints: 2 });
   eq(hot.length, 1, "one ratio warning");
@@ -2820,6 +3186,65 @@ test("runProvision skips views that already exist", async () => {
 // ── cloud dispatch (v0.5 stub) ───────────────────────────────────────────────
 // WHY: dispatching an unmapped slice must push-map FIRST or the @-mention comment lands
 // nowhere; and the capsule must carry the machine footer any delegated agent parses.
+// WHY: the cycle lock is the "bars any other work" contract — out-of-cycle dispatch must refuse
+// with the elect-first path, --force must be the only bypass, the lock write must be atomic and
+// refuse nonsense transitions, and with cycles off nothing changes for existing users.
+test("cycle lock end-to-end: lock writes atomically with pre-checks; dispatch refuses out-of-cycle unless --force", async () => {
+  const yaml = `meta:\n  schema_version: 1\n  program: T\n  linear:\n    team: ENG\n    cycles: on\npis:\n  - id: p\n    title: P\n    status: active\n    sprints:\n      - { id: s1, title: A, status: active, invoke: a }\n      - { id: s2, title: B, status: next, invoke: b }\n      - { id: s3, title: C, status: scheduled, invoke: c }\n      - { id: s4, title: D, status: scheduled, invoke: d }\n`;
+  const root = mkdtempSync(join(tmpdir(), "roadmap-cyclelock-"));
+  mkdirSync(join(root, "docs", "roadmap"), { recursive: true });
+  writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"), yaml, "utf8");
+  // pre-checks refuse nonsense with actionable messages, and nothing is written
+  throws(() => runCycleLock(root, { promote: ["a"] }), "can't promote");
+  throws(() => runCycleLock(root, { demote: ["c"] }), "can't demote");
+  throws(() => runCycleLock(root, { promote: ["ghost"] }), 'no slice "ghost"');
+  throws(() => runCycleLock(root, {}), "needs --promote and/or --demote");
+  // the real lock: one atomic write, both directions
+  const r = runCycleLock(root, { promote: ["c"], demote: ["b"] });
+  eq(r, { promoted: ["c"], demoted: ["b"] }, "lock reports both directions");
+  const doc = parseDocument(readFileSync(join(root, "docs", "roadmap", "roadmap.yaml"), "utf8")).toJS();
+  const st = Object.fromEntries(doc.pis[0].sprints.map((s) => [s.invoke, s.status]));
+  eq([st.c, st.b], ["next", "scheduled"], "promotion and demotion landed in one write");
+  // dispatch guard: still-scheduled d refuses with the elect-first path; --force bypasses;
+  // the elected c (now next) passes without force
+  const fake = fakeLinear();
+  await runDispatch(root, "d", { to: "claude", fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" } }).then(
+    () => { throw new Error("should have thrown"); },
+    (e) => { ok(e.message.includes("out of the current cycle") && e.message.includes("roadmap cycle plan"), "refusal names the election path"); });
+  const forced = await runDispatch(root, "d", { to: "claude", force: true, fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" } });
+  eq(forced.dispatched, "d", "--force is the explicit escape hatch");
+  const elected = await runDispatch(root, "c", { to: "claude", fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" } });
+  eq(elected.dispatched, "c", "elected work dispatches without force");
+  // ready_wave annotates instead of blocking (reads never block)
+  const g2 = loadGraph(join(root, "docs", "roadmap", "roadmap.yaml"));
+  const rw = readReadyWave(g2, { cap: 4 });
+  const flags = Object.fromEntries(rw.wave.map((n) => [n.invoke, !!n.outOfCycle]));
+  ok(flags.d === true, "out-of-cycle wave slice is annotated");
+  ok(rw.wave.filter((n) => !n.outOfCycle).length >= 1, "in-cycle wave slices carry no flag");
+  // the plan CLI reads the stale set from the sync cursor — zero network for the ritual
+  writeFileSync(join(root, ".roadmap-linear-state.json"), JSON.stringify({ version: 1, stale: ["a"] }), "utf8");
+  const cp = runCyclePlan(root, {});
+  eq(cp.capacity, 10, "capacity defaults from meta.linear.cycle_capacity");
+  ok(cp.elected.find((x) => x.invoke === "a").stale, "the cursor's stale set flags the elected list offline");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: at wave scale the lock must FILTER (reported, never silent) rather than throw — a fanout
+// that dies on the first out-of-cycle slice strands the rest; all=true is the explicit include.
+test("runFanCloud excludes out-of-cycle slices from the wave, reports them, includes with all", async () => {
+  const yaml = `meta:\n  schema_version: 1\n  program: T\n  linear:\n    team: ENG\n    cycles: on\npis:\n  - id: p\n    title: P\n    status: active\n    sprints:\n      - { id: s1, title: A, status: next, invoke: a }\n      - { id: s2, title: C, status: scheduled, invoke: c }\n`;
+  const root = mkdtempSync(join(tmpdir(), "roadmap-fancycle-"));
+  mkdirSync(join(root, "docs", "roadmap"), { recursive: true });
+  writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"), yaml, "utf8");
+  const p = await runFanCloud(root, {});
+  eq(p.slices, ["a"], "only in-cycle work in the launch selection");
+  eq(p.excludedOutOfCycle, ["c"], "exclusions reported, never silent");
+  const all = await runFanCloud(root, { all: true });
+  eq(all.slices.sort(), ["a", "c"], "all=true includes out-of-cycle explicitly");
+  ok(!all.excludedOutOfCycle, "explicit include reports no exclusions");
+  rmSync(root, { recursive: true, force: true });
+});
+
 test("runDispatch push-maps an unmapped slice, then comments the capsule with the footer", async () => {
   const root = linearRepo();
   const fake = fakeLinear();

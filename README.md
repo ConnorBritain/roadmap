@@ -318,7 +318,11 @@ meta:
   linear:
     team: ENG                      # push target (team key). Auth = LINEAR_API_KEY env var, never a file.
     granularity: slices            # pis (Projects only) | slices | slices+backlog — what leaks to Linear
+    horizon: all                   # all | near — near keeps scheduled/optionality slices off the board until promoted
     verbosity: brief               # title | brief | full — issue-description detail
+    cycles: off                    # off | on — on mirrors the team's active cycle from slice status (active+next = this week's batch)
+    history: off                   # off | window | full — whether DONE slices project as completed issues (progress % becomes real)
+    stale_days: 3                  # optional — flag committed work (active/next) with no journal note in N days ('stale' label + view)
     pull: propose                  # off | propose (walk the inbox in /sync) | auto
     status_map: { blocked: "Blocked" }   # optional exact-name overrides; defaults map by state TYPE
     watch:                         # inbound sources — e.g. a public "Submit an issue" team
@@ -343,7 +347,7 @@ meta:
 
 **Detection is graceful.** No `meta.linear` → every Linear behavior is off and the tool is byte-identical to before. Configured but no `LINEAR_API_KEY` → one advisory line, everything else works. The session-start hook reports state with zero network; `roadmap linear status --probe` is the only networked check. Bootstrap: `roadmap linear auth` (key instructions) → `roadmap linear setup --team <KEY>` → `roadmap linear sync --dry`.
 
-**Per-PI override.** A PI can set its own `linear.granularity` (e.g. keep an internal PI's slices off a shared board). Creating one that conflicts with the global requires an explicit `yes_linear_override: true` ack — otherwise the mutation is rejected with instructions and nothing is written; `roadmap validate` warns on stored mismatches.
+**Per-PI override.** A PI can set its own `linear.granularity` (e.g. keep an internal PI's slices off a shared board) or `linear.verbosity` (quiet a noisy PI's issue descriptions to `title`, or richen an active one to `full`). Creating one that conflicts with the global requires an explicit `yes_linear_override: true` ack — otherwise the mutation is rejected with instructions and nothing is written; `roadmap validate` warns on stored mismatches.
 
 ### Topology: Linear as the board
 

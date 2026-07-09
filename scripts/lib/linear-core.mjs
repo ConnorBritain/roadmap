@@ -12,6 +12,9 @@ import { platedKeys, validatePlate } from "./plate-core.mjs";
 export const GRANULARITIES = ["pis", "slices", "slices+backlog"];
 export const VERBOSITIES = ["title", "brief", "full"];
 export const PULL_MODES = ["off", "propose", "auto"];
+export const HORIZONS = ["all", "near"];
+// The statuses "near" keeps off the board: far-future work that hasn't been elected yet.
+const HORIZON_FUTURE_STATUSES = ["scheduled", "optionality"];
 
 // meta.linear with defaults applied, or null when absent/teamless (Linear off).
 export function normalizeLinearConfig(meta) {
@@ -20,11 +23,16 @@ export function normalizeLinearConfig(meta) {
   return {
     team: raw.team,
     granularity: raw.granularity || "slices",
+    horizon: raw.horizon || "all",
     verbosity: raw.verbosity || "brief",
+    cycles: raw.cycles || "off",
+    cycle_capacity: raw.cycle_capacity != null ? raw.cycle_capacity : 10,   // est_sessions per cycle — the election's cap
+    history: raw.history || "off",
     pull: raw.pull || "off",
     push_on: raw.push_on || "sync",
     estimate_max: raw.estimate_max != null ? raw.estimate_max : 5,   // Linear estimate scale max (linear=5, extended=7)
     plate_max: raw.plate_max != null ? raw.plate_max : 7,   // explicit meta.plate cap — My Issues signal
+    stale_days: raw.stale_days != null ? raw.stale_days : null,   // staleness threshold; presence enables (meta.plate pattern)
     status_map: raw.status_map || {},
     watch: (raw.watch || []).map((w) => ({
       team: w.team, project: w.project || null, capture: w.capture || "backlog",
@@ -35,6 +43,10 @@ export function normalizeLinearConfig(meta) {
 
 export function effectiveGranularity(cfg, pi) {
   return (pi && pi.linear && pi.linear.granularity) || cfg.granularity;
+}
+
+export function effectiveVerbosity(cfg, pi) {
+  return (pi && pi.linear && pi.linear.verbosity) || cfg.verbosity;
 }
 
 // Validation for validate-core (errors block, warnings surface). Watch `kind` is NOT
@@ -48,11 +60,16 @@ export function validateLinearConfig(graph) {
     else {
       if (!raw.team) errors.push("meta.linear.team is required (the push-target team key)");
       if (raw.granularity != null && !GRANULARITIES.includes(raw.granularity)) errors.push(`meta.linear.granularity "${raw.granularity}" is not one of ${GRANULARITIES.join("|")}`);
+      if (raw.horizon != null && !HORIZONS.includes(raw.horizon)) errors.push(`meta.linear.horizon "${raw.horizon}" is not one of ${HORIZONS.join("|")}`);
+      if (raw.cycles != null && !["off", "on"].includes(raw.cycles)) errors.push(`meta.linear.cycles "${raw.cycles}" is not off|on`);
+      if (raw.cycle_capacity != null && !(Number.isInteger(raw.cycle_capacity) && raw.cycle_capacity >= 1)) errors.push("meta.linear.cycle_capacity must be an integer >= 1 (est_sessions the election packs per cycle; default 10)");
+      if (raw.history != null && !["off", "window", "full"].includes(raw.history)) errors.push(`meta.linear.history "${raw.history}" is not off|window|full`);
       if (raw.verbosity != null && !VERBOSITIES.includes(raw.verbosity)) errors.push(`meta.linear.verbosity "${raw.verbosity}" is not one of ${VERBOSITIES.join("|")}`);
       if (raw.pull != null && !PULL_MODES.includes(raw.pull)) errors.push(`meta.linear.pull "${raw.pull}" is not one of ${PULL_MODES.join("|")}`);
       if (raw.push_on != null && !["sync", "manual"].includes(raw.push_on)) errors.push(`meta.linear.push_on "${raw.push_on}" is not sync|manual`);
       if (raw.estimate_max != null && !(Number.isInteger(raw.estimate_max) && raw.estimate_max >= 1)) errors.push("meta.linear.estimate_max must be an integer >= 1 (the Linear estimate scale max; default 5)");
       if (raw.plate_max != null && !(Number.isInteger(raw.plate_max) && raw.plate_max >= 1)) errors.push("meta.linear.plate_max must be an integer >= 1 (the My Issues explicit-plate cap; default 7)");
+      if (raw.stale_days != null && !(Number.isInteger(raw.stale_days) && raw.stale_days >= 1)) errors.push("meta.linear.stale_days must be an integer >= 1 (days of journal silence before an in-cycle issue is flagged stale)");
       for (const w of raw.watch || []) {
         if (!w.team) errors.push("meta.linear.watch: every entry needs a team key");
         if (w.capture != null && w.capture !== "backlog") errors.push(`meta.linear.watch: capture "${w.capture}" is not supported (only "backlog")`);
@@ -83,10 +100,13 @@ export function validateLinearConfig(graph) {
   for (const w of plateVal.warnings) warnings.push(w);
   if (graph.meta && graph.meta.plate != null && !cfg) warnings.push("meta.plate is set but Linear isn't configured — the plate assigns Linear issues, so it's a no-op until meta.linear.team is set");
   for (const pi of graph.pis || []) {
-    if (pi.linear && pi.linear.granularity != null) {
-      if (!GRANULARITIES.includes(pi.linear.granularity)) errors.push(`PI ${pi.id}: linear.granularity "${pi.linear.granularity}" is not one of ${GRANULARITIES.join("|")}`);
-      else if (cfg && pi.linear.granularity !== cfg.granularity) {
-        warnings.push(`PI ${pi.id}: linear.granularity "${pi.linear.granularity}" differs from meta.linear.granularity "${cfg.granularity}" — per-PI override in effect`);
+    // One loop per override field — same shape as checkPiOverrideAck, so adding a third
+    // per-PI Linear override means extending these two field lists, nothing else.
+    for (const [f, allowed] of [["granularity", GRANULARITIES], ["verbosity", VERBOSITIES]]) {
+      if (!pi.linear || pi.linear[f] == null) continue;
+      if (!allowed.includes(pi.linear[f])) errors.push(`PI ${pi.id}: linear.${f} "${pi.linear[f]}" is not one of ${allowed.join("|")}`);
+      else if (cfg && pi.linear[f] !== cfg[f]) {
+        warnings.push(`PI ${pi.id}: linear.${f} "${pi.linear[f]}" differs from meta.linear.${f} "${cfg[f]}" — per-PI override in effect`);
       }
     }
     // The Linear subtitle truncates at 255 with "…"; when it's DERIVED (no pi.summary) and the exit's
@@ -128,16 +148,18 @@ export function linearStatusLine(state) {
 }
 
 // ── PI-override ack (mirrors the --yes-spawn-autonomous double-ack) ───────────
+// Covers every per-PI Linear override field (granularity, verbosity) with one ack.
 export function checkPiOverrideAck(globalLinear, piLinear, acked, piId) {
-  if (!globalLinear || !piLinear || piLinear.granularity == null) return;
-  if (piLinear.granularity === globalLinear.granularity) return;
-  if (acked) return;
-  throw new Error(
-    `PI "${piId}" overrides Linear granularity ("${piLinear.granularity}") against the global ` +
-    `meta.linear.granularity ("${globalLinear.granularity}") — this PI will push to Linear differently ` +
-    `from the rest of the roadmap. Re-run with yes_linear_override: true to confirm the override, ` +
-    `or drop linear.granularity from the PI to inherit the global. (Nothing was written.)`
-  );
+  if (!globalLinear || !piLinear || acked) return;
+  for (const f of ["granularity", "verbosity"]) {
+    if (piLinear[f] == null || piLinear[f] === globalLinear[f]) continue;
+    throw new Error(
+      `PI "${piId}" overrides Linear ${f} ("${piLinear[f]}") against the global ` +
+      `meta.linear.${f} ("${globalLinear[f]}") — this PI will push to Linear differently ` +
+      `from the rest of the roadmap. Re-run with yes_linear_override: true to confirm the override, ` +
+      `or drop linear.${f} from the PI to inherit the global. (Nothing was written.)`
+    );
+  }
 }
 
 // ── status / priority mapping ─────────────────────────────────────────────────
@@ -260,15 +282,17 @@ export function issueDescription(node, cfg, { docsUrl = null, target } = {}) {
 // Tier is NOT a label — Linear's native priority already carries it (no duplication).
 export const MARKER_LABEL = "roadmap";
 export const PLATE_LABEL = "plate";   // marks an issue WE assigned to you (the plate) — never touch a hand-assignment
+export const STALE_LABEL = "stale";   // journal silence on committed work — rides the same set-diff, so add/remove is idempotent
 export const KIND_LABELS = ["bug", "chore", "followup", "urgent", "idea"].map((k) => `kind:${k}`);
 
-export function desiredLabels(target, node, onPlate = false) {
+export function desiredLabels(target, node, onPlate = false, isStale = false) {
   const plate = onPlate ? [PLATE_LABEL] : [];
   if (target.type === "backlog") return [MARKER_LABEL, ...(node.kind ? [`kind:${node.kind}`] : []), ...plate];
   return [
     MARKER_LABEL,
     ...(node.track ? [`track:${node.track}`] : []),
     ...(HELD_STATUSES.includes(node.status) ? [`status:${node.status}`] : []),   // held distinction on the board
+    ...(isStale ? [STALE_LABEL] : []),
     ...plate,
   ];
 }
@@ -296,10 +320,18 @@ export function projectName(pi) {
 export const normalizeLinearMarkdown = (s) =>
   String(s || "").replace(/\[([^\]]*)\]\(<[^>]*>\)/g, "$1").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1");
 
+// A "." that ends a common abbreviation is not a sentence end — without this the derived
+// subtitle for "…seeds every node DB (incl. Flock…)" ships as the fragment "…DB (incl."
+// (live-hit on a real board: reads like truncation, fires no over-length warning).
+const ABBREV_END = /\b(?:incl|etc|vs|approx|cf|e\.g|i\.e)\.$/i;
 const firstSentence = (s) => {
   const t = oneLine(s);
-  const m = t.match(/^.*?[.!?](?=\s|$)/);
-  return (m ? m[0] : t).trim();
+  const re = /[.!?](?=\s|$)/g;
+  for (let m; (m = re.exec(t)); ) {
+    const candidate = t.slice(0, m.index + 1);
+    if (!ABBREV_END.test(candidate)) return candidate.trim();
+  }
+  return t.trim();
 };
 
 // The RAW (pre-clip) subtitle. An explicit `pi.summary` wins (it's authored to be the subtitle);
@@ -358,6 +390,68 @@ export function initiativeStyle(meta, name) {
   return e && typeof e === "object" ? { icon: e.icon || null, color: e.color || null } : { icon: null, color: null };
 }
 
+// ── done history (shipped work stays visible in the system) ───────────────────
+// Which DONE slices still project as completed issues. "off" = none (pre-history behavior);
+// "full" = all — what makes a project's progress % real (completed/total inside the project);
+// "window" = completed_on within meta.completed_window_days (default 14) of the sync time.
+// Unknown dates never resurrect: window without completed_on (or without now) stays off-board.
+export function withinHistory(cfg, node, meta, now = null) {
+  if (cfg.history === "full") return true;
+  if (cfg.history !== "window") return false;
+  if (!node.completedOn || !now) return false;
+  const days = (meta && meta.completed_window_days) || 14;
+  return Date.parse(now) - Date.parse(node.completedOn) <= days * 86400000;
+}
+
+// ── cycles (the weekly work-unit filter) ──────────────────────────────────────
+// The current Linear cycle is a PROJECTION of slice status: active + next ARE the elected
+// batch ("next" = committed this cycle — the election ritual is what promotes scheduled→next).
+// No separate bookkeeping list; demote a slice and it leaves the cycle on the next sync.
+export const CYCLE_STATUSES = ["active", "next"];
+
+// Mapped, not-done slices — the only issues cycle sync ever touches.
+export const cycleCandidates = (graph) => flatten(graph).nodes.filter((n) => n.linear && !isDone(n.status));
+
+// PURE plan: which mapped issues to assign to / clear from the ACTIVE cycle.
+// issues: { [identifier]: { id, cycleId } } (cycleId null when uncycled). Only CURRENT-cycle
+// membership is ever cleared — an issue a human parked in a FUTURE cycle is deliberate planning
+// and stays untouched. Converges with Linear's native rollover + auto-add: a still-active issue
+// rolled forward gets re-assigned the same cycle (no-op); a demoted one gets cleared.
+export function cyclePlan({ graph, activeCycleId, issues = {} }) {
+  if (!activeCycleId) return { assign: [], clear: [] };
+  const assign = [];
+  const clear = [];
+  for (const n of cycleCandidates(graph)) {
+    const cur = issues[n.linear] || {};
+    const cycleId = cur.cycleId || null;
+    if (CYCLE_STATUSES.includes(n.status)) {
+      if (cycleId !== activeCycleId) assign.push({ invoke: n.invoke, identifier: n.linear, id: cur.id || null });
+    } else if (cycleId === activeCycleId) {
+      clear.push({ invoke: n.invoke, identifier: n.linear, id: cur.id || null });
+    }
+  }
+  return { assign, clear };
+}
+
+// ── staleness (drift on committed work) ───────────────────────────────────────
+// An issue in the committed set (CYCLE_STATUSES — the same set that populates the cycle; works
+// with cycles off) whose activity basis is older than stale_days gets the stale label. The basis
+// is the LATEST JOURNAL COMMENT (fallback: issue createdAt), supplied by the IO layer — never
+// issue updatedAt, which our own pushes bump (the label itself would reset the clock and flap).
+// activity: { [identifier]: ISO timestamp }. Unknown basis → never flagged (advisory feature,
+// no false reds). Returns a Set of invoke keys.
+export function staleKeys({ graph, cfg, activity = {}, now }) {
+  if (!cfg.stale_days || !now) return new Set();
+  const out = new Set();
+  for (const n of cycleCandidates(graph)) {
+    if (!CYCLE_STATUSES.includes(n.status)) continue;
+    const basis = activity[n.linear];
+    if (!basis) continue;
+    if (Date.parse(now) - Date.parse(basis) > cfg.stale_days * 86400000) out.add(n.invoke);
+  }
+  return out;
+}
+
 // ── initiatives (the grouping tier above projects) ───────────────────────────
 // A PI declares its initiative via `pi.initiative` (a display name). Sync ensures each distinct
 // initiative exists in Linear and each mapped PI's project is attached to it — turning a flat
@@ -413,7 +507,11 @@ function trackViews(graph) {
   return tracks.map((t) => ({ name: `Track ${t}`, hint: `issues labeled track:${t} — the ${t} fanout lane` }));
 }
 
-export function provisionPlan({ graph, teamLabels }) {
+// The cycle-era views — offered only when their feature is configured (provision degrades like STANDARD_VIEWS).
+const THIS_CYCLE_VIEW = { name: "This cycle", hint: "current-cycle issues labeled roadmap — the elected batch the sync maintains (active + next)" };
+const STALE_VIEW = { name: "Stale", hint: "issues labeled stale — committed work with no journal note in stale_days; the cycle election reviews these FIRST" };
+
+export function provisionPlan({ graph, teamLabels, cfg = null }) {
   const have = new Set(Object.keys(teamLabels || {}));
   const nodes = flatten(graph).nodes;
   const tracks = new Set(nodes.map((n) => n.track).filter(Boolean));
@@ -423,11 +521,15 @@ export function provisionPlan({ graph, teamLabels }) {
     ...[...tracks].sort().map((t) => `track:${t}`),
     ...heldPresent.map((s) => `status:${s}`),
     ...(graph.meta && graph.meta.plate != null ? [PLATE_LABEL] : []),   // marks tool-plated issues (safe unassign)
+    ...(cfg && cfg.stale_days ? [STALE_LABEL] : []),
   ];
   return {
     createLabels: wanted.filter((n) => !have.has(n)),
     existingLabels: wanted.filter((n) => have.has(n)),
-    views: [...STANDARD_VIEWS, ...trackViews(graph)],
+    views: [...STANDARD_VIEWS,
+      ...(cfg && cfg.cycles === "on" ? [THIS_CYCLE_VIEW] : []),
+      ...(cfg && cfg.stale_days ? [STALE_VIEW] : []),
+      ...trackViews(graph)],
   };
 }
 
@@ -470,7 +572,7 @@ export function dispatchGuidance() {
 // clobbered while the proposal is unresolved (live-verified failure mode).
 // labels: name→id from the team bundle (fresh each sync, no YAML caching). Unresolvable
 // names are dropped from payloads and reported once via missingLabels (fix = provision).
-export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsUrl = null, holds = new Set(), labels = {}, viewerId = null, projectStatuses = null }) {
+export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsUrl = null, holds = new Set(), labels = {}, viewerId = null, projectStatuses = null, now = null, stale = new Set() }) {
   const ops = [];
   const missing = new Set();
   const model = flatten(graph);
@@ -485,9 +587,10 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
     const projId = pi.linear && pi.linear.project;
     const piNodes = model.nodes.filter((n) => n.piId === pi.id);
     // A PI earns a project only if it has PROJECTABLE work — a slice that will get an issue
-    // (not-done, or already mapped) — or granularity is 'pis' (the project is the deliverable).
-    // Without this, a fully-shipped PI creates a bare 0-issue project (46% of pidgeon's board).
-    const hasWork = gran === "pis" || piNodes.some((n) => n.linear || !isDone(n.status));
+    // (not-done, already mapped, or done-within-history) — or granularity is 'pis' (the project
+    // is the deliverable). Without this, a fully-shipped PI creates a bare 0-issue project
+    // (46% of pidgeon's board). With history on, a shipped PI's project is created AND populated.
+    const hasWork = gran === "pis" || piNodes.some((n) => n.linear || !isDone(n.status) || withinHistory(cfg, n, graph.meta, now));
     const name = projectName(pi);
     const desc = projectDescription(pi);
     const content = projectContent(pi);
@@ -530,10 +633,18 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
     }
     if (gran === "pis") continue;   // projects only — no issue leaks for this PI
 
+    // Per-PI verbosity override rides the same cfg the description builder already reads;
+    // identical → the shared cfg object (no spread), so the default path stays byte-identical.
+    const effVerb = effectiveVerbosity(cfg, pi);
+    const descCfg = effVerb === cfg.verbosity ? cfg : { ...cfg, verbosity: effVerb };
     for (const node of piNodes) {
-      // create only not-done work (issues for finished history are noise); always update mapped.
-      if (!node.linear && isDone(node.status)) continue;
-      pushIssueOp(node, { type: "slice", key: node.invoke }, node.status, resolvePushState, pi.id, projId || null);
+      // create not-done work, plus done work inside the history window (Done issues are what
+      // make progress % real); always update mapped.
+      if (!node.linear && isDone(node.status) && !withinHistory(cfg, node, graph.meta, now)) continue;
+      // horizon "near": far-future work (scheduled/optionality) stays YAML-only until elected —
+      // no NEW issues. Already-mapped ones keep updating: never orphan, never let a visible issue rot.
+      if (!node.linear && cfg.horizon === "near" && HORIZON_FUTURE_STATUSES.includes(node.status)) continue;
+      pushIssueOp(node, { type: "slice", key: node.invoke }, node.status, resolvePushState, pi.id, projId || null, descCfg);
     }
   }
 
@@ -558,14 +669,14 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
 
   function labelIdsFor(target, node, onPlate) {
     const ids = [];
-    for (const name of desiredLabels(target, node, onPlate)) {
+    for (const name of desiredLabels(target, node, onPlate, stale.has(target.key))) {
       if (labels[name]) ids.push(labels[name]);
       else missing.add(name);
     }
     return ids.sort();
   }
 
-  function pushIssueOp(node, target, status, resolver, projectRef, projectId = null) {
+  function pushIssueOp(node, target, status, resolver, projectRef, projectId = null, descCfg = cfg) {
     const state = resolver(status, cfg, teamStates);
     const onPlate = plate ? plate.has(target.key) : false;
     const plated = onPlate && !!viewerId;   // we will actually assign + label (label never lies about assignment)
@@ -576,7 +687,7 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
     const points = node.estSessions != null ? Math.min(Math.round(node.estSessions), cfg.estimate_max) : 0;
     const projection = {
       title: node.title,
-      description: issueDescription(node, cfg, { docsUrl, target }),
+      description: issueDescription(node, descCfg, { docsUrl, target }),   // descCfg carries a per-PI verbosity override
       priority: priorityToLinear(node.priority),
       stateId: state.id,
       labelIds,
@@ -586,6 +697,9 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
     if (!node.linear) {
       const payload = { ...projection };
       if (!labelIds.length) delete payload.labelIds;
+      // History backfill: carry the true completion date (live-verified IssueCreateInput field;
+      // the IO layer strip-retries if the VALUE is rejected — worst case: Done at creation time).
+      if (isDone(status) && node.completedOn) payload.completedAt = node.completedOn;
       ops.push({ op: "createIssue", payload, projectRef,
         writeBack: target.type === "slice" ? { kind: "sprint", invoke: target.key } : { kind: "item", id: target.key } });
       return;

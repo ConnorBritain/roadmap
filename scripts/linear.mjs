@@ -23,7 +23,7 @@ import { noteBody } from "./lib/journal-core.mjs";
 import {
   normalizeLinearConfig, linearState, linearStatusLine, buildPushPlan, buildPullProposals, holdsFor,
   provisionPlan, manualViewChecklist, agentGuidanceText, dispatchGuidance, initiativePlan, initiativeStyle,
-  startStampTargets, milestonePlan,
+  startStampTargets, milestonePlan, cyclePlan, cycleCandidates, CYCLE_STATUSES, staleKeys,
 } from "./lib/linear-core.mjs";
 
 const ENDPOINT = "https://api.linear.app/graphql";
@@ -47,26 +47,37 @@ async function gql(query, variables, { apiKey, fetchImpl = fetch }) {
 export function readCursor(root) {
   try { return JSON.parse(readFileSync(join(root, CURSOR_FILE), "utf8")); } catch { return null; }
 }
-function writeCursor(root, lastSync) {
-  writeFileSync(join(root, CURSOR_FILE), JSON.stringify({ version: 1, lastSync }, null, 2) + "\n", "utf8");
+// Patch-merge: lastSync (pull window) and stale (the election CLI's offline basis) advance
+// independently — persisting one never clobbers the other.
+function writeCursor(root, patch) {
+  const cur = readCursor(root) || { version: 1 };
+  writeFileSync(join(root, CURSOR_FILE), JSON.stringify({ ...cur, ...patch }, null, 2) + "\n", "utf8");
 }
 
 // ── queries ───────────────────────────────────────────────────────────────────
-async function fetchTeamBundle(teamKey, io) {
+// withCycle: only the cycles feature asks for activeCycle — with cycles off the query is
+// byte-identical to the pre-cycles tool (the off-path contract every knob keeps).
+async function fetchTeamBundle(teamKey, io, withCycle = false) {
   const data = await gql(
     `query($key: String!) { teams(filter: { key: { eq: $key } }) { nodes {
        id key name
-       states { nodes { id name type position } }
+       ${withCycle ? "activeCycle { id }\n       " : ""}states { nodes { id name type position } }
        labels { nodes { id name } } } } }`,
     { key: teamKey }, io);
   const team = data.teams.nodes[0];
   if (!team) throw new Error(`no Linear team with key "${teamKey}" (check meta.linear.team)`);
   return {
     id: team.id,
+    activeCycleId: (withCycle && team.activeCycle && team.activeCycle.id) || null,   // null: cycles off in Linear, or between cycles
     states: [...team.states.nodes].sort((a, b) => a.position - b.position),
     labels: Object.fromEntries(((team.labels && team.labels.nodes) || []).map((l) => [l.name, l.id])),
   };
 }
+
+// The one issueUpdate literal — four call sites (push, milestone attach, cycle assign/clear)
+// share the identical mutation shape.
+const updateIssue = (id, input, io) =>
+  gql(`mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { issue { id } } }`, { id, input }, io);
 
 // Project drift snapshot, keyed by the mapped project ids only (NOT all team projects). `content`
 // is a heavy rich-text field — fetching it for every project inside the team bundle blows Linear's
@@ -144,7 +155,7 @@ export async function runSync(root, opts = {}) {
   const now = opts.now || new Date().toISOString();
 
   const backlog = loadBacklog(root);
-  const team = await fetchTeamBundle(cfg.team, io);
+  const team = await fetchTeamBundle(cfg.team, io, cfg.cycles === "on");
   const mapped = collectIdentifiers(graph, backlog);
   const existing = { issues: await fetchIssueSnapshot(mapped, io), projects: await fetchProjectSnapshot(mappedProjectIds(graph), io) };
   const docsUrl = repoDocsUrl(root, graph);
@@ -217,9 +228,27 @@ export async function runSync(root, opts = {}) {
     try { viewerId = (await gql(`query { viewer { id } }`, {}, io)).viewer.id; } catch { /* no viewer → no assignee ops */ }
   }
 
+  // ── staleness basis ── committed work (CYCLE_STATUSES) with journal silence past stale_days
+  // gets the stale label via the push's ordinary label set-diff. Advisory: a fetch failure is a
+  // note, never a failed sync. The set persists to the cursor so the election CLI reads it offline.
+  // Push-adjacent, so pull-only skips it — persisting a stale set the push never applied would
+  // let the cursor drift from Linear's real label state.
+  let stale = new Set();
+  if (cfg.stale_days && !opts.pullOnly) {
+    try {
+      const committed = cycleCandidates(pushGraph).filter((n) => CYCLE_STATUSES.includes(n.status));
+      if (committed.length) {
+        const activity = await fetchActivityBasis(committed.map((n) => n.linear), io);
+        stale = staleKeys({ graph: pushGraph, cfg, activity, now });
+      }
+      if (stale.size) result.stale = [...stale].sort();
+      if (!opts.dry) writeCursor(root, { stale: [...stale].sort() });
+    } catch (e) { result.staleError = e.message; }
+  }
+
   // ── push ──
   if (!opts.pullOnly) {
-    const { ops, missingLabels, unmatchedPlate } = buildPushPlan({ graph: pushGraph, backlog: pushBacklog, cfg, teamStates: team.states, existing, docsUrl, holds, labels: team.labels, viewerId, projectStatuses });
+    const { ops, missingLabels, unmatchedPlate } = buildPushPlan({ graph: pushGraph, backlog: pushBacklog, cfg, teamStates: team.states, existing, docsUrl, holds, labels: team.labels, viewerId, projectStatuses, now, stale });
     if (missingLabels.length) result.missingLabels = missingLabels;
     if (unmatchedPlate && unmatchedPlate.length) result.unmatchedPlate = unmatchedPlate;
     if (opts.dry) {
@@ -227,12 +256,20 @@ export async function runSync(root, opts = {}) {
     } else if (ops.length) {
       const projectIds = projectIdsByPi(pushGraph);
       const writeBacks = { pis: [], sprints: [], items: [] };
-      // Icon names are a fixed Linear set we can't introspect without write-probing the board; a bad
-      // palette entry would abort the whole push. Retry once without `icon` so it degrades to "no
-      // icon" (color still groups) instead of failing the sync. Only icon needs this — every other
-      // field is a validated shape.
+      // Unverified-VALUE fields (project icon names, issue completedAt) would abort the whole
+      // push on rejection. Shared degrade: retry ONCE without that one field, else rethrow.
+      // Icon self-heals on a later sync (it's re-diffed); completedAt is create-only, so its
+      // degrade is one-way — the issue stays Done-at-creation-time (acceptable: it's history).
       const isIconErr = (e) => /icon|argument validation/i.test(e.message || "");
-      const stripIcon = (p) => { const { icon, ...rest } = p; return rest; };
+      const isCompletedAtErr = (e) => /completedAt|argument validation/i.test(e.message || "");
+      const withFieldStripRetry = async (mk, payload, field, isRetryable) => {
+        try { return await mk(payload); }
+        catch (e) {
+          if (payload[field] == null || !isRetryable(e)) throw e;
+          const { [field]: _stripped, ...rest } = payload;
+          return mk(rest);
+        }
+      };
       // finally-flush: if an op throws mid-push, everything Linear already created still gets
       // its id written back — otherwise the next sync would create duplicates for those nodes.
       try {
@@ -240,26 +277,23 @@ export async function runSync(root, opts = {}) {
           if (op.op === "createProject") {
             const mk = (payload) => gql(`mutation($input: ProjectCreateInput!) { projectCreate(input: $input) { project { id } } }`,
               { input: { ...payload, teamIds: [team.id] } }, io);   // spread: dropping fields here caused live churn (description)
-            let d;
-            try { d = await mk(op.payload); }
-            catch (e) { if (op.payload.icon && isIconErr(e)) d = await mk(stripIcon(op.payload)); else throw e; }
+            const d = await withFieldStripRetry(mk, op.payload, "icon", isIconErr);
             projectIds[op.projectRef] = d.projectCreate.project.id;
             writeBacks.pis.push({ pi: op.writeBack.pi, project: d.projectCreate.project.id });
           } else if (op.op === "updateProject") {
             const mk = (payload) => gql(`mutation($id: String!, $input: ProjectUpdateInput!) { projectUpdate(id: $id, input: $input) { project { id } } }`,
               { id: op.id, input: payload }, io);
-            try { await mk(op.payload); }
-            catch (e) { if (op.payload.icon && isIconErr(e)) await mk(stripIcon(op.payload)); else throw e; }
+            await withFieldStripRetry(mk, op.payload, "icon", isIconErr);
           } else if (op.op === "createIssue") {
             const input = { teamId: team.id, ...op.payload, ...(op.projectRef && projectIds[op.projectRef] ? { projectId: projectIds[op.projectRef] } : {}) };
-            const d = await gql(`mutation($input: IssueCreateInput!) { issueCreate(input: $input) { issue { id identifier } } }`,
-              { input }, io);
+            const mkIssue = (inp) => gql(`mutation($input: IssueCreateInput!) { issueCreate(input: $input) { issue { id identifier } } }`,
+              { input: inp }, io);
+            const d = await withFieldStripRetry(mkIssue, input, "completedAt", isCompletedAtErr);
             const identifier = d.issueCreate.issue.identifier;
             if (op.writeBack.kind === "sprint") writeBacks.sprints.push({ invoke: op.writeBack.invoke, identifier });
             else writeBacks.items.push({ id: op.writeBack.id, identifier });
           } else if (op.op === "updateIssue") {
-            await gql(`mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { issue { id } } }`,
-              { id: op.id, input: op.payload }, io);
+            await updateIssue(op.id, op.payload, io);
           }
           result.pushed.push(`${op.op}${op.identifier ? ` ${op.identifier}` : op.writeBack ? ` ${op.writeBack.invoke || op.writeBack.id || op.writeBack.pi}` : ""}`);
         }
@@ -294,12 +328,20 @@ export async function runSync(root, opts = {}) {
     // milestones run AFTER initiatives (both post-push): the project ids exist and issues are mapped.
     try { const mr = await syncMilestones(root, io); if (mr.milestones.length) result.milestones = mr; }
     catch (e) { result.milestonesError = e.message; }
+    // cycles run last: the team's ACTIVE cycle mirrors active+next slice status (the elected batch).
+    if (cfg.cycles === "on") {
+      if (!team.activeCycleId) result.cyclesNote = "cycles on but the team has no active cycle in Linear — check Team Settings → Cycles";
+      else {
+        try { const cr = await syncCycles(root, io, team.activeCycleId); if (cr.assigned.length || cr.cleared.length) result.cycles = cr; }
+        catch (e) { result.cyclesError = e.message; }
+      }
+    }
   }
 
   // ── cursor ── advance only when the inbox is handled (auto) or empty — in propose mode a
   // non-empty inbox stays in the window so unhandled proposals reappear rather than vanish.
   if (!opts.dry && !opts.pushOnly) {
-    if (cfg.pull === "off" || cfg.pull === "auto" || inboxEmpty) { writeCursor(root, now); result.cursorAdvanced = true; }
+    if (cfg.pull === "off" || cfg.pull === "auto" || inboxEmpty) { writeCursor(root, { lastSync: now }); result.cursorAdvanced = true; }
   }
   return result;
 }
@@ -400,12 +442,63 @@ export async function syncMilestones(root, io) {
       const targetId = byName.get(s.milestone);
       const c = cur[s.linear];
       if (!c || !targetId || c.milestoneId === targetId) continue;   // unmapped-in-snapshot or already attached
-      await gql(`mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { issue { id } } }`,
-        { id: c.id, input: { projectMilestoneId: targetId } }, io);
+      await updateIssue(c.id, { projectMilestoneId: targetId }, io);
       attached.push(`${s.invoke} → ${s.milestone}`);
     }
   }
   return { milestones, created, attached };
+}
+
+// Mapped issues' current cycle, batched (identifier → { id: uuid, cycleId }) — like fetchIssueMilestones.
+async function fetchIssueCycles(identifiers, io) {
+  const out = {};
+  for (let i = 0; i < identifiers.length; i += 50) {
+    const chunk = identifiers.slice(i, i + 50);
+    const q = `query { ${chunk.map((id, j) => `i${j}: issue(id: "${id}") { id identifier cycle { id } }`).join(" ")} }`;
+    const data = await gql(q, {}, io);
+    chunk.forEach((_, j) => { const iss = data[`i${j}`]; if (iss) out[iss.identifier] = { id: iss.id, cycleId: iss.cycle ? iss.cycle.id : null }; });
+  }
+  return out;
+}
+
+// Activity basis for staleness: the newest journal comment's createdAt (max over first 50 —
+// no ordering assumption; same window the journal read uses), falling back to the issue's own
+// createdAt. NEVER issue updatedAt — our own pushes bump that (the stale label would flap).
+async function fetchActivityBasis(identifiers, io) {
+  const out = {};
+  for (let i = 0; i < identifiers.length; i += 50) {
+    const chunk = identifiers.slice(i, i + 50);
+    const q = `query { ${chunk.map((id, j) => `i${j}: issue(id: "${id}") { identifier createdAt comments(first: 50) { nodes { createdAt } } }`).join(" ")} }`;
+    const data = await gql(q, {}, io);
+    chunk.forEach((_, j) => {
+      const iss = data[`i${j}`];
+      if (!iss) return;
+      const stamps = ((iss.comments && iss.comments.nodes) || []).map((c) => c.createdAt).filter(Boolean);
+      out[iss.identifier] = stamps.length ? stamps.sort()[stamps.length - 1] : iss.createdAt;
+    });
+  }
+  return out;
+}
+
+// Keep the team's ACTIVE cycle = the projection of active+next (CYCLE_STATUSES). Runs post-push,
+// so issues created this run (fresh write-backs) get their cycle in the same sync. UNVERIFIED
+// mutation surface (issueUpdate cycleId) — the caller catches and degrades like initiatives/
+// milestones. Idempotent: assign only on drift; clear only CURRENT-cycle membership (a human's
+// future-cycle parking is deliberate planning and stays untouched — cyclePlan's contract).
+export async function syncCycles(root, io, activeCycleId) {
+  const graph = loadGraph(roadmapPaths(root).yaml);
+  const candidates = cycleCandidates(graph);
+  if (!candidates.length) return { assigned: [], cleared: [] };
+  const issues = await fetchIssueCycles(candidates.map((n) => n.linear), io);
+  const plan = cyclePlan({ graph, activeCycleId, issues });
+  const assigned = [], cleared = [];
+  const ops = [...plan.assign.map((a) => ({ ...a, cycleId: activeCycleId })), ...plan.clear.map((c) => ({ ...c, cycleId: null }))];
+  for (const o of ops) {
+    if (!o.id) continue;   // mapped but not in Linear (deleted?) — leave for the human
+    await updateIssue(o.id, { cycleId: o.cycleId }, io);
+    (o.cycleId === null ? cleared : assigned).push(o.invoke);
+  }
+  return { assigned, cleared };
 }
 
 // ── dispatch transport (the only-network-file rule: dispatch.mjs owns the capsule, this
@@ -484,7 +577,7 @@ export async function runProvision(root, opts = {}) {
   const io = { apiKey: env.LINEAR_API_KEY, fetchImpl: opts.fetchImpl || fetch };
   const team = await fetchTeamBundle(state.cfg.team, io);
 
-  const plan = provisionPlan({ graph, teamLabels: team.labels });
+  const plan = provisionPlan({ graph, teamLabels: team.labels, cfg: state.cfg });
   const result = { labelsCreated: [], labelsExisting: plan.existingLabels, views: [], viewChecklist: null };
 
   for (const name of plan.createLabels) {
@@ -662,6 +755,11 @@ if (isMain) {
       if (r.projectStatusError) console.log(`project status skipped: ${r.projectStatusError} — projects keep their current Linear status this sync.`);
       if (r.milestones) console.log(`milestones: ${r.milestones.milestones.length} across projects${r.milestones.created.length ? ` (created ${r.milestones.created.length})` : ""}${r.milestones.attached.length ? ` · attached ${r.milestones.attached.length} issue(s)` : ""}`);
       if (r.milestonesError) console.log(`milestones skipped: ${r.milestonesError} — pending live verification of the projectMilestone API.`);
+      if (r.cycles) console.log(`cycle: assigned ${r.cycles.assigned.join(", ") || "none"}${r.cycles.cleared.length ? ` · cleared ${r.cycles.cleared.join(", ")}` : ""} — the active cycle mirrors active+next.`);
+      if (r.cyclesError) console.log(`cycles skipped: ${r.cyclesError} — pending live verification of the cycle API.`);
+      if (r.cyclesNote) console.log(`cycles: ${r.cyclesNote}`);
+      if (r.stale && r.stale.length) console.log(`stale: ${r.stale.join(", ")} — committed work past stale_days with no journal note; the election reviews these first.`);
+      if (r.staleError) console.log(`staleness skipped: ${r.staleError} — advisory only, the push was unaffected.`);
       if (r.startStamped && r.startStamped.length) console.log(`start dates: stamped ${r.startStamped.length} active PI(s) (${r.startStamped.join(", ")}) — the Linear timeline now has a start.`);
       if (r.plateDrained && r.plateDrained.length) console.log(`plate: drained ${r.plateDrained.length} completed (${r.plateDrained.join(", ")}) — off My Issues.`);
       if (r.unmatchedPlate && r.unmatchedPlate.length) console.log(`plate: ${r.unmatchedPlate.join(", ")} match no slice/backlog item — typo in meta.plate? ('roadmap plate' lists it).`);

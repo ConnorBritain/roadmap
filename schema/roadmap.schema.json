@@ -68,12 +68,17 @@
           "properties": {
             "team": { "type": "string", "description": "Push-target team key (e.g. ENG)" },
             "granularity": { "enum": ["pis", "slices", "slices+backlog"], "default": "slices", "description": "What projects to Linear: PIs as Projects only, +slices as Issues, +backlog items too. Per-PI override via pi.linear.granularity (ack-gated on conflict)." },
+            "horizon": { "enum": ["all", "near"], "default": "all", "description": "Issue-creation horizon: all = every not-done slice becomes an issue; near = scheduled/optionality slices stay YAML-only (no NEW issues) until promoted, so the board carries only actionable work. Already-mapped issues keep updating either way — never orphaned." },
             "verbosity": { "enum": ["title", "brief", "full"], "default": "brief", "description": "Issue-description detail. Never copies read-order/prompt; always ends with the machine footer + docs link." },
+            "cycles": { "enum": ["off", "on"], "default": "off", "description": "Mirror the team's ACTIVE Linear cycle from slice status: active+next issues join the current cycle, demoted ones leave it. The cycle IS the elected weekly batch — promotion (scheduled→next) is the planning ritual's job. Requires cycles enabled on the Linear team; converges with Linear's native rollover/auto-add. With cycles on, dispatch/fan refuse out-of-cycle slices without --force." },
+            "cycle_capacity": { "type": "integer", "minimum": 1, "default": 10, "description": "est_sessions the cycle election packs per cycle ('roadmap cycle plan'). Unestimated slices are never silently packed; committed-but-unpriced work is flagged rather than counted as zero." },
+            "history": { "enum": ["off", "window", "full"], "default": "off", "description": "Whether DONE slices project as completed issues (with completedAt = completed_on). off = never (pre-history behavior); window = completed within meta.completed_window_days (default 14); full = all shipped work — what makes a project's progress % real and keeps the record queryable in Linear (auto-archive handles aging). Flipping to full on a large roadmap is a one-time backfill; an interrupted push resumes safely (ids write back incrementally)." },
             "pull": { "enum": ["off", "propose", "auto"], "default": "off", "description": "Inbound handling: propose = /sync walks the inbox with you; auto = applied directly." },
             "push_on": { "enum": ["sync", "manual"], "default": "sync", "description": "sync = /sync runs the Linear phase when authed; manual = only 'roadmap linear sync'." },
             "estimate_max": { "type": "integer", "minimum": 1, "default": 5, "description": "Max value pushed to a slice's native Linear estimate (est_sessions is rounded, then clamped here). Set to your Linear team's estimate scale max — use the 'Linear' scale (1..5; extended adds 6,7) for a direct 1-point=1-session read. validate warns when a slice exceeds it: the signal to split it, not extend." },
             "plate_max": { "type": "integer", "minimum": 1, "default": 7, "description": "Cap on the EXPLICIT meta.plate list — validate warns above it so Linear's My Issues stays signal (active work adds on top, uncapped)." },
-            "status_map": { "type": "object", "additionalProperties": { "type": "string" }, "description": "roadmap status → exact Linear workflow-state NAME overrides; unmapped statuses use the state-TYPE defaults (scheduled→backlog, next→unstarted, active/blocked/paused/gated→started, complete→completed)." },
+            "stale_days": { "type": "integer", "minimum": 1, "description": "Staleness threshold (days). Presence enables: committed work (active/next) whose latest journal comment (fallback: issue creation) is older than this gets a 'stale' label on sync, surfaces in the Stale view, and is reviewed FIRST by the cycle election. Basis is journal activity, never issue updatedAt (our own pushes would reset that clock)." },
+            "status_map": { "type": "object", "additionalProperties": { "type": "string" }, "description": "roadmap status → exact Linear workflow-state NAME overrides; unmapped statuses use the state-TYPE defaults (scheduled→backlog, next/blocked/paused/gated→unstarted, active→started, complete→completed). Only active means In Progress; held statuses read Todo + a status:<held> label." },
             "watch": {
               "type": "array",
               "description": "Inbound sources (multiple teams/projects, e.g. a public 'Submit an issue' team). New issues become proposed backlog items carrying source.linear demarcation.",
@@ -106,6 +111,7 @@
           "description": "Scope-discipline knobs read by the /sync and /debrief guardrails and the wave scheduler",
           "properties": {
             "capture_ratio": { "type": "number", "exclusiveMinimum": 0, "default": 2, "description": "Max (captured backlog items + added sprints) per completed slice per review window before the sprawl warning fires" },
+            "pi_min_slices": { "type": "integer", "minimum": 1, "description": "Composition floor: validate warns (one aggregated line) when a non-complete PI holds fewer slices than this. A PI under ~3 slices is usually a slice wearing a PI's coat — fold it into a sibling or grow it. Absent → off." },
             "coherence": { "type": "boolean", "default": true, "description": "Wave-packing coherence: prefer finishing started PIs over opening fresh ones (strictly below declared priority). false restores pure priority/status/est ordering." }
           }
         },
@@ -173,9 +179,10 @@
         "projected_target_date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "DERIVED target date (YYYY-MM-DD) computed by 'roadmap estimate timeline' from rolled-up slice estimates — the estimate-driven timeline. Never overwrites an explicit target_date (which always wins); the Linear projection uses target_date || projected_target_date. Recomputed each run; don't hand-author." },
         "linear": {
           "type": "object", "additionalProperties": false,
-          "description": "Per-PI Linear override + the pushed-back project id. A granularity conflicting with the global requires the yes_linear_override ack at creation; validate warns on stored mismatches.",
+          "description": "Per-PI Linear override + the pushed-back project id. A granularity or verbosity conflicting with the global requires the yes_linear_override ack at creation; validate warns on stored mismatches.",
           "properties": {
             "granularity": { "enum": ["pis", "slices", "slices+backlog"] },
+            "verbosity": { "enum": ["title", "brief", "full"], "description": "Per-PI issue-description detail override — quiet a noisy PI to title, or richen an active one to full, without moving the global." },
             "project": { "type": "string", "description": "Linear project id — written back by the first push; don't hand-author" }
           }
         },

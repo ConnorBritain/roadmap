@@ -33,13 +33,14 @@ const LINEAR_TOOLS = [
 // claude.ai account's plan (no local worktree/disk). fan_cloud PREVIEWS by default; confirm=true
 // actually fires (it spends plan usage + opens real PRs). Needs ~/.claude-routines.json configured.
 const CLOUD_TOOLS = [
-  { name: "dispatch", description: "Fire a Claude Code CLOUD session for ONE slice or backlog item via the Routines API — runs on the currently-authed claude.ai account's plan, no local worktree or disk. Returns the session URL (and comments it on the Linear issue when the node is mapped). Requires ~/.claude-routines.json (docs/DEPLOYMENT.md § Cloud dispatch).",
-    inputSchema: { type: "object", required: ["key"], properties: { key: { type: "string", description: "slice invoke key or backlog id" } } } },
-  { name: "fan_cloud", description: "Conduct a cloud FANOUT of a ready wave — the worktree-free, disk-free fanout. Each slice fires a Claude Code cloud session on the authed account's plan and opens a PR. DEFAULT is a dry preview (lists what would fire, spawns nothing); pass confirm=true to actually fire. Returns session URLs when confirmed. The conducting session reconciles the resulting PRs via the roadmap marker (/sync).",
+  { name: "dispatch", description: "Fire a Claude Code CLOUD session for ONE slice or backlog item via the Routines API — runs on the currently-authed claude.ai account's plan, no local worktree or disk. Returns the session URL (and comments it on the Linear issue when the node is mapped). With meta.linear.cycles on, an out-of-cycle slice refuses (elect it via 'roadmap cycle', or pass force=true — the logged escape hatch, surfaces as scope change). Requires ~/.claude-routines.json (docs/DEPLOYMENT.md § Cloud dispatch).",
+    inputSchema: { type: "object", required: ["key"], properties: { key: { type: "string", description: "slice invoke key or backlog id" }, force: { type: "boolean", description: "override the cycle lock for this one dispatch (out-of-cycle work; surfaces as scope change)" } } } },
+  { name: "fan_cloud", description: "Conduct a cloud FANOUT of a ready wave — the worktree-free, disk-free fanout. Each slice fires a Claude Code cloud session on the authed account's plan and opens a PR. DEFAULT is a dry preview (lists what would fire, spawns nothing); pass confirm=true to actually fire. With meta.linear.cycles on, out-of-cycle slices are excluded from the wave (reported in excludedOutOfCycle; pass all=true to include). Returns session URLs when confirmed. The conducting session reconciles the resulting PRs via the roadmap marker (/sync).",
     inputSchema: { type: "object", properties: {
       wave: { type: "integer", minimum: 1, description: "which ready wave (default 1)" },
       cap: { type: "integer", minimum: 1, description: "max slices in the wave (default the review ceiling, 5 — machine limits don't apply to cloud)" },
-      confirm: { type: "boolean", description: "false/absent = preview only; true = actually fire the cloud sessions" } } } },
+      confirm: { type: "boolean", description: "false/absent = preview only; true = actually fire the cloud sessions" },
+      all: { type: "boolean", description: "include out-of-cycle slices in the wave (explicit override of the cycle lock)" } } } },
 ];
 
 // plate_list is a read that needs the backlog too (in_progress items), so it's handled inline here
@@ -112,7 +113,7 @@ function callTool(name, args) {
   }
   if (name === "dispatch") {
     // async; runDispatch fires the routine (or the Linear @-mention) and returns the session/comment.
-    return runDispatch(repoRoot(), args.key, {});
+    return runDispatch(repoRoot(), args.key, { force: !!args.force });
   }
   if (name === "fan_cloud") {
     // preview unless confirm=true; runFanCloud loops runDispatch over the ready wave.
