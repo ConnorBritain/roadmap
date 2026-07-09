@@ -2486,9 +2486,14 @@ test("runSync staleness: flags on journal silence, survives its own push, persis
   const r1 = await runSync(root, { fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-09T12:00:00Z" });
   eq(r1.stale, ["a"], "journal silence past stale_days flags the slice");
   ok(fake.calls.some((c) => c.query.includes("issueUpdate") && (c.variables.input.labelIds || []).includes("l-s")), "the stale label pushed");
-  eq(readCursor(root).stale, ["a"], "stale set persisted to the cursor — the election's offline basis");
+  const cursor1 = readCursor(root);
+  eq(cursor1.stale, ["a"], "stale set persisted to the cursor — the election's offline basis");
+  eq(typeof cursor1.lastSync, "string", "patch-merge kept lastSync beside stale (neither clobbers the other)");
+  // the flap trap is closed STRUCTURALLY: the basis query never even requests updatedAt
+  const actQ = fake.calls.find((c) => c.query.includes("createdAt comments(first:"));
+  ok(actQ && !actQ.query.includes("updatedAt"), "activity basis never requests updatedAt — our own pushes cannot reset the clock");
   const r2 = await runSync(root, { fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-09T13:00:00Z" });
-  eq(r2.stale, ["a"], "our own label push did NOT reset the clock (journal basis, not updatedAt)");
+  eq(r2.stale, ["a"], "second run recomputes the same journal basis — still stale while the journal is silent");
   eq(r2.pushed, [], "still-stale second run is a no-op (label already present)");
   comments["ENG-1"].push({ createdAt: "2026-07-09T12:30:00Z" });   // a fresh journal note lands
   const r3 = await runSync(root, { fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-09T14:00:00Z" });

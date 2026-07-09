@@ -231,8 +231,10 @@ export async function runSync(root, opts = {}) {
   // ── staleness basis ── committed work (CYCLE_STATUSES) with journal silence past stale_days
   // gets the stale label via the push's ordinary label set-diff. Advisory: a fetch failure is a
   // note, never a failed sync. The set persists to the cursor so the election CLI reads it offline.
+  // Push-adjacent, so pull-only skips it — persisting a stale set the push never applied would
+  // let the cursor drift from Linear's real label state.
   let stale = new Set();
-  if (cfg.stale_days) {
+  if (cfg.stale_days && !opts.pullOnly) {
     try {
       const committed = cycleCandidates(pushGraph).filter((n) => CYCLE_STATUSES.includes(n.status));
       if (committed.length) {
