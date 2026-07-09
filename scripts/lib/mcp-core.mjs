@@ -21,6 +21,7 @@ const SETTABLE = new Set([
   "title", "what", "status", "status_label", "est_sessions", "weight",
   "deps", "touches", "owns", "gate", "gated_on", "read_order", "resume_action",
   "prs", "completed_on", "optional", "execution", "track", "priority", "prompt", "kickoff_brief", "linear", "milestone",
+  "shape", "risks", "estimate",
 ]);
 
 // ── tool registry ─────────────────────────────────────────────────────────────
