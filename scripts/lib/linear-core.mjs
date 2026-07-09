@@ -178,6 +178,34 @@ export function resolvePushState(status, cfg, teamStates, typeMap = STATUS_TYPE_
 }
 export const resolveItemPushState = (status, cfg, teamStates) => resolvePushState(status, cfg, teamStates, ITEM_TYPE_MAP);
 
+// PI status -> Linear PROJECT status (the project-level analog of resolvePushState). Project-status
+// TYPES are stable; the inventory is workspace-custom and the stock inventory has NO "paused"
+// (it's an optional add in Linear settings), so each roadmap status carries a fallback CHAIN —
+// a held PI degrades to planned rather than erroring on a stock workspace. Without this mapping
+// every project reads "Backlog" forever and the initiative rollup lies (live-verified on a
+// 64-project board: 64/64 stuck in backlog, 34 of them fully shipped).
+const PI_STATUS_PROJECT_TYPES = {
+  complete: ["completed"],
+  active: ["started"],
+  next: ["planned", "backlog"],
+  scheduled: ["backlog"],
+  optionality: ["backlog"],
+  blocked: ["paused", "planned", "backlog"],
+  paused: ["paused", "planned", "backlog"],
+  gated: ["paused", "planned", "backlog"],
+};
+// projectStatuses: [{ id, name, type, position }] from organization.projectStatuses (IO layer),
+// or null when the fetch failed/feature unavailable → returns null (no status projected).
+export function resolveProjectStatus(piStatus, projectStatuses) {
+  if (!projectStatuses || !projectStatuses.length) return null;
+  const chain = PI_STATUS_PROJECT_TYPES[piStatus] || ["backlog"];
+  for (const t of chain) {
+    const s = projectStatuses.find((x) => x.type === t);
+    if (s) return s;
+  }
+  throw new Error(`workspace has no project status of type ${chain.join("/")} (available: ${projectStatuses.map((x) => `${x.name}:${x.type}`).join(", ")})`);
+}
+
 // Linear state TYPE -> roadmap status, for pull DELTAS (deliberately lossy in reverse;
 // canceled maps to "dropped" for items and is flagged for slices by the proposal builder).
 export function pullStatusFor(stateType) {
@@ -442,7 +470,7 @@ export function dispatchGuidance() {
 // clobbered while the proposal is unresolved (live-verified failure mode).
 // labels: name→id from the team bundle (fresh each sync, no YAML caching). Unresolvable
 // names are dropped from payloads and reported once via missingLabels (fix = provision).
-export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsUrl = null, holds = new Set(), labels = {}, viewerId = null }) {
+export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsUrl = null, holds = new Set(), labels = {}, viewerId = null, projectStatuses = null }) {
   const ops = [];
   const missing = new Set();
   const model = flatten(graph);
@@ -470,6 +498,7 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
     const priority = pi.priority ? priorityToLinear(pi.priority) : null;   // null → leave Linear's (No priority)
     const startDate = pi.start_date || null;   // explicit, or auto-stamped when the PI went active (sync write-back)
     const targetDate = pi.target_date || pi.projected_target_date || null;   // explicit commitment wins; else the estimate-derived projection ('roadmap estimate timeline')
+    const projStatus = resolveProjectStatus(pi.status, projectStatuses);   // null → status projection off (fetch degraded)
     const desired = {   // the full projection; create takes it whole, update diffs field-by-field
       name,
       ...(desc ? { description: desc } : {}),
@@ -479,6 +508,7 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
       ...(priority != null ? { priority } : {}),
       ...(startDate ? { startDate } : {}),
       ...(targetDate ? { targetDate } : {}),
+      ...(projStatus ? { statusId: projStatus.id } : {}),
     };
     if (!projId) {
       if (hasWork) ops.push({ op: "createProject", payload: desired, projectRef: pi.id,
@@ -495,6 +525,7 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
       if (priority != null && (cur.priority || 0) !== priority) changed.priority = priority;
       if (startDate && (cur.startDate || null) !== startDate) changed.startDate = startDate;
       if (targetDate && (cur.targetDate || null) !== targetDate) changed.targetDate = targetDate;
+      if (projStatus && (cur.statusId || null) !== projStatus.id) changed.statusId = projStatus.id;
       if (Object.keys(changed).length) ops.push({ op: "updateProject", id: projId, payload: changed });
     }
     if (gran === "pis") continue;   // projects only — no issue leaks for this PI

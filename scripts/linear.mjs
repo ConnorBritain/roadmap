@@ -76,15 +76,24 @@ async function fetchProjectSnapshot(ids, io) {
   const projects = {};
   for (let i = 0; i < ids.length; i += 10) {
     const chunk = ids.slice(i, i + 10);
-    const q = `query { ${chunk.map((id, j) => `p${j}: project(id: "${id}") { id name description content color icon priority startDate targetDate }`).join(" ")} }`;
+    const q = `query { ${chunk.map((id, j) => `p${j}: project(id: "${id}") { id name description content color icon priority startDate targetDate status { id } }`).join(" ")} }`;
     const data = await gql(q, {}, io);
     chunk.forEach((_, j) => {
       const p = data[`p${j}`];
       if (p) projects[p.id] = { id: p.id, name: p.name, description: p.description || "", content: p.content || "",
-        color: p.color || "", icon: p.icon || "", priority: p.priority || 0, startDate: p.startDate || null, targetDate: p.targetDate || null };
+        color: p.color || "", icon: p.icon || "", priority: p.priority || 0, startDate: p.startDate || null, targetDate: p.targetDate || null,
+        statusId: p.status ? p.status.id : null };
     });
   }
   return projects;
+}
+
+// Workspace project-status inventory (live-verified location: organization.projectStatuses).
+// A failure degrades to null — projects simply keep their current Linear status this sync —
+// recorded on the result by the caller, never fatal.
+async function fetchProjectStatuses(io) {
+  const data = await gql(`query { organization { projectStatuses { id name type position } } }`, {}, io);
+  return [...data.organization.projectStatuses].sort((a, b) => a.position - b.position);
 }
 
 // Snapshot of our mapped issues, batched via aliases (identifiers are valid issue(id:) args).
@@ -141,6 +150,12 @@ export async function runSync(root, opts = {}) {
   const docsUrl = repoDocsUrl(root, graph);
 
   const result = { pushed: [], proposals: null, cursorAdvanced: false, dry: !!opts.dry };
+
+  // Project-status inventory — lets the push map PI status → project status. Degrades to null
+  // (no status projection) so a workspace/API hiccup can never abort the sync.
+  let projectStatuses = null;
+  try { projectStatuses = await fetchProjectStatuses(io); }
+  catch (e) { result.projectStatusError = e.message; }
 
   // ── pull FIRST (live-verified ordering): inbound is read before any push executes, so a
   // human's Linear edit can never be clobbered by the projection while it's still an open
@@ -204,7 +219,7 @@ export async function runSync(root, opts = {}) {
 
   // ── push ──
   if (!opts.pullOnly) {
-    const { ops, missingLabels, unmatchedPlate } = buildPushPlan({ graph: pushGraph, backlog: pushBacklog, cfg, teamStates: team.states, existing, docsUrl, holds, labels: team.labels, viewerId });
+    const { ops, missingLabels, unmatchedPlate } = buildPushPlan({ graph: pushGraph, backlog: pushBacklog, cfg, teamStates: team.states, existing, docsUrl, holds, labels: team.labels, viewerId, projectStatuses });
     if (missingLabels.length) result.missingLabels = missingLabels;
     if (unmatchedPlate && unmatchedPlate.length) result.unmatchedPlate = unmatchedPlate;
     if (opts.dry) {
