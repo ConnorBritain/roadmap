@@ -87,16 +87,13 @@ export function validateLinearConfig(graph) {
   for (const w of plateVal.warnings) warnings.push(w);
   if (graph.meta && graph.meta.plate != null && !cfg) warnings.push("meta.plate is set but Linear isn't configured — the plate assigns Linear issues, so it's a no-op until meta.linear.team is set");
   for (const pi of graph.pis || []) {
-    if (pi.linear && pi.linear.granularity != null) {
-      if (!GRANULARITIES.includes(pi.linear.granularity)) errors.push(`PI ${pi.id}: linear.granularity "${pi.linear.granularity}" is not one of ${GRANULARITIES.join("|")}`);
-      else if (cfg && pi.linear.granularity !== cfg.granularity) {
-        warnings.push(`PI ${pi.id}: linear.granularity "${pi.linear.granularity}" differs from meta.linear.granularity "${cfg.granularity}" — per-PI override in effect`);
-      }
-    }
-    if (pi.linear && pi.linear.verbosity != null) {
-      if (!VERBOSITIES.includes(pi.linear.verbosity)) errors.push(`PI ${pi.id}: linear.verbosity "${pi.linear.verbosity}" is not one of ${VERBOSITIES.join("|")}`);
-      else if (cfg && pi.linear.verbosity !== cfg.verbosity) {
-        warnings.push(`PI ${pi.id}: linear.verbosity "${pi.linear.verbosity}" differs from meta.linear.verbosity "${cfg.verbosity}" — per-PI override in effect`);
+    // One loop per override field — same shape as checkPiOverrideAck, so adding a third
+    // per-PI Linear override means extending these two field lists, nothing else.
+    for (const [f, allowed] of [["granularity", GRANULARITIES], ["verbosity", VERBOSITIES]]) {
+      if (!pi.linear || pi.linear[f] == null) continue;
+      if (!allowed.includes(pi.linear[f])) errors.push(`PI ${pi.id}: linear.${f} "${pi.linear[f]}" is not one of ${allowed.join("|")}`);
+      else if (cfg && pi.linear[f] !== cfg[f]) {
+        warnings.push(`PI ${pi.id}: linear.${f} "${pi.linear[f]}" differs from meta.linear.${f} "${cfg[f]}" — per-PI override in effect`);
       }
     }
     // The Linear subtitle truncates at 255 with "…"; when it's DERIVED (no pi.summary) and the exit's

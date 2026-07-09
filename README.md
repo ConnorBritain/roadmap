@@ -343,7 +343,7 @@ meta:
 
 **Detection is graceful.** No `meta.linear` → every Linear behavior is off and the tool is byte-identical to before. Configured but no `LINEAR_API_KEY` → one advisory line, everything else works. The session-start hook reports state with zero network; `roadmap linear status --probe` is the only networked check. Bootstrap: `roadmap linear auth` (key instructions) → `roadmap linear setup --team <KEY>` → `roadmap linear sync --dry`.
 
-**Per-PI override.** A PI can set its own `linear.granularity` (e.g. keep an internal PI's slices off a shared board). Creating one that conflicts with the global requires an explicit `yes_linear_override: true` ack — otherwise the mutation is rejected with instructions and nothing is written; `roadmap validate` warns on stored mismatches.
+**Per-PI override.** A PI can set its own `linear.granularity` (e.g. keep an internal PI's slices off a shared board) or `linear.verbosity` (quiet a noisy PI's issue descriptions to `title`, or richen an active one to `full`). Creating one that conflicts with the global requires an explicit `yes_linear_override: true` ack — otherwise the mutation is rejected with instructions and nothing is written; `roadmap validate` warns on stored mismatches.
 
 ### Topology: Linear as the board
 
