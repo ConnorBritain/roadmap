@@ -2597,6 +2597,27 @@ test("runSync errors are the setup-guidance contract", async () => {
 // ── sprawl guardrail ──────────────────────────────────────────────────────────
 // WHY: unchecked capture growth is how a roadmap silently doubles between reviews — the
 // ratio must fire above threshold, stay quiet at/below it, and never fire on an empty window.
+// WHY: composition drift is how a 64-project wall of one-slice PIs happens (capture_ratio guards
+// growth RATE, not shape) — the lint must be ONE aggregated line (signal, not a warning wall),
+// exempt finished history, stay off when unset, and reject a knob value that would silently
+// disable the guardrail.
+test("composition lint: one aggregated warning under pi_min_slices; complete PIs exempt; off when absent; 0 rejected", () => {
+  const g = (discipline) => ({ meta: { schema_version: 1, program: "T", ...(discipline ? { discipline } : {}) }, pis: [
+    { id: "thin1", title: "T1", status: "active", sprints: [{ id: "s1", title: "A", status: "active", invoke: "t1-a" }] },
+    { id: "thin2", title: "T2", status: "scheduled", sprints: [{ id: "s1", title: "B", status: "scheduled", invoke: "t2-b" }, { id: "s2", title: "C", status: "scheduled", invoke: "t2-c" }] },
+    { id: "shipped", title: "S", status: "complete", sprints: [{ id: "s1", title: "D", status: "complete", invoke: "s-d" }] },
+    { id: "full", title: "F", status: "active", sprints: [
+      { id: "s1", title: "E", status: "active", invoke: "f-e" }, { id: "s2", title: "G", status: "next", invoke: "f-g" }, { id: "s3", title: "H", status: "scheduled", invoke: "f-h" } ] },
+  ]});
+  const warns = validateGraph(g({ pi_min_slices: 3 })).warnings.filter((w) => w.startsWith("composition:"));
+  eq(warns.length, 1, "one aggregated line, not one per PI");
+  ok(warns[0].includes("2 non-complete PI(s)") && warns[0].includes("thin1") && warns[0].includes("thin2"), "names the thin live PIs");
+  ok(!warns[0].includes("shipped"), "complete PIs are exempt — history is what it is");
+  ok(!warns[0].includes("full"), "PIs at/over the floor don't warn");
+  eq(validateGraph(g(null)).warnings.filter((w) => w.startsWith("composition:")).length, 0, "absent knob → lint off (no warning wall on unopted repos)");
+  ok(validateGraph(g({ pi_min_slices: 0 })).errors.some((e) => e.includes("pi_min_slices")), "0 rejected — a bad knob must not silently disable the guardrail");
+});
+
 test("sprawlWarnings: ratio fires above threshold, quiet at it, quiet on an empty window", () => {
   const hot = sprawlWarnings({ completed: 2, captured: 5, addedSprints: 2 });
   eq(hot.length, 1, "one ratio warning");

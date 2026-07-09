@@ -20,7 +20,7 @@ You run a strategy interview whose entire product is **graph edits** — never a
 
 4. **Land it in the graph** (only after the yes):
    - North-star: if their vision statement changed, write/update the doc `meta.north_star` points at, and set the pointer by editing `meta` directly with Edit (then `roadmap validate` — meta isn't tool-settable; this matches /sync's Edit-then-validate precedent).
-   - New initiatives: `add_pi` (MCP) with status `scheduled` and their words as `theme`/`exit_criteria`.
+   - New initiatives: `add_pi` (MCP) with status `scheduled` and their words as `theme`/`exit_criteria`. **Composition check first:** a PI under ~3 slices is usually a slice wearing a PI's coat — fold it into a sibling PI or grow it before creating a new project-tier bet (set `meta.discipline.pi_min_slices: 3` and `roadmap validate` watches this).
    - Seed work: `add_sprint` per slice — **thin on purpose**: title, `what`, rough `est_sessions`, nothing else (the `slice-scoper` agent fills in touches/read-order later; don't fabricate detail the user didn't give you).
    - Killed/deprioritized work: propose `set_status` / `set_fields` changes; apply on confirmation.
    - Priority implications: don't set priorities here — hand off: "run `/prioritize` to weigh the new work against the backlog."

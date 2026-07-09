@@ -25,3 +25,5 @@ You converge the user's priorities into the graph. The output is `priority: { ti
 6. **Offer to load the plate** (only when `meta.plate` exists / Linear is wired). Once the order is set, propose the handful you'll *actually work now* as the batch via the **`plate_set`** MCP tool (`{ keys: [<invoke>…] }`) — or `roadmap plate set <invoke> …`. This projects to Linear's **My Issues** on the next sync (assignee = you). Keep it under `plate_max` — the plate is a hopper for the current batch, not the whole P0/P1 list; active work auto-shows and completed slices auto-drain regardless. Set only what the user confirms is "on my plate now" — intentional, not automatic.
 
 Never set a priority the user didn't confirm, and never delete a reason without replacing it — an unexplained tier is worse than an untriaged item.
+
+If `roadmap validate` surfaces a composition warning (PIs under `meta.discipline.pi_min_slices`), mention it during the walk — a one-slice PI competing for a tier is usually a slice that belongs inside a sibling PI, and triage is the natural moment to fold it.
