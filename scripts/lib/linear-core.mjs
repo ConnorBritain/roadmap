@@ -31,6 +31,7 @@ export function normalizeLinearConfig(meta) {
     push_on: raw.push_on || "sync",
     estimate_max: raw.estimate_max != null ? raw.estimate_max : 5,   // Linear estimate scale max (linear=5, extended=7)
     plate_max: raw.plate_max != null ? raw.plate_max : 7,   // explicit meta.plate cap — My Issues signal
+    stale_days: raw.stale_days != null ? raw.stale_days : null,   // staleness threshold; presence enables (meta.plate pattern)
     status_map: raw.status_map || {},
     watch: (raw.watch || []).map((w) => ({
       team: w.team, project: w.project || null, capture: w.capture || "backlog",
@@ -66,6 +67,7 @@ export function validateLinearConfig(graph) {
       if (raw.push_on != null && !["sync", "manual"].includes(raw.push_on)) errors.push(`meta.linear.push_on "${raw.push_on}" is not sync|manual`);
       if (raw.estimate_max != null && !(Number.isInteger(raw.estimate_max) && raw.estimate_max >= 1)) errors.push("meta.linear.estimate_max must be an integer >= 1 (the Linear estimate scale max; default 5)");
       if (raw.plate_max != null && !(Number.isInteger(raw.plate_max) && raw.plate_max >= 1)) errors.push("meta.linear.plate_max must be an integer >= 1 (the My Issues explicit-plate cap; default 7)");
+      if (raw.stale_days != null && !(Number.isInteger(raw.stale_days) && raw.stale_days >= 1)) errors.push("meta.linear.stale_days must be an integer >= 1 (days of journal silence before an in-cycle issue is flagged stale)");
       for (const w of raw.watch || []) {
         if (!w.team) errors.push("meta.linear.watch: every entry needs a team key");
         if (w.capture != null && w.capture !== "backlog") errors.push(`meta.linear.watch: capture "${w.capture}" is not supported (only "backlog")`);
@@ -278,15 +280,17 @@ export function issueDescription(node, cfg, { docsUrl = null, target } = {}) {
 // Tier is NOT a label — Linear's native priority already carries it (no duplication).
 export const MARKER_LABEL = "roadmap";
 export const PLATE_LABEL = "plate";   // marks an issue WE assigned to you (the plate) — never touch a hand-assignment
+export const STALE_LABEL = "stale";   // journal silence on committed work — rides the same set-diff, so add/remove is idempotent
 export const KIND_LABELS = ["bug", "chore", "followup", "urgent", "idea"].map((k) => `kind:${k}`);
 
-export function desiredLabels(target, node, onPlate = false) {
+export function desiredLabels(target, node, onPlate = false, isStale = false) {
   const plate = onPlate ? [PLATE_LABEL] : [];
   if (target.type === "backlog") return [MARKER_LABEL, ...(node.kind ? [`kind:${node.kind}`] : []), ...plate];
   return [
     MARKER_LABEL,
     ...(node.track ? [`track:${node.track}`] : []),
     ...(HELD_STATUSES.includes(node.status) ? [`status:${node.status}`] : []),   // held distinction on the board
+    ...(isStale ? [STALE_LABEL] : []),
     ...plate,
   ];
 }
@@ -427,6 +431,25 @@ export function cyclePlan({ graph, activeCycleId, issues = {} }) {
   return { assign, clear };
 }
 
+// ── staleness (drift on committed work) ───────────────────────────────────────
+// An issue in the committed set (CYCLE_STATUSES — the same set that populates the cycle; works
+// with cycles off) whose activity basis is older than stale_days gets the stale label. The basis
+// is the LATEST JOURNAL COMMENT (fallback: issue createdAt), supplied by the IO layer — never
+// issue updatedAt, which our own pushes bump (the label itself would reset the clock and flap).
+// activity: { [identifier]: ISO timestamp }. Unknown basis → never flagged (advisory feature,
+// no false reds). Returns a Set of invoke keys.
+export function staleKeys({ graph, cfg, activity = {}, now }) {
+  if (!cfg.stale_days || !now) return new Set();
+  const out = new Set();
+  for (const n of cycleCandidates(graph)) {
+    if (!CYCLE_STATUSES.includes(n.status)) continue;
+    const basis = activity[n.linear];
+    if (!basis) continue;
+    if (Date.parse(now) - Date.parse(basis) > cfg.stale_days * 86400000) out.add(n.invoke);
+  }
+  return out;
+}
+
 // ── initiatives (the grouping tier above projects) ───────────────────────────
 // A PI declares its initiative via `pi.initiative` (a display name). Sync ensures each distinct
 // initiative exists in Linear and each mapped PI's project is attached to it — turning a flat
@@ -482,8 +505,9 @@ function trackViews(graph) {
   return tracks.map((t) => ({ name: `Track ${t}`, hint: `issues labeled track:${t} — the ${t} fanout lane` }));
 }
 
-// The cycle-era view — only offered when cycles are on (provision degrades like STANDARD_VIEWS).
+// The cycle-era views — offered only when their feature is configured (provision degrades like STANDARD_VIEWS).
 const THIS_CYCLE_VIEW = { name: "This cycle", hint: "current-cycle issues labeled roadmap — the elected batch the sync maintains (active + next)" };
+const STALE_VIEW = { name: "Stale", hint: "issues labeled stale — committed work with no journal note in stale_days; the cycle election reviews these FIRST" };
 
 export function provisionPlan({ graph, teamLabels, cfg = null }) {
   const have = new Set(Object.keys(teamLabels || {}));
@@ -495,11 +519,15 @@ export function provisionPlan({ graph, teamLabels, cfg = null }) {
     ...[...tracks].sort().map((t) => `track:${t}`),
     ...heldPresent.map((s) => `status:${s}`),
     ...(graph.meta && graph.meta.plate != null ? [PLATE_LABEL] : []),   // marks tool-plated issues (safe unassign)
+    ...(cfg && cfg.stale_days ? [STALE_LABEL] : []),
   ];
   return {
     createLabels: wanted.filter((n) => !have.has(n)),
     existingLabels: wanted.filter((n) => have.has(n)),
-    views: [...STANDARD_VIEWS, ...(cfg && cfg.cycles === "on" ? [THIS_CYCLE_VIEW] : []), ...trackViews(graph)],
+    views: [...STANDARD_VIEWS,
+      ...(cfg && cfg.cycles === "on" ? [THIS_CYCLE_VIEW] : []),
+      ...(cfg && cfg.stale_days ? [STALE_VIEW] : []),
+      ...trackViews(graph)],
   };
 }
 
@@ -542,7 +570,7 @@ export function dispatchGuidance() {
 // clobbered while the proposal is unresolved (live-verified failure mode).
 // labels: name→id from the team bundle (fresh each sync, no YAML caching). Unresolvable
 // names are dropped from payloads and reported once via missingLabels (fix = provision).
-export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsUrl = null, holds = new Set(), labels = {}, viewerId = null, projectStatuses = null, now = null }) {
+export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsUrl = null, holds = new Set(), labels = {}, viewerId = null, projectStatuses = null, now = null, stale = new Set() }) {
   const ops = [];
   const missing = new Set();
   const model = flatten(graph);
@@ -639,7 +667,7 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
 
   function labelIdsFor(target, node, onPlate) {
     const ids = [];
-    for (const name of desiredLabels(target, node, onPlate)) {
+    for (const name of desiredLabels(target, node, onPlate, stale.has(target.key))) {
       if (labels[name]) ids.push(labels[name]);
       else missing.add(name);
     }

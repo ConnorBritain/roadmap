@@ -36,7 +36,7 @@ import {
   normalizeLinearConfig, effectiveGranularity, effectiveVerbosity, linearState, checkPiOverrideAck,
   resolvePushState, resolveProjectStatus, pullStatusFor, priorityToLinear, LINEAR_TO_PRIORITY,
   issueDescription, machineFooter, buildPushPlan, buildPullProposals, validateLinearConfig, holdsFor,
-  desiredLabels, projectDescription, projectSubtitleRaw, projectName, projectContent, normalizeLinearMarkdown, withinHistory,
+  desiredLabels, projectDescription, projectSubtitleRaw, projectName, projectContent, normalizeLinearMarkdown, withinHistory, staleKeys,
   projectColorFor, projectIconFor, MARKER_LABEL, PLATE_LABEL, LINEAR_PROJECT_NAME_MAX, LINEAR_PROJECT_DESC_MAX,
   initiativePlan, initiativeStyle, startStampTargets, milestonePlan, HELD_STATUSES, cyclePlan,
   provisionPlan, manualViewChecklist, dispatchGuidance, STANDARD_VIEWS,
@@ -1525,6 +1525,38 @@ test("history knob: off skips done work, full projects it Done with completedAt,
   ok(v.errors.some((e) => e.includes('history "always"')), "invalid history value blocks at validate");
 });
 
+// ── linear-core: staleness ────────────────────────────────────────────────────
+// WHY: a stale flag that flaps (our own push resetting the clock), flags unknown-activity work,
+// or sticks after a fresh note trains the human to ignore it — the one failure an advisory
+// indicator can't afford. Basis is journal activity; add/remove rides the ordinary label set-diff.
+test("staleKeys: journal-silence basis, committed-only scope, unknown never flags; label rides the set-diff", () => {
+  const g = { meta: { schema_version: 1, program: "T", linear: { team: "ENG", stale_days: 3 } },
+    pis: [{ id: "p", title: "P", status: "active", linear: { project: "proj-1" }, sprints: [
+      { id: "s1", title: "A", status: "active", invoke: "a", linear: "ENG-1" },      // silent 5 days → stale
+      { id: "s2", title: "B", status: "next", invoke: "b", linear: "ENG-2" },        // fresh note → not stale
+      { id: "s3", title: "C", status: "scheduled", invoke: "c", linear: "ENG-3" },   // not committed → never stale
+      { id: "s4", title: "D", status: "active", invoke: "d", linear: "ENG-4" },      // unknown activity → never stale
+    ]}]};
+  const cfg = normalizeLinearConfig(g.meta);
+  const NOW = "2026-07-09T12:00:00Z";
+  const activity = { "ENG-1": "2026-07-04T11:00:00Z", "ENG-2": "2026-07-09T09:00:00Z", "ENG-3": "2026-06-01T00:00:00Z" };
+  eq([...staleKeys({ graph: g, cfg, activity, now: NOW })], ["a"], "silent committed work flags; fresh, uncommitted, unknown don't");
+  eq(staleKeys({ graph: g, cfg: normalizeLinearConfig({ linear: { team: "ENG" } }), activity, now: NOW }).size, 0, "no stale_days → feature off");
+  const labels = { roadmap: "l-r", stale: "l-s" };
+  const oneSlice = { ...g, pis: [{ ...g.pis[0], sprints: [g.pis[0].sprints[0]] }] };
+  const existing = { projects: { "proj-1": { id: "proj-1", name: "P" } }, issues: {
+    "ENG-1": { id: "u1", title: "A", description: "x", priority: 0, stateId: "st-s", projectId: "proj-1", labelIds: ["l-r"] } } };
+  const flagged = buildPushPlan({ graph: oneSlice, backlog: null, cfg, teamStates: L_STATES, existing, labels, stale: new Set(["a"]) });
+  eq(flagged.ops.find((o) => o.op === "updateIssue").payload.labelIds, ["l-r", "l-s"], "flagging adds the stale label via the set-diff");
+  const relabeled = { ...existing, issues: { "ENG-1": { ...existing.issues["ENG-1"], labelIds: ["l-r", "l-s"] } } };
+  const cleared = buildPushPlan({ graph: oneSlice, backlog: null, cfg, teamStates: L_STATES, existing: relabeled, labels, stale: new Set() });
+  eq(cleared.ops.find((o) => o.op === "updateIssue").payload.labelIds, ["l-r"], "unflagging drops it the same way");
+  const pp = provisionPlan({ graph: g, teamLabels: {}, cfg });
+  ok(pp.createLabels.includes("stale") && pp.views.some((v) => v.name === "Stale"), "stale label + view provisioned when stale_days set");
+  const v = validateLinearConfig({ meta: { schema_version: 1, program: "T", linear: { team: "ENG", stale_days: 0 } }, pis: [] });
+  ok(v.errors.some((e) => e.includes("stale_days")), "stale_days 0 rejected — a bad knob must not silently disable the guardrail");
+});
+
 // ── linear-core: cycles ───────────────────────────────────────────────────────
 // WHY: the active cycle IS the elected weekly batch — if assignment oscillates, clears a human's
 // future-cycle parking, or lets demotions linger, the cycle chart lies and "this week" silently
@@ -2199,6 +2231,16 @@ function fakeLinear({ failOn = null, snapshot = {}, projectSnapshot = {}, issueC
       if (failOn === "commentCreate") throw new Error("simulated comment failure");
       return respond({ commentCreate: { comment: { id: "c-1" } } });
     }
+    if (query.includes("createdAt comments(first:")) {   // staleness activity basis (aliased, batched)
+      if (failOn === "activity") throw new Error("simulated activity failure");
+      const ids = [...query.matchAll(/issue\(id: "([^"]+)"\)/g)].map((m) => m[1]);
+      const data = {};
+      ids.forEach((id, j) => {
+        const rec = snapshot[id] || createdIssues[id];
+        data[`i${j}`] = rec ? { identifier: id, createdAt: rec.createdAt || "2026-07-01T00:00:00Z", comments: { nodes: issueComments[id] || [] } } : null;
+      });
+      return respond(data);
+    }
     if (query.includes("comments(first:")) {   // the journal read: issue(id){ comments { nodes } }
       const id = (query.match(/issue\(id: "([^"]+)"\)/) || [])[1];
       return respond({ issue: { comments: { nodes: issueComments[id] || [] } } });
@@ -2260,9 +2302,15 @@ function fakeLinear({ failOn = null, snapshot = {}, projectSnapshot = {}, issueC
     }
     if (query.includes("issueUpdate")) {
       if (failOn === "cycleUpdate" && "cycleId" in (variables.input || {})) throw new Error("simulated cycle rejection");
-      if ("cycleId" in (variables.input || {})) {   // faithful: persist so a second run's cycle fetch converges
-        const rec = Object.values({ ...snapshot, ...createdIssues }).find((r) => r && r.id === variables.id);
-        if (rec) rec.cycle = variables.input.cycleId ? { id: variables.input.cycleId } : null;
+      const rec = Object.values({ ...snapshot, ...createdIssues }).find((r) => r && r.id === variables.id);
+      if (rec) {   // faithful: persist the patch (like projectUpdate above) so a second run converges
+        const inp = variables.input || {};
+        for (const k of ["title", "description", "priority", "estimate"]) if (k in inp) rec[k] = inp[k];
+        if ("stateId" in inp) rec.state = { id: inp.stateId };
+        if ("projectId" in inp) rec.project = inp.projectId ? { id: inp.projectId } : null;
+        if ("assigneeId" in inp) rec.assignee = inp.assigneeId ? { id: inp.assigneeId } : null;
+        if ("cycleId" in inp) rec.cycle = inp.cycleId ? { id: inp.cycleId } : null;
+        if (inp.labelIds) rec.labels = { nodes: inp.labelIds.map((id) => ({ id })) };
       }
       return respond({ issueUpdate: { issue: { id: variables.id } } });
     }
@@ -2421,6 +2469,37 @@ test("runSync history full: backfills Done with completedAt, converges, degrades
   eq(createCalls.length, 2, "value rejection → one retry");
   ok(!("completedAt" in createCalls[1].variables.input), "retry drops completedAt (Done-at-creation fallback)");
   ok(readFileSync(join(root2, "docs", "roadmap", "roadmap.yaml"), "utf8").includes("linear: ENG-101"), "issue still created + written back");
+  rmSync(root2, { recursive: true, force: true });
+});
+
+// WHY: staleness must ride the LIVE sync — journal-comment basis through the wire, the flag
+// surviving our own label push (updatedAt-based logic would flap here), the set landing in the
+// cursor for the offline election, and an activity-fetch failure degrading to a note.
+test("runSync staleness: flags on journal silence, survives its own push, persists to cursor, degrades", async () => {
+  const yaml = `meta:\n  schema_version: 1\n  program: T\n  linear:\n    team: ENG\n    stale_days: 3\npis:\n  - id: p\n    title: P\n    status: active\n    linear: { project: proj-1 }\n    sprints:\n      - { id: s1, title: A, status: active, invoke: a, linear: ENG-1 }\n`;
+  const mkRoot = () => { const root = mkdtempSync(join(tmpdir(), "roadmap-stale-")); mkdirSync(join(root, "docs", "roadmap"), { recursive: true }); writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"), yaml, "utf8"); return root; };
+  const mkIss = () => ({ id: "u-1", identifier: "ENG-1", title: "A", description: "", priority: 0, estimate: null, state: { id: "st-s" }, project: { id: "proj-1" }, assignee: null, createdAt: "2026-07-01T00:00:00Z", labels: { nodes: [{ id: "l-r" }] } });
+  const labels = [{ id: "l-r", name: "roadmap" }, { id: "l-s", name: "stale" }];
+  const comments = { "ENG-1": [{ createdAt: "2026-07-02T00:00:00Z" }] };
+  const root = mkRoot();
+  const fake = fakeLinear({ snapshot: { "ENG-1": mkIss() }, projectSnapshot: { "proj-1": { id: "proj-1", name: "P" } }, teamLabels: labels, issueComments: comments });
+  const r1 = await runSync(root, { fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-09T12:00:00Z" });
+  eq(r1.stale, ["a"], "journal silence past stale_days flags the slice");
+  ok(fake.calls.some((c) => c.query.includes("issueUpdate") && (c.variables.input.labelIds || []).includes("l-s")), "the stale label pushed");
+  eq(readCursor(root).stale, ["a"], "stale set persisted to the cursor — the election's offline basis");
+  const r2 = await runSync(root, { fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-09T13:00:00Z" });
+  eq(r2.stale, ["a"], "our own label push did NOT reset the clock (journal basis, not updatedAt)");
+  eq(r2.pushed, [], "still-stale second run is a no-op (label already present)");
+  comments["ENG-1"].push({ createdAt: "2026-07-09T12:30:00Z" });   // a fresh journal note lands
+  const r3 = await runSync(root, { fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-09T14:00:00Z" });
+  ok(!r3.stale, "fresh note clears the flag");
+  ok(fake.calls.some((c) => c.query.includes("issueUpdate") && c.variables.input.labelIds && !c.variables.input.labelIds.includes("l-s")), "the label removal pushed");
+  eq(readCursor(root).stale, [], "cursor reflects the cleared set");
+  rmSync(root, { recursive: true, force: true });
+  const root2 = mkRoot();
+  const fake2 = fakeLinear({ snapshot: { "ENG-1": mkIss() }, projectSnapshot: { "proj-1": { id: "proj-1", name: "P" } }, teamLabels: labels, issueComments: comments, failOn: "activity" });
+  const r4 = await runSync(root2, { fetchImpl: fake2.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-09T12:00:00Z" });
+  ok(r4.staleError && r4.staleError.includes("simulated activity failure"), "activity failure recorded; sync completed");
   rmSync(root2, { recursive: true, force: true });
 });
 
