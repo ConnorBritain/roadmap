@@ -29,6 +29,8 @@ import {
   performPromotion,
 } from "../lib/backlog-core.mjs";
 import { validateGraph } from "../lib/validate-core.mjs";
+import { estimationConfig, estimateArgs, parseEstimateRecord, applyEstimate, validateEstimation } from "../lib/estimate-core.mjs";
+import { runEstimate, resolveEngine } from "../estimate.mjs";
 import { mutateRoadmap, mutateBacklog, mutateBoth } from "../lib/store.mjs";
 import {
   normalizeLinearConfig, effectiveGranularity, linearState, checkPiOverrideAck,
@@ -2910,6 +2912,125 @@ test("runFanCloud isolates a per-slice failure and reports it", async () => {
   eq(r.fired, 1, "the healthy slice still fired");
   eq(r.results.filter((x) => !x.ok).length, 1, "the failed slice is recorded, not thrown");
   ok(r.results.find((x) => !x.ok).error.includes("401"), "failure reason captured");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// ── agent-time estimation bridge (Phase 1) ───────────────────────────────────
+// A fake estimator stdout: the markdown block `estimate --json` prints, then the pretty JSON
+// record LAST — exactly what parseEstimateRecord must dig the trailing object out of.
+const fakeEstimatorOut = (taskId, mins) => [
+  "## Agent Time Estimate", "", `Task id: \`${taskId}\``, "Task shape: localized-feature",
+  "Wall-clock estimate:", `* Expected: ${mins.expected} min`, "", "",
+  JSON.stringify({ type: "estimate", task_id: taskId, ts: "2026-07-08T00:00:00+00:00",
+    summary: "x", shape: "localized-feature", est_minutes: mins,
+    calibration_basis: "static prior · widened", confidence: "low-medium" }, null, 2),
+].join("\n");
+
+// WHY: the estimator call is the whole bridge — a wrong argv (missing --json, dropped risks, or
+// estimating an unclassified slice) means a wrong or absent number silently feeds the timeline.
+test("estimateArgs: fresh estimate call with summary/shape/risks/model; requires a shape", () => {
+  const cfg = estimationConfig({});
+  eq(estimateArgs({ invoke: "b", title: "Build", shape: "localized-feature", risks: ["external-api", "slow-flaky-tests"] }, cfg),
+    ["estimate", "--summary", "Build", "--shape", "localized-feature", "--json", "--risks", "external-api,slow-flaky-tests", "--model", "opus-4.8"], "risks joined, model appended");
+  eq(estimateArgs({ invoke: "b", title: "Build", shape: "refactor" }, cfg),
+    ["estimate", "--summary", "Build", "--shape", "refactor", "--json", "--model", "opus-4.8"], "no risks → no --risks flag");
+  throws(() => estimateArgs({ invoke: "x" }, cfg), "has no shape", "an unclassified slice can't be estimated");
+});
+
+// WHY: agent-time prints prose THEN the JSON record; a parser that grabs the wrong block (or misses it)
+// caches garbage or nothing. The trailing-object rule is the contract between the two tools.
+test("parseEstimateRecord: pulls the trailing JSON past the markdown block", () => {
+  const rec = parseEstimateRecord(fakeEstimatorOut("t-9", { low: 1, expected: 2, high: 3 }));
+  eq(rec.task_id, "t-9", "record recovered");
+  eq(rec.est_minutes, { low: 1, expected: 2, high: 3 }, "est_minutes recovered");
+  throws(() => parseEstimateRecord("just prose, no record"), "no JSON record", "missing record errors, not silently empty");
+});
+
+// WHY: the cached block is what the timeline reads and what the calibration loop keys on — dropping
+// task_id would sever the loop; mis-mapping minutes would mis-date the roadmap.
+test("applyEstimate: maps the estimator record to the compact cached block", () => {
+  eq(applyEstimate({ est_minutes: { low: 1, expected: 2, high: 3 }, confidence: "low-medium", task_id: "t-1", ts: "2026-07-08T00:00:00+00:00", calibration_basis: "static · widened" }),
+    { minutes: { low: 1, expected: 2, high: 3 }, confidence: "low-medium", task_id: "t-1", at: "2026-07-08T00:00:00+00:00", basis: "static · widened" }, "ts→at, calibration_basis→basis");
+});
+
+// WHY: the config drives the calendar math (hours_per_day, point) and the engine call (python, model);
+// a bad override silently falling through to a wrong value would skew every projected date.
+test("estimationConfig: defaults, and meta.estimation overrides (bad values fall back)", () => {
+  eq(estimationConfig({}), { engine: null, python: "python3", hours_per_day: 6, point: "expected", model: "opus-4.8" }, "absent → defaults");
+  eq(estimationConfig({ estimation: { engine: "/e.py", python: "python", hours_per_day: 8, point: "high", model: "sonnet-5" } }),
+    { engine: "/e.py", python: "python", hours_per_day: 8, point: "high", model: "sonnet-5" }, "overrides applied");
+  eq(estimationConfig({ estimation: { point: "bogus", hours_per_day: -1 } }).point, "expected", "bad point → default");
+  eq(estimationConfig({ estimation: { hours_per_day: -1 } }).hours_per_day, 6, "non-positive hours_per_day → default");
+});
+
+// WHY: a typo in the config or a hand-mangled estimate field must surface at validate, not corrupt a
+// sync or a rollup downstream where the failure is opaque.
+test("validateEstimation: flags a malformed config + bad risks; a clean config passes", () => {
+  const bad = validateEstimation({ meta: { estimation: { hours_per_day: 0, point: "soon" } }, pis: [
+    { id: "p", sprints: [{ id: "s1", invoke: "x", risks: "external-api" }] }] });
+  ok(bad.errors.some((e) => e.includes("hours_per_day must be a number > 0")), "bad hours_per_day errors");
+  ok(bad.errors.some((e) => e.includes('point must be "expected" or "high"')), "bad point errors");
+  ok(bad.errors.some((e) => e.includes("risks must be an array of strings")), "string risks errors");
+  const good = validateEstimation({ meta: { estimation: { point: "high", hours_per_day: 5 } }, pis: [
+    { id: "p", sprints: [{ id: "s1", invoke: "x", shape: "refactor", risks: ["external-api"] }] }] });
+  eq(good.errors, [], "clean config + fields → no errors");
+});
+
+// WHY: the engine must resolve deterministically (explicit > env > skill) and fail LOUD when absent —
+// a silent miss would leave slices unestimated and the timeline quietly hollow.
+test("resolveEngine: explicit engine wins over env; throws with guidance when none exist", () => {
+  eq(resolveEngine({ engine: "/x/estimator.py" }, { AGENT_TIME_ENGINE: "/e.py" }, (p) => p === "/x/estimator.py"), "/x/estimator.py", "explicit engine preferred");
+  eq(resolveEngine({ engine: null }, { AGENT_TIME_ENGINE: "/e.py" }, (p) => p === "/e.py"), "/e.py", "env fallback");
+  throws(() => resolveEngine({ engine: null }, {}, () => false), "estimator not found", "none present → actionable error");
+});
+
+// WHY: this is the write-back the whole feature hangs on — the estimate must land on the slice (with the
+// task_id the loop needs), estimating must be idempotent (no re-logging on every run), and --force must refresh.
+test("runEstimate caches est_minutes + task_id, skips already-estimated, --force refreshes", () => {
+  const root = mkdtempSync(join(tmpdir(), "roadmap-estimate-"));
+  mkdirSync(join(root, "docs", "roadmap"), { recursive: true });
+  writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"),
+    `meta:\n  schema_version: 1\n  program: T\npis:\n  - id: a\n    title: A\n    status: active\n    sprints:\n      - { id: s1, title: Build the thing, status: next, invoke: build, shape: localized-feature, risks: [external-api] }\n      - { id: s2, title: Untyped, status: next, invoke: untyped }\n`, "utf8");
+  const calls = [];
+  let tid = 0;
+  const runEstimator = (args, o) => { calls.push({ args, cwd: o.cwd }); tid += 1; return { status: 0, stdout: fakeEstimatorOut(`t-${tid}`, { low: 19, expected: 45, high: 93 }), stderr: "" }; };
+
+  const r1 = runEstimate(root, { all: true, runEstimator });
+  eq(r1.estimated.map((e) => e.invoke), ["build"], "only the classified slice is a candidate under --all");
+  ok(calls[0].args.includes("localized-feature") && calls[0].args.join(" ").includes("--risks external-api"), "shape + risks reach the estimator");
+  const sp1 = parseDocument(readFileSync(join(root, "docs", "roadmap", "roadmap.yaml"), "utf8")).toJS().pis[0].sprints[0];
+  eq(sp1.estimate.minutes, { low: 19, expected: 45, high: 93 }, "est_minutes cached on the slice");
+  eq(sp1.estimate.task_id, "t-1", "task_id cached for the calibration loop");
+
+  const r2 = runEstimate(root, { invoke: "build", runEstimator });
+  eq(r2.estimated.length, 0, "already-estimated slice isn't re-logged");
+  ok(r2.skipped.some((s) => s.invoke === "build"), "skip recorded (idempotent)");
+
+  const before = tid;
+  const r3 = runEstimate(root, { invoke: "build", force: true, runEstimator });
+  eq(r3.estimated.length, 1, "force re-estimates");
+  ok(tid > before, "a fresh estimator call was made");
+  const sp1b = parseDocument(readFileSync(join(root, "docs", "roadmap", "roadmap.yaml"), "utf8")).toJS().pis[0].sprints[0];
+  eq(sp1b.estimate.task_id, `t-${tid}`, "force refreshed the cached estimate + task_id");
+
+  const rU = runEstimate(root, { invoke: "untyped", runEstimator });
+  ok(rU.skipped.some((s) => s.invoke === "untyped" && s.why.includes("no shape")), "an explicitly-named unclassified slice is skipped, not estimated");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: one bad estimator exit must not corrupt the YAML or sink the command — the failure is recorded,
+// nothing is written, and it never throws through a sync/MCP call.
+test("runEstimate isolates an estimator failure: records it, writes nothing, never throws", () => {
+  const root = mkdtempSync(join(tmpdir(), "roadmap-estimate-fail-"));
+  mkdirSync(join(root, "docs", "roadmap"), { recursive: true });
+  writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"),
+    `meta:\n  schema_version: 1\n  program: T\npis:\n  - id: a\n    title: A\n    status: active\n    sprints:\n      - { id: s1, title: Build, status: next, invoke: build, shape: refactor }\n`, "utf8");
+  const runEstimator = () => ({ status: 2, stdout: "", stderr: "estimator boom" });
+  const r = runEstimate(root, { all: true, runEstimator });
+  eq(r.estimated.length, 0, "nothing estimated");
+  ok(r.errors.some((x) => x.invoke === "build" && x.error.includes("boom")), "failure reason captured");
+  const sp = parseDocument(readFileSync(join(root, "docs", "roadmap", "roadmap.yaml"), "utf8")).toJS().pis[0].sprints[0];
+  ok(!sp.estimate, "no estimate written on failure");
   rmSync(root, { recursive: true, force: true });
 });
 

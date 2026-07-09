@@ -6,6 +6,7 @@ import { flatten, detectCycle, STATUS } from "./graph.mjs";
 import { validateExecution } from "./execution.mjs";
 import { validatePriority } from "./priority.mjs";
 import { validateLinearConfig } from "./linear-core.mjs";
+import { validateEstimation } from "./estimate-core.mjs";
 
 const isDone = (s) => !!(STATUS[s] && STATUS[s].done);
 
@@ -49,6 +50,11 @@ export function validateGraph(graph) {
   for (const e of lin.errors) err(e);
   for (const w of lin.warnings) warn(w);
 
+  // Optional agent-time estimation config + per-slice estimate fields. Absent → no-op.
+  const est = validateEstimation(graph);
+  for (const e of est.errors) err(e);
+  for (const w of est.warnings) warn(w);
+
   const validStatus = new Set(Object.keys(STATUS));
   const seenPiIds = new Set();
   for (const pi of graph.pis || []) {
@@ -60,6 +66,7 @@ export function validateGraph(graph) {
     for (const e of validatePriority(pi.priority, `PI ${pi.id}`).errors) err(e);
     if (pi.target_date != null && !/^\d{4}-\d{2}-\d{2}$/.test(pi.target_date)) err(`PI ${pi.id}: target_date must be YYYY-MM-DD (got ${JSON.stringify(pi.target_date)})`);
     if (pi.start_date != null && !/^\d{4}-\d{2}-\d{2}$/.test(pi.start_date)) err(`PI ${pi.id}: start_date must be YYYY-MM-DD (got ${JSON.stringify(pi.start_date)})`);
+    if (pi.projected_target_date != null && !/^\d{4}-\d{2}-\d{2}$/.test(pi.projected_target_date)) err(`PI ${pi.id}: projected_target_date must be YYYY-MM-DD (got ${JSON.stringify(pi.projected_target_date)})`);
     if (pi.summary != null && (typeof pi.summary !== "string" || pi.summary.length > 255)) err(`PI ${pi.id}: summary must be a string of at most 255 chars (it's the Linear subtitle — keep it to one line)`);
     if (!validStatus.has(pi.status)) err(`PI ${pi.id}: status "${pi.status}" invalid`);
     if (!Array.isArray(pi.sprints) || pi.sprints.length === 0) { err(`PI ${pi.id}: needs >=1 sprint`); continue; }

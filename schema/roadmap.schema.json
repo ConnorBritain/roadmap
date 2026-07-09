@@ -90,6 +90,17 @@
             }
           }
         },
+        "estimation": {
+          "type": "object", "additionalProperties": false,
+          "description": "Optional agent-time integration: turns calibrated per-slice duration estimates (from the agent-time estimator skill) into projected PI target dates. Absent → estimation off; slices with no `estimate` block simply don't feed the timeline. The shape/risk vocabulary is owned by agent-time (its SHAPES/RISKS tables validate them), not duplicated here.",
+          "properties": {
+            "engine": { "type": "string", "description": "Path to agent-time's estimator.py. Omit to resolve ~/.claude/skills/agent-time-estimator/estimator.py (or $AGENT_TIME_ENGINE)." },
+            "python": { "type": "string", "default": "python3", "description": "Python launcher for the estimator (the IO layer falls back to 'python' when 'python3' is absent)." },
+            "hours_per_day": { "type": "number", "exclusiveMinimum": 0, "default": 6, "description": "Productive agent wall-clock hours per calendar day — the rate that converts rolled-up slice minutes into a calendar span for projected_target_date." },
+            "point": { "enum": ["expected", "high"], "default": "expected", "description": "Which point of the low/expected/high estimate drives the projected date: 'expected' (realistic) or 'high' (under-promise)." },
+            "model": { "type": "string", "default": "opus-4.8", "description": "Model name passed to the estimator (drives its per-model pace + checkpoint horizon)." }
+          }
+        },
         "discipline": {
           "type": "object", "additionalProperties": false,
           "description": "Scope-discipline knobs read by the /sync and /debrief guardrails and the wave scheduler",
@@ -159,6 +170,7 @@
         "summary": { "type": "string", "maxLength": 255, "description": "Short one-line subtitle → Linear project description (the ≤255 field the board shows under the title). Authored so it never truncates; when omitted the subtitle is derived from the exit's first sentence and validate warns if that would truncate." },
         "start_date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "Start date (YYYY-MM-DD) → Linear project startDate (drives the roadmap timeline). Set it explicitly, or leave blank and the sync auto-stamps it the first time the PI is active (≈ when it was picked up). Explicit always wins." },
         "target_date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "Target date (YYYY-MM-DD) → Linear project targetDate. A deliberate commitment date; omit when there's no dated commitment." },
+        "projected_target_date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "DERIVED target date (YYYY-MM-DD) computed by 'roadmap estimate timeline' from rolled-up slice estimates — the estimate-driven timeline. Never overwrites an explicit target_date (which always wins); the Linear projection uses target_date || projected_target_date. Recomputed each run; don't hand-author." },
         "linear": {
           "type": "object", "additionalProperties": false,
           "description": "Per-PI Linear override + the pushed-back project id. A granularity conflicting with the global requires the yes_linear_override ack at creation; validate warns on stored mismatches.",
@@ -182,6 +194,19 @@
         "invoke": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$", "description": "The /slice invocation key. Stable — renames break references. Unique across the whole file." },
         "what": { "type": "string", "description": "One-line summary for the At-a-glance table" },
         "est_sessions": { "type": "number", "minimum": 0, "description": "Focused Claude sessions remaining to clear this sprint (0 when done)" },
+        "shape": { "type": "string", "description": "agent-time task shape (e.g. localized-feature, refactor, migration-schema) — the primary classifier the estimator prices from. One of agent-time's SHAPES; validated there, not enum-checked here (avoids cross-repo vocab drift). Set it (+ optional risks) to make a slice estimable via 'roadmap estimate'." },
+        "risks": { "type": "array", "items": { "type": "string" }, "description": "agent-time risk factors (e.g. external-api, slow-flaky-tests) that skew the estimate right. From agent-time's RISKS vocabulary; validated there." },
+        "estimate": {
+          "type": "object", "additionalProperties": false,
+          "description": "Cached agent-time estimate — written by 'roadmap estimate', read by the timeline rollup. Not hand-authored; refresh with 'roadmap estimate <slice> --force'.",
+          "properties": {
+            "minutes": { "type": "object", "additionalProperties": false, "properties": { "low": { "type": "number" }, "expected": { "type": "number" }, "high": { "type": "number" } }, "description": "Wall-clock estimate (low/expected/high minutes)." },
+            "confidence": { "type": "string", "description": "Estimator confidence label (never 'high' by design)." },
+            "task_id": { "type": "string", "description": "agent-time task id — links this slice to its history record for the calibration log." },
+            "at": { "type": "string", "description": "ISO timestamp the estimate was produced." },
+            "basis": { "type": "string", "description": "Calibration basis (which history bucket + spread the estimate drew on)." }
+          }
+        },
         "weight": { "enum": ["heavy", "medium", "light"], "description": "Optional override of the inferred resource weight (heavy=dotnet test, medium=build/vitest, light=docs); drives the concurrency recommender" },
         "deps": { "type": "array", "items": { "type": "string" }, "description": "Dependency edges: sibling sprint id (s2), fully-qualified pi-id/sprint-id, or a PI id (complete-when-all-sprints-complete)" },
         "touches": { "type": "array", "items": { "type": "string" }, "description": "Files this sprint writes; used to detect shared-file contention (two-wave) in the scheduler" },
