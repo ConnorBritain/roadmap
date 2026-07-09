@@ -318,6 +318,7 @@ meta:
   linear:
     team: ENG                      # push target (team key). Auth = LINEAR_API_KEY env var, never a file.
     granularity: slices            # pis (Projects only) | slices | slices+backlog — what leaks to Linear
+    horizon: all                   # all | near — near keeps scheduled/optionality slices off the board until promoted
     verbosity: brief               # title | brief | full — issue-description detail
     pull: propose                  # off | propose (walk the inbox in /sync) | auto
     status_map: { blocked: "Blocked" }   # optional exact-name overrides; defaults map by state TYPE

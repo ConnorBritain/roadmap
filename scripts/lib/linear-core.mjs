@@ -12,6 +12,9 @@ import { platedKeys, validatePlate } from "./plate-core.mjs";
 export const GRANULARITIES = ["pis", "slices", "slices+backlog"];
 export const VERBOSITIES = ["title", "brief", "full"];
 export const PULL_MODES = ["off", "propose", "auto"];
+export const HORIZONS = ["all", "near"];
+// The statuses "near" keeps off the board: far-future work that hasn't been elected yet.
+const HORIZON_FUTURE_STATUSES = ["scheduled", "optionality"];
 
 // meta.linear with defaults applied, or null when absent/teamless (Linear off).
 export function normalizeLinearConfig(meta) {
@@ -20,6 +23,7 @@ export function normalizeLinearConfig(meta) {
   return {
     team: raw.team,
     granularity: raw.granularity || "slices",
+    horizon: raw.horizon || "all",
     verbosity: raw.verbosity || "brief",
     pull: raw.pull || "off",
     push_on: raw.push_on || "sync",
@@ -52,6 +56,7 @@ export function validateLinearConfig(graph) {
     else {
       if (!raw.team) errors.push("meta.linear.team is required (the push-target team key)");
       if (raw.granularity != null && !GRANULARITIES.includes(raw.granularity)) errors.push(`meta.linear.granularity "${raw.granularity}" is not one of ${GRANULARITIES.join("|")}`);
+      if (raw.horizon != null && !HORIZONS.includes(raw.horizon)) errors.push(`meta.linear.horizon "${raw.horizon}" is not one of ${HORIZONS.join("|")}`);
       if (raw.verbosity != null && !VERBOSITIES.includes(raw.verbosity)) errors.push(`meta.linear.verbosity "${raw.verbosity}" is not one of ${VERBOSITIES.join("|")}`);
       if (raw.pull != null && !PULL_MODES.includes(raw.pull)) errors.push(`meta.linear.pull "${raw.pull}" is not one of ${PULL_MODES.join("|")}`);
       if (raw.push_on != null && !["sync", "manual"].includes(raw.push_on)) errors.push(`meta.linear.push_on "${raw.push_on}" is not sync|manual`);
@@ -554,6 +559,9 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
     for (const node of piNodes) {
       // create only not-done work (issues for finished history are noise); always update mapped.
       if (!node.linear && isDone(node.status)) continue;
+      // horizon "near": far-future work (scheduled/optionality) stays YAML-only until elected —
+      // no NEW issues. Already-mapped ones keep updating: never orphan, never let a visible issue rot.
+      if (!node.linear && cfg.horizon === "near" && HORIZON_FUTURE_STATUSES.includes(node.status)) continue;
       pushIssueOp(node, { type: "slice", key: node.invoke }, node.status, resolvePushState, pi.id, projId || null, descCfg);
     }
   }

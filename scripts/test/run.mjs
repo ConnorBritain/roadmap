@@ -1462,6 +1462,32 @@ test("firstSentence-derived subtitle survives abbreviations (incl., e.g.) and st
   eq(projectSubtitleRaw(noEnd), "Ends on an abbreviation incl.", "no real sentence end → whole line, never empty");
 });
 
+// ── linear-core: horizon gate ─────────────────────────────────────────────────
+// WHY: the untiered future mass is what floods the board (live: 50 of 92 issues were far-future
+// backlog-state) — "near" must stop NEW scheduled/optionality issues while committed/held work
+// still projects, mapped far-future issues keep updating, and the absent knob stays byte-identical.
+test("horizon near: gates new far-future issues, keeps mapped ones updating, default unchanged", () => {
+  const g = (horizon) => ({ meta: { schema_version: 1, program: "T", linear: { team: "ENG", ...(horizon ? { horizon } : {}) } },
+    pis: [{ id: "p", title: "P", status: "active", linear: { project: "proj-1" }, sprints: [
+      { id: "s1", title: "Sched", status: "scheduled", invoke: "sched" },
+      { id: "s2", title: "Opt", status: "optionality", invoke: "opt" },
+      { id: "s3", title: "Next", status: "next", invoke: "nxt" },
+      { id: "s4", title: "Gated", status: "gated", invoke: "gtd" },
+      { id: "s5", title: "Mapped sched", status: "scheduled", invoke: "mapped", linear: "ENG-7" },
+    ]}]});
+  const existing = { projects: { "proj-1": { id: "proj-1", name: "P" } }, issues: {
+    "ENG-7": { id: "u7", title: "OLD NAME", description: "", priority: 0, stateId: "st-b", projectId: "proj-1", labelIds: [] } } };
+  const near = buildPushPlan({ graph: g("near"), backlog: null, cfg: normalizeLinearConfig(g("near").meta), teamStates: L_STATES, existing });
+  const creates = near.ops.filter((o) => o.op === "createIssue").map((o) => o.writeBack.invoke).sort();
+  eq(creates, ["gtd", "nxt"], "near creates only committed/held work — scheduled/optionality stay YAML-only");
+  const upd = near.ops.find((o) => o.op === "updateIssue" && o.identifier === "ENG-7");
+  eq(upd.payload.title, "Mapped sched", "an already-mapped far-future issue still updates (create-side gate only)");
+  const all = buildPushPlan({ graph: g(null), backlog: null, cfg: normalizeLinearConfig(g(null).meta), teamStates: L_STATES, existing });
+  eq(all.ops.filter((o) => o.op === "createIssue").length, 4, "absent knob (default all) → every not-done slice creates, byte-identical to before");
+  const v = validateLinearConfig({ meta: { schema_version: 1, program: "T", linear: { team: "ENG", horizon: "soon" } }, pis: [] });
+  ok(v.errors.some((e) => e.includes('horizon "soon"')), "invalid horizon blocks at validate");
+});
+
 // ── linear-core: PI status → project status ──────────────────────────────────
 // Mirrors the live workspace inventory (organization.projectStatuses): stock has NO paused type.
 const P_STATUSES = [
