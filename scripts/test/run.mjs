@@ -2892,6 +2892,15 @@ test("normalizeLinearMarkdown collapses Linear's stored auto-link form to plain 
   eq(normalizeLinearMarkdown("plain text"), "plain text", "plain text untouched");
 });
 
+// WHY: live-caught — Linear rewrites underscore-bold to asterisk-bold on store, so a gate naming
+// a __tests__ directory came back as **tests** and re-pushed the same three issues every sync
+// (the exact non-convergence normalizeLinearMarkdown exists to prevent).
+test("normalizeLinearMarkdown canonicalizes underscore-bold to asterisk-bold (both sides converge)", () => {
+  eq(normalizeLinearMarkdown("run vitest in __tests__ dir"), normalizeLinearMarkdown("run vitest in **tests** dir"), "our __tests__ equals Linear's stored **tests**");
+  eq(normalizeLinearMarkdown("a __b__ c __d__"), "a **b** c **d**", "every occurrence canonicalizes");
+  eq(normalizeLinearMarkdown("snake_case stays_put"), "snake_case stays_put", "single underscores untouched");
+});
+
 // WHY: random per-project icon/color is scattered noise; grouping by initiative is the whole
 // point. Same initiative → same color/icon; distinct initiatives (up to palette size) differ.
 test("project color/icon are deterministic by initiative index, null when ungrouped", () => {
