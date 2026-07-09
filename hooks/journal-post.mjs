@@ -44,6 +44,9 @@ try {
   // its outcome to agent-time so the estimate self-corrects. Idempotent per task_id (runLog checks
   // agent-time's history), so firing on every session end is safe. Rides this Linear-gated hook, so it's
   // active when Linear is configured; otherwise use `roadmap estimate log` or agent-time's own hooks.
+  // ponytail: without agent-time's round-counter hook, log() has no actuals and is rejected, so this
+  // re-fires one silent spawnSync every session end on a done+estimated slice until an outcome lands.
+  // Bounded per session, harmless; the upgrade path is enabling that hook (then the first fire succeeds).
   try {
     const slice = sliceForBranch(graph, branch);
     if (slice && graphMod.isDone(slice.status) && slice.estMinutes) {

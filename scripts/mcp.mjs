@@ -18,6 +18,7 @@ import { platedKeys } from "./lib/plate-core.mjs";
 import { runSync, runNote, runNotes, runProjectUpdate } from "./linear.mjs";
 import { runDispatch, runFanCloud } from "./dispatch.mjs";
 import { runEstimate, runTimeline, runLog } from "./estimate.mjs";
+import { LOG_STATUSES } from "./lib/estimate-core.mjs";
 
 // Always registered; politely erroring when unconfigured beats config-gated registration
 // (tools/list would need IO). linear_sync reuses linear.mjs's runSync — one sync implementation.
@@ -65,7 +66,7 @@ const ESTIMATE_TOOLS = [
   { name: "timeline", description: "Roll the cached per-slice estimates up into a projected target date per PI (using the same wave/dependency/concurrency schedule the fanout runs) and write pi.projected_target_date back — the estimate-driven Linear timeline. Never overwrites an explicit pi.target_date. Returns the per-PI dates plus any unpriced/held slices excluded from the projection.",
     inputSchema: { type: "object", properties: {} } },
   { name: "estimate_log", description: "Log a completed slice's outcome to agent-time's calibration history (status pass|fail|partial|abandoned) so future estimates self-correct — the calibration loop. Requires the slice to have been estimated (carries estimate.task_id). Pass actual_rounds (and optionally actual_minutes) unless agent-time's round-counter hook auto-filled them; without either, agent-time rejects the log. Idempotent per task_id.",
-    inputSchema: { type: "object", required: ["invoke"], properties: { invoke: { type: "string", description: "slice invoke key" }, status: { enum: ["pass", "fail", "partial", "abandoned"] }, actual_rounds: { type: "integer", minimum: 0 }, actual_minutes: { type: "number", minimum: 0 }, force: { type: "boolean" } } } },
+    inputSchema: { type: "object", required: ["invoke"], properties: { invoke: { type: "string", description: "slice invoke key" }, status: { enum: LOG_STATUSES }, actual_rounds: { type: "integer", minimum: 0 }, actual_minutes: { type: "number", minimum: 0 }, force: { type: "boolean" } } } },
 ];
 
 const PROTOCOL_VERSION = "2024-11-05";

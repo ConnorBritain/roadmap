@@ -3200,7 +3200,8 @@ test("runLog fires the outcome, is idempotent per task_id, --force re-logs, erro
   const runEstimator = (args) => { calls.push(args); return { status: 0, stdout: "", stderr: "" }; };
 
   const r1 = runLog(root, { invoke: "done", status: "pass", runEstimator });
-  eq(r1.logged, "done", "the outcome fired");
+  eq(r1.invoke, "done", "the outcome fired for this slice");
+  ok(r1.logged, "logged flag set");
   ok(calls[0].join(" ").includes("log --task-id t-abc --status pass"), "estimator log carries the slice's task_id");
 
   // agent-time would append the outcome; simulate that, then a re-fire must skip (the hook re-runs).
@@ -3211,8 +3212,22 @@ test("runLog fires the outcome, is idempotent per task_id, --force re-logs, erro
   ok(runLog(root, { invoke: "done", status: "pass", runEstimator }).skipped, "already-logged task_id → skipped (idempotent)");
   eq(calls.length, before, "no second estimator fire");
 
-  eq(runLog(root, { invoke: "done", status: "pass", force: true, runEstimator }).logged, "done", "--force re-logs past the guard");
+  eq(runLog(root, { invoke: "done", status: "pass", force: true, runEstimator }).invoke, "done", "--force re-logs past the guard");
   throws(() => runLog(root, { invoke: "raw", runEstimator }), "has no estimate.task_id", "an unestimated slice can't be logged");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: agent-time REJECTS an outcome with no actuals (no round-counter data ran) — that real failure must
+// be RETURNED, never thrown, or the Stop hook firing runLog on every session end would crash session end.
+test("runLog surfaces a rejected log's error and never throws (the no-actuals degradation path)", () => {
+  const root = mkdtempSync(join(tmpdir(), "roadmap-log-fail-"));
+  mkdirSync(join(root, "docs", "roadmap"), { recursive: true });
+  writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"),
+    `meta:\n  schema_version: 1\n  program: T\npis:\n  - id: a\n    title: A\n    status: active\n    sprints:\n      - { id: s1, title: Done, status: complete, invoke: done, estimate: { minutes: { low: 1, expected: 2, high: 3 }, task_id: t-x } }\n`, "utf8");
+  const runEstimator = () => ({ status: 2, stdout: "", stderr: "error: --actual-rounds is required" });
+  const r = runLog(root, { invoke: "done", status: "pass", runEstimator });
+  ok(r.error && r.error.includes("--actual-rounds is required"), "the rejection reason is surfaced, not thrown");
+  ok(!r.logged, "nothing is recorded as logged on failure");
   rmSync(root, { recursive: true, force: true });
 });
 

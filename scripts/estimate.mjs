@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import { loadGraph } from "./lib/graph.mjs";
 import { mutateRoadmap, roadmapPaths } from "./lib/store.mjs";
 import { setFields } from "./lib/mcp-core.mjs";
-import { estimationConfig, estimateArgs, parseEstimateRecord, applyEstimate, timelinePlan, logArgs, alreadyLogged } from "./lib/estimate-core.mjs";
+import { estimationConfig, estimateArgs, parseEstimateRecord, applyEstimate, timelinePlan, logArgs, alreadyLogged, LOG_STATUSES } from "./lib/estimate-core.mjs";
 
 // Resolve estimator.py: explicit meta.estimation.engine → $AGENT_TIME_ENGINE → the installed skill.
 export function resolveEngine(cfg, env = process.env, exists = existsSync) {
@@ -151,7 +151,7 @@ export function runLog(root, opts = {}) {
     const detail = (r && (r.stderr || (r.error && r.error.message))) || "";
     return { error: `estimator log exited ${r ? r.status : "?"}: ${String(detail).trim().slice(0, 200)}`, invoke: opts.invoke };
   }
-  return { logged: opts.invoke, status, task_id: sprint.estimate.task_id };
+  return { invoke: opts.invoke, logged: true, status, task_id: sprint.estimate.task_id };
 }
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
@@ -176,13 +176,13 @@ if (isMain) {
     }
     if (sub === "log") {
       const invoke = positional[1];
-      if (!invoke) { console.error("usage: roadmap estimate log <slice> [--status pass|fail|partial|abandoned] [--actual-rounds N] [--actual-minutes M] [--force]"); process.exit(2); }
+      if (!invoke) { console.error(`usage: roadmap estimate log <slice> [--status ${LOG_STATUSES.join("|")}] [--actual-rounds N] [--actual-minutes M] [--force]`); process.exit(2); }
       const ar = val("--actual-rounds"), am = val("--actual-minutes");
       const r = runLog(root, { invoke, status: val("--status"), force: has("--force"),
         actualRounds: ar != null ? Number(ar) : undefined, actualMinutes: am != null ? Number(am) : undefined });
       if (r.skipped) console.log(`- ${r.invoke}: ${r.reason}`);
       else if (r.error) { console.error(`✗ ${r.invoke}: ${r.error}`); process.exit(1); }
-      else console.log(`✓ ${r.logged}: outcome logged (${r.status}) → agent-time calibration updated.`);
+      else console.log(`✓ ${r.invoke}: outcome logged (${r.status}) → agent-time calibration updated.`);
       process.exit(0);
     }
     const opts = { force: has("--force") };

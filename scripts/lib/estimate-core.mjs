@@ -69,7 +69,7 @@ export function applyEstimate(record) {
   };
 }
 
-const LOG_STATUSES = ["pass", "fail", "partial", "abandoned"];
+export const LOG_STATUSES = ["pass", "fail", "partial", "abandoned"];   // agent-time's outcome statuses (single source)
 
 // argv for `estimator.py log` — the calibration outcome for a completed slice. agent-time auto-fills
 // actual rounds/minutes from its own session tracking when present; we always pass --status, and the
