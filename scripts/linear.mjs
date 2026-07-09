@@ -659,6 +659,7 @@ if (isMain) {
       }
       if (r.initiatives) console.log(`initiatives: ${r.initiatives.initiatives.length} grouped${r.initiatives.created.length ? ` (created ${r.initiatives.created.join(", ")})` : ""}${r.initiatives.styled && r.initiatives.styled.length ? ` · styled ${r.initiatives.styled.length}` : ""}${r.initiatives.attached.length ? ` · attached ${r.initiatives.attached.length} project(s)` : ""}`);
       if (r.initiativesError) console.log(`initiatives skipped: ${r.initiativesError} — pending live verification of the initiative API.`);
+      if (r.projectStatusError) console.log(`project status skipped: ${r.projectStatusError} — projects keep their current Linear status this sync.`);
       if (r.milestones) console.log(`milestones: ${r.milestones.milestones.length} across projects${r.milestones.created.length ? ` (created ${r.milestones.created.length})` : ""}${r.milestones.attached.length ? ` · attached ${r.milestones.attached.length} issue(s)` : ""}`);
       if (r.milestonesError) console.log(`milestones skipped: ${r.milestonesError} — pending live verification of the projectMilestone API.`);
       if (r.startStamped && r.startStamped.length) console.log(`start dates: stamped ${r.startStamped.length} active PI(s) (${r.startStamped.join(", ")}) — the Linear timeline now has a start.`);
