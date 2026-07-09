@@ -21,7 +21,8 @@ import { fileURLToPath } from "node:url";
 import { loadGraph, flatten, computeWaves, coherenceEnabled } from "./lib/graph.mjs";
 import { loadBacklog, roadmapPaths } from "./lib/store.mjs";
 import { runSync, postDispatchComment } from "./linear.mjs";
-import { linearState, linearStatusLine, machineFooter } from "./lib/linear-core.mjs";
+import { linearState, linearStatusLine, machineFooter, normalizeLinearConfig } from "./lib/linear-core.mjs";
+import { outOfCycle } from "./lib/cycle-core.mjs";
 
 export const DISPATCH_AGENTS = { claude: "@Claude", codex: "@Codex", oz: "@Oz" };
 
@@ -117,7 +118,7 @@ export async function runDispatch(root, key, opts = {}) {
   const find = () => {
     const graph = loadGraph(roadmapPaths(root).yaml);
     const node = flatten(graph).nodes.find((n) => n.invoke === key);
-    if (node) return { type: "slice", identifier: node.linear, graph };
+    if (node) return { type: "slice", identifier: node.linear, graph, status: node.status };
     const item = ((loadBacklog(root) || {}).items || []).find((i) => i.id === key);
     if (item) return { type: "backlog", identifier: item.linear, graph };
     return null;
@@ -125,6 +126,13 @@ export async function runDispatch(root, key, opts = {}) {
 
   let found = find();
   if (!found) throw new Error(`no slice or backlog item "${key}"`);
+
+  // Cycle lock (slices only — backlog is erratic work by design, grab stays unguarded): with
+  // cycles on, out-of-cycle work doesn't dispatch. --force is the logged escape hatch; the
+  // launch surfaces as scope change on Linear's cycle graph either way.
+  if (found.type === "slice" && !opts.force && outOfCycle(normalizeLinearConfig(found.graph.meta || {}), found.status)) {
+    throw new Error(`'${key}' is out of the current cycle (status ${found.status}) — elect it first ('roadmap cycle plan', then 'roadmap cycle lock --promote ${key}'), or re-run with --force to override the cycle lock.`);
+  }
 
   // ── claude-cloud: fire a Claude Code cloud session directly (NO Linear required) ──
   if (to === "claude-cloud") {
@@ -198,17 +206,30 @@ export async function runFanCloud(root, opts = {}) {
   const cap = opts.cap || 5;
   const { waves } = computeWaves(flatten(graph), cap, { coherence: coherenceEnabled(graph.meta) });
   const waveIdx = opts.wave || 1;
-  const slices = (waves[waveIdx - 1] || []).map((n) => n.invoke);
+  let wave = waves[waveIdx - 1] || [];
+  // Cycle lock at wave scale: out-of-cycle slices drop from the launch selection (reported,
+  // never silent — a silent cap reads as "covered everything"). opts.all includes them anyway.
+  // computeWaves itself stays untouched: the wave math is shared planning, the lock is a launch gate.
+  const cfg = normalizeLinearConfig(graph.meta || {});
+  let excluded = [];
+  if (!opts.all) {
+    excluded = wave.filter((n) => outOfCycle(cfg, n.status)).map((n) => n.invoke);
+    if (excluded.length) wave = wave.filter((n) => !outOfCycle(cfg, n.status));
+  }
+  const slices = wave.map((n) => n.invoke);
   if (!opts.confirm) {
     return { preview: true, wave: waveIdx, cap, slices,
-      note: `${slices.length} slice(s) would each fire a cloud session on the authed claude.ai account and open a PR. Re-call with confirm=true to fire.` };
+      ...(excluded.length ? { excludedOutOfCycle: excluded } : {}),
+      note: `${slices.length} slice(s) would each fire a cloud session on the authed claude.ai account and open a PR.${excluded.length ? ` ${excluded.length} out-of-cycle slice(s) excluded (${excluded.join(", ")}) — elect them or pass all=true.` : ""} Re-call with confirm=true to fire.` };
   }
   const results = [];
   for (const invoke of slices) {
-    try { const r = await runDispatch(root, invoke, opts.dispatch || {}); results.push({ slice: invoke, ok: true, sessionUrl: r.sessionUrl }); }
+    // force: the fan-level filter above IS the cycle gate (and opts.all is an explicit human
+    // include) — re-guarding per dispatch would veto what the wave already admitted.
+    try { const r = await runDispatch(root, invoke, { ...(opts.dispatch || {}), force: true }); results.push({ slice: invoke, ok: true, sessionUrl: r.sessionUrl }); }
     catch (e) { results.push({ slice: invoke, ok: false, error: e.message }); }
   }
-  return { fired: results.filter((r) => r.ok).length, of: slices.length, wave: waveIdx, results };
+  return { fired: results.filter((r) => r.ok).length, of: slices.length, wave: waveIdx, ...(excluded.length ? { excludedOutOfCycle: excluded } : {}), results };
 }
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
@@ -222,7 +243,7 @@ if (isMain) {
     process.exit(2);
   }
   try {
-    const r = await runDispatch(process.cwd(), key, { to: val("--to") });
+    const r = await runDispatch(process.cwd(), key, { to: val("--to"), force: args.includes("--force") });
     if (r.transport === "claude-cloud") {
       console.log(`dispatched ${r.dispatched} → Claude Code cloud session (${r.routine}).`);
       console.log(`session: ${r.sessionUrl}`);

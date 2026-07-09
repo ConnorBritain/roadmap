@@ -26,6 +26,7 @@ export function normalizeLinearConfig(meta) {
     horizon: raw.horizon || "all",
     verbosity: raw.verbosity || "brief",
     cycles: raw.cycles || "off",
+    cycle_capacity: raw.cycle_capacity != null ? raw.cycle_capacity : 10,   // est_sessions per cycle — the election's cap
     history: raw.history || "off",
     pull: raw.pull || "off",
     push_on: raw.push_on || "sync",
@@ -61,6 +62,7 @@ export function validateLinearConfig(graph) {
       if (raw.granularity != null && !GRANULARITIES.includes(raw.granularity)) errors.push(`meta.linear.granularity "${raw.granularity}" is not one of ${GRANULARITIES.join("|")}`);
       if (raw.horizon != null && !HORIZONS.includes(raw.horizon)) errors.push(`meta.linear.horizon "${raw.horizon}" is not one of ${HORIZONS.join("|")}`);
       if (raw.cycles != null && !["off", "on"].includes(raw.cycles)) errors.push(`meta.linear.cycles "${raw.cycles}" is not off|on`);
+      if (raw.cycle_capacity != null && !(Number.isInteger(raw.cycle_capacity) && raw.cycle_capacity >= 1)) errors.push("meta.linear.cycle_capacity must be an integer >= 1 (est_sessions the election packs per cycle; default 10)");
       if (raw.history != null && !["off", "window", "full"].includes(raw.history)) errors.push(`meta.linear.history "${raw.history}" is not off|window|full`);
       if (raw.verbosity != null && !VERBOSITIES.includes(raw.verbosity)) errors.push(`meta.linear.verbosity "${raw.verbosity}" is not one of ${VERBOSITIES.join("|")}`);
       if (raw.pull != null && !PULL_MODES.includes(raw.pull)) errors.push(`meta.linear.pull "${raw.pull}" is not one of ${PULL_MODES.join("|")}`);

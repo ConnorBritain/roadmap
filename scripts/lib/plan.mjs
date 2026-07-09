@@ -46,6 +46,7 @@ export function buildPlan(graph, opts = {}) {
         invoke: n.invoke,
         pi: n.piId,
         sprint: n.id,
+        status: n.status,
         weight: nodeWeight(n, graph),
         est_sessions: n.estSessions,
         branch: branchFor(n, graph),

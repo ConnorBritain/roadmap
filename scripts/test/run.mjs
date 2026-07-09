@@ -46,6 +46,10 @@ import { addPi, setPlate, addPlate, removePlate } from "../lib/mcp-core.mjs";
 import { runSync, runProvision, syncInitiatives, syncMilestones, readCursor, runNote, runNotes, runProjectUpdate } from "../linear.mjs";
 import { noteBody, sliceForBranch, gitSnapshot, autoPostPlan } from "../lib/journal-core.mjs";
 import { runDispatch, runFanCloud, resolveRoutine, fireRoutine, routineEndpoint } from "../dispatch.mjs";
+import { electionPlan, outOfCycle } from "../lib/cycle-core.mjs";
+import { runCyclePlan, runCycleLock } from "../cycle.mjs";
+import { readReadyWave } from "../lib/mcp-core.mjs";
+import { loadGraph } from "../lib/graph.mjs";
 import { graphDiff, backlogDiff, reviewDigest, pisInFlight } from "../lib/review-core.mjs";
 import { parseDocument } from "yaml";
 import { join, resolve } from "node:path";
@@ -1525,6 +1529,46 @@ test("history knob: off skips done work, full projects it Done with completedAt,
   ok(v.errors.some((e) => e.includes('history "always"')), "invalid history value blocks at validate");
 });
 
+// ── cycle-core: the election ──────────────────────────────────────────────────
+// WHY: the capacity cap IS the discipline — packing past it, silently packing unpriced work, or
+// proposing blocked/held work puts unstartable or unbounded commitments in the week; and the
+// lock must be one validated write, not a hand-edit that skips the store's gates.
+test("electionPlan: committed-first capacity, strict priority prefix, unestimated never packed, held/blocked never candidates", () => {
+  const g = { meta: { schema_version: 1, program: "T", linear: { team: "ENG", cycles: "on" } },
+    pis: [{ id: "p", title: "P", status: "active", sprints: [
+      { id: "s1", title: "Committed", status: "active", invoke: "committed", est_sessions: 3 },
+      { id: "s2", title: "Next up", status: "next", invoke: "nextup", est_sessions: 2 },
+      { id: "s3", title: "Small P1", status: "scheduled", invoke: "small", est_sessions: 2, priority: { tier: "P1" } },
+      { id: "s4", title: "Big P0", status: "scheduled", invoke: "big", est_sessions: 9, priority: { tier: "P0" } },
+      { id: "s5", title: "Unpriced", status: "scheduled", invoke: "unpriced" },
+      { id: "s6", title: "Gated", status: "gated", invoke: "gated", est_sessions: 1 },
+      { id: "s7", title: "Blocked dep", status: "scheduled", invoke: "depped", est_sessions: 1, deps: ["s6"] },
+      { id: "s8", title: "Maybe", status: "optionality", invoke: "maybe", est_sessions: 1 },
+    ]}]};
+  const p = electionPlan(g, { capacity: 10, staleInvokes: ["committed"] });
+  eq(p.elected.map((x) => x.invoke).sort(), ["committed", "nextup"], "elected = the committed set (active+next)");
+  ok(p.elected.find((x) => x.invoke === "committed").stale, "the stale flag rides the elected list — reviewed first");
+  eq(p.candidates.map((x) => x.invoke), ["big", "small", "unpriced"], "candidates = READY scheduled only, priority-sorted, unpriced last (gated/dep-blocked/optionality excluded)");
+  // committed 5s + big 9s would blow 10 → strict prefix stops at big; small does NOT sneak past the P0
+  eq(p.packed, [], "a too-big P0 at the head blocks the prefix — the signal is split-it, not skip-it");
+  eq(p.overflow.map((x) => x.invoke), ["big", "small"], "everything estimable past the prefix is overflow");
+  eq(p.unestimated.map((x) => x.invoke), ["unpriced"], "unpriced work is surfaced, never silently packed");
+  eq(p.estUsed, 5, "usage = committed est_sessions when nothing packs");
+  const roomy = electionPlan(g, { capacity: 20 });
+  eq(roomy.packed.map((x) => x.invoke), ["big", "small"], "with room, the prefix packs in priority order");
+  eq(roomy.estUsed, 16, "usage counts committed + packed");
+});
+
+// WHY: outOfCycle is the dispatch/fan lock's whole decision — a false positive blocks legitimate
+// work, a false negative lets the cycle leak; cycles off must never lock anything (opt-in).
+test("outOfCycle: locks only non-committed statuses, only when cycles are on", () => {
+  const on = normalizeLinearConfig({ linear: { team: "ENG", cycles: "on" } });
+  const off = normalizeLinearConfig({ linear: { team: "ENG" } });
+  ok(outOfCycle(on, "scheduled") && outOfCycle(on, "gated") && outOfCycle(on, "complete"), "non-committed statuses lock when on");
+  ok(!outOfCycle(on, "active") && !outOfCycle(on, "next"), "the committed set never locks");
+  ok(!outOfCycle(off, "scheduled") && !outOfCycle(null, "scheduled"), "cycles off (or no Linear) → never locks");
+});
+
 // ── linear-core: staleness ────────────────────────────────────────────────────
 // WHY: a stale flag that flaps (our own push resetting the clock), flags unknown-activity work,
 // or sticks after a fresh note trains the human to ignore it — the one failure an advisory
@@ -2198,8 +2242,9 @@ function fakeLinear({ failOn = null, snapshot = {}, projectSnapshot = {}, issueC
       activeCycle: activeCycle,
       states: { nodes: [
         { id: "st-b", name: "Backlog", type: "backlog", position: 0 },
-        { id: "st-s", name: "In Progress", type: "started", position: 1 },
-        { id: "st-c", name: "Done", type: "completed", position: 2 },
+        { id: "st-u", name: "Todo", type: "unstarted", position: 1 },
+        { id: "st-s", name: "In Progress", type: "started", position: 2 },
+        { id: "st-c", name: "Done", type: "completed", position: 3 },
       ] },
       labels: { nodes: teamLabels },
       projects: { nodes: teamProjects } }] } });
@@ -3115,6 +3160,65 @@ test("runProvision skips views that already exist", async () => {
 // ── cloud dispatch (v0.5 stub) ───────────────────────────────────────────────
 // WHY: dispatching an unmapped slice must push-map FIRST or the @-mention comment lands
 // nowhere; and the capsule must carry the machine footer any delegated agent parses.
+// WHY: the cycle lock is the "bars any other work" contract — out-of-cycle dispatch must refuse
+// with the elect-first path, --force must be the only bypass, the lock write must be atomic and
+// refuse nonsense transitions, and with cycles off nothing changes for existing users.
+test("cycle lock end-to-end: lock writes atomically with pre-checks; dispatch refuses out-of-cycle unless --force", async () => {
+  const yaml = `meta:\n  schema_version: 1\n  program: T\n  linear:\n    team: ENG\n    cycles: on\npis:\n  - id: p\n    title: P\n    status: active\n    sprints:\n      - { id: s1, title: A, status: active, invoke: a }\n      - { id: s2, title: B, status: next, invoke: b }\n      - { id: s3, title: C, status: scheduled, invoke: c }\n      - { id: s4, title: D, status: scheduled, invoke: d }\n`;
+  const root = mkdtempSync(join(tmpdir(), "roadmap-cyclelock-"));
+  mkdirSync(join(root, "docs", "roadmap"), { recursive: true });
+  writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"), yaml, "utf8");
+  // pre-checks refuse nonsense with actionable messages, and nothing is written
+  throws(() => runCycleLock(root, { promote: ["a"] }), "can't promote");
+  throws(() => runCycleLock(root, { demote: ["c"] }), "can't demote");
+  throws(() => runCycleLock(root, { promote: ["ghost"] }), 'no slice "ghost"');
+  throws(() => runCycleLock(root, {}), "needs --promote and/or --demote");
+  // the real lock: one atomic write, both directions
+  const r = runCycleLock(root, { promote: ["c"], demote: ["b"] });
+  eq(r, { promoted: ["c"], demoted: ["b"] }, "lock reports both directions");
+  const doc = parseDocument(readFileSync(join(root, "docs", "roadmap", "roadmap.yaml"), "utf8")).toJS();
+  const st = Object.fromEntries(doc.pis[0].sprints.map((s) => [s.invoke, s.status]));
+  eq([st.c, st.b], ["next", "scheduled"], "promotion and demotion landed in one write");
+  // dispatch guard: still-scheduled d refuses with the elect-first path; --force bypasses;
+  // the elected c (now next) passes without force
+  const fake = fakeLinear();
+  await runDispatch(root, "d", { to: "claude", fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" } }).then(
+    () => { throw new Error("should have thrown"); },
+    (e) => { ok(e.message.includes("out of the current cycle") && e.message.includes("roadmap cycle plan"), "refusal names the election path"); });
+  const forced = await runDispatch(root, "d", { to: "claude", force: true, fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" } });
+  eq(forced.dispatched, "d", "--force is the explicit escape hatch");
+  const elected = await runDispatch(root, "c", { to: "claude", fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" } });
+  eq(elected.dispatched, "c", "elected work dispatches without force");
+  // ready_wave annotates instead of blocking (reads never block)
+  const g2 = loadGraph(join(root, "docs", "roadmap", "roadmap.yaml"));
+  const rw = readReadyWave(g2, { cap: 4 });
+  const flags = Object.fromEntries(rw.wave.map((n) => [n.invoke, !!n.outOfCycle]));
+  ok(flags.d === true, "out-of-cycle wave slice is annotated");
+  ok(rw.wave.filter((n) => !n.outOfCycle).length >= 1, "in-cycle wave slices carry no flag");
+  // the plan CLI reads the stale set from the sync cursor — zero network for the ritual
+  writeFileSync(join(root, ".roadmap-linear-state.json"), JSON.stringify({ version: 1, stale: ["a"] }), "utf8");
+  const cp = runCyclePlan(root, {});
+  eq(cp.capacity, 10, "capacity defaults from meta.linear.cycle_capacity");
+  ok(cp.elected.find((x) => x.invoke === "a").stale, "the cursor's stale set flags the elected list offline");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: at wave scale the lock must FILTER (reported, never silent) rather than throw — a fanout
+// that dies on the first out-of-cycle slice strands the rest; all=true is the explicit include.
+test("runFanCloud excludes out-of-cycle slices from the wave, reports them, includes with all", async () => {
+  const yaml = `meta:\n  schema_version: 1\n  program: T\n  linear:\n    team: ENG\n    cycles: on\npis:\n  - id: p\n    title: P\n    status: active\n    sprints:\n      - { id: s1, title: A, status: next, invoke: a }\n      - { id: s2, title: C, status: scheduled, invoke: c }\n`;
+  const root = mkdtempSync(join(tmpdir(), "roadmap-fancycle-"));
+  mkdirSync(join(root, "docs", "roadmap"), { recursive: true });
+  writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"), yaml, "utf8");
+  const p = await runFanCloud(root, {});
+  eq(p.slices, ["a"], "only in-cycle work in the launch selection");
+  eq(p.excludedOutOfCycle, ["c"], "exclusions reported, never silent");
+  const all = await runFanCloud(root, { all: true });
+  eq(all.slices.sort(), ["a", "c"], "all=true includes out-of-cycle explicitly");
+  ok(!all.excludedOutOfCycle, "explicit include reports no exclusions");
+  rmSync(root, { recursive: true, force: true });
+});
+
 test("runDispatch push-maps an unmapped slice, then comments the capsule with the footer", async () => {
   const root = linearRepo();
   const fake = fakeLinear();

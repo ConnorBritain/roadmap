@@ -9,6 +9,7 @@ import { validateGraph } from "./validate-core.mjs";
 import { normalizeExecution, suggestedConcurrency, validateExecution } from "./execution.mjs";
 import { validatePriority } from "./priority.mjs";
 import { checkPiOverrideAck, normalizeLinearConfig } from "./linear-core.mjs";
+import { outOfCycle } from "./cycle-core.mjs";
 import { setPlateDoc } from "./plate-core.mjs";
 
 const STATUSES = Object.keys(STATUS);
@@ -79,7 +80,11 @@ export function readPlan(graph, args = {}) {
 }
 export function readReadyWave(graph, args = {}) {
   const plan = buildPlan(graph, { cap: args.cap });
-  return { cap: plan.cap, recommended: plan.recommended, wave: plan.waves[0] || [], held: plan.held };
+  // Advisory cycle-lock annotation (reads never block): with cycles on, callers see which wave
+  // slices dispatch/fan would refuse, so planning skills steer to the election instead.
+  const cfg = normalizeLinearConfig(graph.meta || {});
+  const wave = (plan.waves[0] || []).map((n) => (outOfCycle(cfg, n.status) ? { ...n, outOfCycle: true } : n));
+  return { cap: plan.cap, recommended: plan.recommended, wave, held: plan.held };
 }
 export function readShow(graph, args) {
   if (!args || !args.invoke) throw new Error("show requires invoke");
