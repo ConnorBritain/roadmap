@@ -29,8 +29,8 @@ import {
   performPromotion,
 } from "../lib/backlog-core.mjs";
 import { validateGraph } from "../lib/validate-core.mjs";
-import { estimationConfig, estimateArgs, parseEstimateRecord, applyEstimate, validateEstimation } from "../lib/estimate-core.mjs";
-import { runEstimate, resolveEngine } from "../estimate.mjs";
+import { estimationConfig, estimateArgs, parseEstimateRecord, applyEstimate, validateEstimation, timelinePlan, calendarFromMinutes } from "../lib/estimate-core.mjs";
+import { runEstimate, resolveEngine, runTimeline } from "../estimate.mjs";
 import { mutateRoadmap, mutateBacklog, mutateBoth } from "../lib/store.mjs";
 import {
   normalizeLinearConfig, effectiveGranularity, linearState, checkPiOverrideAck,
@@ -3055,6 +3055,81 @@ test("runEstimate writes the successful slices in a mixed batch, isolates only t
   eq(sprints[0].estimate.minutes, { low: 5, expected: 12, high: 30 }, "the good slice's estimate is written");
   ok(!sprints[1].estimate, "the failed slice gets no estimate");
   rmSync(root, { recursive: true, force: true });
+});
+
+// ── agent-time timeline rollup (Phase 2) ─────────────────────────────────────
+// WHY: the calendar conversion is the one bit of genuinely new date math — a wrong rate or a
+// floor-instead-of-ceil would silently under-promise every projected date on the board.
+test("calendarFromMinutes: calendar days at hours_per_day, ceil, from the anchor", () => {
+  eq(calendarFromMinutes(0, { hoursPerDay: 6, anchor: "2026-07-01" }), "2026-07-01", "zero → the anchor itself");
+  eq(calendarFromMinutes(360, { hoursPerDay: 6, anchor: "2026-07-01" }), "2026-07-02", "one full 6h day → +1");
+  eq(calendarFromMinutes(361, { hoursPerDay: 6, anchor: "2026-07-01" }), "2026-07-03", "a spill over the day → ceil to +2");
+  eq(calendarFromMinutes(720, { hoursPerDay: 6, anchor: "2026-07-31" }), "2026-08-02", "crosses a month boundary");
+});
+
+// WHY: the rollup is the whole macro-timeline claim — a wave must count as its MAX slice (parallel), not
+// the sum, and waves must accumulate (sequential). Get this wrong and every dated commitment is fiction.
+test("timelinePlan: wave span is the max (parallel), accumulates across waves (sequential)", () => {
+  const g = { meta: { schema_version: 1, program: "T", default_concurrency: 3 }, pis: [
+    { id: "a", title: "A", status: "active", start_date: "2026-07-01", sprints: [
+      { id: "s1", title: "P1", status: "next", invoke: "a1", estimate: { minutes: { low: 100, expected: 300, high: 900 } } },
+      { id: "s2", title: "P2", status: "next", invoke: "a2", estimate: { minutes: { low: 100, expected: 300, high: 900 } } },
+      { id: "s3", title: "D", status: "next", invoke: "a3", deps: ["a1"], estimate: { minutes: { low: 100, expected: 300, high: 900 } } },
+    ]},
+  ]};
+  const r = timelinePlan(g, {});
+  eq(r.anchor, "2026-07-01", "anchored on the active PI's start_date");
+  // wave1 = {a1 ∥ a2} span 300 (MAX, not 600); wave2 = {a3} span 300 → 600 min → ceil(600/360)=2 days.
+  eq(r.pis, [{ pi: "a", projected_target_date: "2026-07-03" }], "max-within-wave + accumulate-across-waves → +2 days");
+  eq(r.unpriced, [], "all priced");
+});
+
+// WHY: an unpriced slice must not silently inflate a wave to zero-cost nor be hidden — and a PI with NO
+// priced slice must get no fabricated date. Silent-zero here is exactly the dishonest-timeline failure.
+test("timelinePlan: unpriced slices are surfaced not counted; an all-unpriced PI gets no date; now-anchor fallback", () => {
+  const g = { meta: { schema_version: 1, program: "T", default_concurrency: 3 }, pis: [
+    { id: "a", title: "A", status: "next", sprints: [
+      { id: "s1", title: "priced", status: "next", invoke: "a1", estimate: { minutes: { low: 60, expected: 180, high: 360 } } },
+      { id: "s2", title: "unpriced", status: "next", invoke: "a2" },
+    ]},
+    { id: "c", title: "C", status: "next", sprints: [
+      { id: "s1", title: "unpriced too", status: "next", invoke: "c1" },
+    ]},
+  ]};
+  const r = timelinePlan(g, { now: "2026-07-08T00:00:00Z" });
+  eq(r.anchor, "2026-07-08", "no active start_date → anchored on now");
+  eq(r.pis, [{ pi: "a", projected_target_date: "2026-07-09" }], "span 180 (a1 only), not inflated by the unpriced sibling; C gets no date");
+  eq([...r.unpriced].sort(), ["a2", "c1"], "unpriced slices surfaced for the coverage gap");
+});
+
+// WHY: the write-back must fill the projection WITHOUT ever touching an explicit target_date (the human
+// commitment), and must be idempotent — a second identical run rewriting the file would be churn/noise.
+test("runTimeline writes projected_target_date, spares explicit target_date, idempotent", () => {
+  const root = mkdtempSync(join(tmpdir(), "roadmap-timeline-"));
+  mkdirSync(join(root, "docs", "roadmap"), { recursive: true });
+  writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"),
+    `meta:\n  schema_version: 1\n  program: T\n  default_concurrency: 3\npis:\n  - id: a\n    title: A\n    status: active\n    start_date: 2026-07-01\n    sprints:\n      - { id: s1, title: One, status: next, invoke: a1, estimate: { minutes: { low: 60, expected: 360, high: 720 } } }\n  - id: b\n    title: B\n    status: active\n    start_date: 2026-07-01\n    target_date: 2026-09-01\n    sprints:\n      - { id: s1, title: Two, status: next, invoke: b1, estimate: { minutes: { low: 60, expected: 360, high: 720 } } }\n`, "utf8");
+  const r1 = runTimeline(root, { now: "2026-07-01T00:00:00Z" });
+  const pis1 = parseDocument(readFileSync(join(root, "docs", "roadmap", "roadmap.yaml"), "utf8")).toJS().pis;
+  ok(pis1.find((p) => p.id === "a").projected_target_date, "a got a projected date");
+  eq(pis1.find((p) => p.id === "b").target_date, "2026-09-01", "explicit target_date untouched");
+  ok(pis1.find((p) => p.id === "b").projected_target_date, "b still gets a projection (informational; Linear prefers the explicit)");
+  ok(r1.changed.includes("a") && r1.changed.includes("b"), "both PIs reported changed on the first run");
+  const r2 = runTimeline(root, { now: "2026-07-01T00:00:00Z" });
+  eq(r2.changed, [], "second identical run changes nothing (idempotent — no rewrite)");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: the derived date only reaches Linear's timeline if the projection falls back to it — and it must
+// NEVER shadow an explicit commitment. This is the one-line contract that makes the whole rollup visible.
+test("Linear projection: projected_target_date fills targetDate; an explicit target_date wins", () => {
+  const g = { meta: { schema_version: 1, program: "T", linear: { team: "ENG" } }, pis: [
+    { id: "a", title: "A", status: "active", projected_target_date: "2026-08-01", sprints: [{ id: "s1", title: "S", status: "next", invoke: "a1" }] },
+    { id: "b", title: "B", status: "active", target_date: "2026-09-01", projected_target_date: "2026-08-15", sprints: [{ id: "s1", title: "S", status: "next", invoke: "b1" }] },
+  ]};
+  const plan = buildPushPlan({ graph: g, backlog: null, cfg: normalizeLinearConfig(g.meta), teamStates: L_STATES, existing: { projects: {}, issues: {} }, labels: {} });
+  eq(plan.ops.find((o) => o.op === "createProject" && o.projectRef === "a").payload.targetDate, "2026-08-01", "projected fills the blank targetDate");
+  eq(plan.ops.find((o) => o.op === "createProject" && o.projectRef === "b").payload.targetDate, "2026-09-01", "explicit commitment wins over the projection");
 });
 
 await Promise.all(pending);

@@ -17,7 +17,7 @@ import { linearState, linearStatusLine, normalizeLinearConfig } from "./lib/line
 import { platedKeys } from "./lib/plate-core.mjs";
 import { runSync, runNote, runNotes, runProjectUpdate } from "./linear.mjs";
 import { runDispatch, runFanCloud } from "./dispatch.mjs";
-import { runEstimate } from "./estimate.mjs";
+import { runEstimate, runTimeline } from "./estimate.mjs";
 
 // Always registered; politely erroring when unconfigured beats config-gated registration
 // (tools/list would need IO). linear_sync reuses linear.mjs's runSync — one sync implementation.
@@ -62,6 +62,8 @@ const JOURNAL_TOOLS = [
 const ESTIMATE_TOOLS = [
   { name: "estimate", description: "Estimate a slice's duration via agent-time (calibrated agent-rounds → wall-clock minutes) and cache it on the slice. Set the slice's shape (+ optional risks) first — an unclassified slice is skipped. Skips an already-estimated slice unless force=true; all=true estimates every classified slice. Needs the agent-time-estimator skill installed (or meta.estimation.engine).",
     inputSchema: { type: "object", properties: { invoke: { type: "string", description: "slice invoke key" }, all: { type: "boolean" }, force: { type: "boolean" } } } },
+  { name: "timeline", description: "Roll the cached per-slice estimates up into a projected target date per PI (using the same wave/dependency/concurrency schedule the fanout runs) and write pi.projected_target_date back — the estimate-driven Linear timeline. Never overwrites an explicit pi.target_date. Returns the per-PI dates plus any unpriced/held slices excluded from the projection.",
+    inputSchema: { type: "object", properties: {} } },
 ];
 
 const PROTOCOL_VERSION = "2024-11-05";
@@ -124,6 +126,10 @@ function callTool(name, args) {
   if (name === "estimate") {
     // sync (spawnSync); the tools/call path Promise-wraps it. Writes est_minutes back to the YAML.
     return runEstimate(repoRoot(), { invoke: args.invoke, all: !!args.all, force: !!args.force });
+  }
+  if (name === "timeline") {
+    // pure rollup over cached estimates + write-back; no network.
+    return runTimeline(repoRoot(), {});
   }
   if (name === "issue_note") return runNote(repoRoot(), args.key, { kind: args.kind, text: args.text }, {});
   if (name === "issue_notes") return runNotes(repoRoot(), args.key, {});
