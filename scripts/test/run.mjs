@@ -2944,6 +2944,9 @@ test("parseEstimateRecord: pulls the trailing JSON past the markdown block", () 
   eq(rec.task_id, "t-9", "record recovered");
   eq(rec.est_minutes, { low: 1, expected: 2, high: 3 }, "est_minutes recovered");
   throws(() => parseEstimateRecord("just prose, no record"), "no JSON record", "missing record errors, not silently empty");
+  // Trust boundary: a status-0 response with non-numeric minutes must be rejected, not cached as a bogus estimate.
+  const junk = JSON.stringify({ type: "estimate", task_id: "t-x", ts: "2026-07-08T00:00:00+00:00", est_minutes: {} });
+  throws(() => parseEstimateRecord(junk), "non-numeric est_minutes", "empty est_minutes rejected");
 });
 
 // WHY: the cached block is what the timeline reads and what the calibration loop keys on — dropping
@@ -3031,6 +3034,26 @@ test("runEstimate isolates an estimator failure: records it, writes nothing, nev
   ok(r.errors.some((x) => x.invoke === "build" && x.error.includes("boom")), "failure reason captured");
   const sp = parseDocument(readFileSync(join(root, "docs", "roadmap", "roadmap.yaml"), "utf8")).toJS().pis[0].sprints[0];
   ok(!sp.estimate, "no estimate written on failure");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: in a batch, one slice's estimator failure must not deny the healthy slices their estimates —
+// the successes must still be written while the failure is isolated (independent success/error ledgers).
+test("runEstimate writes the successful slices in a mixed batch, isolates only the failure", () => {
+  const root = mkdtempSync(join(tmpdir(), "roadmap-estimate-mixed-"));
+  mkdirSync(join(root, "docs", "roadmap"), { recursive: true });
+  writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"),
+    `meta:\n  schema_version: 1\n  program: T\npis:\n  - id: a\n    title: A\n    status: active\n    sprints:\n      - { id: s1, title: Good, status: next, invoke: good, shape: localized-feature }\n      - { id: s2, title: Bad, status: next, invoke: bad, shape: refactor }\n`, "utf8");
+  // Fail only the "bad" slice (keyed off its --summary), succeed the rest.
+  const runEstimator = (args) => args.includes("Bad")
+    ? { status: 2, stdout: "", stderr: "estimator boom" }
+    : { status: 0, stdout: fakeEstimatorOut("t-good", { low: 5, expected: 12, high: 30 }), stderr: "" };
+  const r = runEstimate(root, { all: true, runEstimator });
+  eq(r.estimated.map((e) => e.invoke), ["good"], "the healthy slice is estimated");
+  ok(r.errors.some((x) => x.invoke === "bad" && x.error.includes("boom")), "only the failure is recorded");
+  const sprints = parseDocument(readFileSync(join(root, "docs", "roadmap", "roadmap.yaml"), "utf8")).toJS().pis[0].sprints;
+  eq(sprints[0].estimate.minutes, { low: 5, expected: 12, high: 30 }, "the good slice's estimate is written");
+  ok(!sprints[1].estimate, "the failed slice gets no estimate");
   rmSync(root, { recursive: true, force: true });
 });
 

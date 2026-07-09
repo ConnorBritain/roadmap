@@ -48,6 +48,10 @@ export function parseEstimateRecord(stdout) {
   let rec;
   try { rec = JSON.parse(jsonText.trim()); } catch { throw new Error("could not parse the estimator's JSON record"); }
   if (!rec || rec.type !== "estimate" || !rec.est_minutes) throw new Error("estimator record missing est_minutes");
+  // Trust boundary: the estimator is an external process. A status-0 response with a present-but-
+  // non-numeric est_minutes would otherwise cache a bogus block that only warns on validate — reject it.
+  const m = rec.est_minutes;
+  if (["low", "expected", "high"].some((k) => typeof m[k] !== "number")) throw new Error("estimator record has non-numeric est_minutes");
   return rec;
 }
 
