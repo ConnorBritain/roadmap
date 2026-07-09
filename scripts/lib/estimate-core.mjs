@@ -69,6 +69,35 @@ export function applyEstimate(record) {
   };
 }
 
+export const LOG_STATUSES = ["pass", "fail", "partial", "abandoned"];   // agent-time's outcome statuses (single source)
+
+// argv for `estimator.py log` — the calibration outcome for a completed slice. agent-time auto-fills
+// actual rounds/minutes from its own session tracking when present; we always pass --status, and the
+// optional actuals for a manual entry. Throws when the slice was never estimated (no task_id to key on).
+export function logArgs(sprint, status, opts = {}) {
+  const tid = sprint && sprint.estimate && sprint.estimate.task_id;
+  if (!tid) throw new Error(`slice "${(sprint && sprint.invoke) || "?"}" has no estimate.task_id — run 'roadmap estimate ${(sprint && sprint.invoke) || "<slice>"}' first`);
+  const st = status || "pass";
+  if (!LOG_STATUSES.includes(st)) throw new Error(`status must be one of ${LOG_STATUSES.join("|")} (got "${st}")`);
+  const args = ["log", "--task-id", tid, "--status", st];
+  if (typeof opts.actualMinutes === "number") args.push("--actual-minutes", String(opts.actualMinutes));
+  if (typeof opts.actualRounds === "number") args.push("--actual-rounds", String(opts.actualRounds));
+  return args;
+}
+
+// Has agent-time already logged an outcome for this task_id? Idempotency for the calibration loop —
+// reads agent-time's own JSONL history (its store, not the roadmap's), so re-firing never double-counts.
+export function alreadyLogged(historyText, taskId) {
+  if (!historyText || !taskId) return false;
+  for (const line of String(historyText).split("\n")) {
+    const t = line.trim();
+    if (!t) continue;
+    let rec; try { rec = JSON.parse(t); } catch { continue; }
+    if (rec && rec.type === "outcome" && rec.task_id === taskId) return true;
+  }
+  return false;
+}
+
 // A calendar date `offsetMinutes` of agent wall-clock after `anchor`, at `hoursPerDay`
 // productive hours/day. Calendar days (ceil), not business days (a deferred knob). `anchor`
 // is a fixed YYYY-MM-DD string, so this stays deterministic (no wall-clock read).

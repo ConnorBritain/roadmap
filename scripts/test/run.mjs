@@ -29,8 +29,8 @@ import {
   performPromotion,
 } from "../lib/backlog-core.mjs";
 import { validateGraph } from "../lib/validate-core.mjs";
-import { estimationConfig, estimateArgs, parseEstimateRecord, applyEstimate, validateEstimation, timelinePlan, calendarFromMinutes } from "../lib/estimate-core.mjs";
-import { runEstimate, resolveEngine, runTimeline } from "../estimate.mjs";
+import { estimationConfig, estimateArgs, parseEstimateRecord, applyEstimate, validateEstimation, timelinePlan, calendarFromMinutes, logArgs, alreadyLogged } from "../lib/estimate-core.mjs";
+import { runEstimate, resolveEngine, runTimeline, runLog, resolveHistory } from "../estimate.mjs";
 import { mutateRoadmap, mutateBacklog, mutateBoth } from "../lib/store.mjs";
 import {
   normalizeLinearConfig, effectiveGranularity, linearState, checkPiOverrideAck,
@@ -3160,6 +3160,75 @@ test("Linear projection: projected_target_date fills targetDate; an explicit tar
   const plan = buildPushPlan({ graph: g, backlog: null, cfg: normalizeLinearConfig(g.meta), teamStates: L_STATES, existing: { projects: {}, issues: {} }, labels: {} });
   eq(plan.ops.find((o) => o.op === "createProject" && o.projectRef === "a").payload.targetDate, "2026-08-01", "projected fills the blank targetDate");
   eq(plan.ops.find((o) => o.op === "createProject" && o.projectRef === "b").payload.targetDate, "2026-09-01", "explicit commitment wins over the projection");
+});
+
+// ── agent-time calibration loop (Phase 3) ────────────────────────────────────
+// WHY: the outcome argv is the whole feedback signal — a wrong task_id or logging an unestimated slice
+// would either mis-calibrate agent-time or crash the loop; a bad status would be rejected downstream.
+test("logArgs: builds the calibration argv; requires an estimated slice; validates status", () => {
+  const sp = { invoke: "b", estimate: { task_id: "t-1" } };
+  eq(logArgs(sp, "pass"), ["log", "--task-id", "t-1", "--status", "pass"], "task_id + status");
+  eq(logArgs(sp, "partial", { actualMinutes: 50, actualRounds: 17 }), ["log", "--task-id", "t-1", "--status", "partial", "--actual-minutes", "50", "--actual-rounds", "17"], "optional actuals appended");
+  eq(logArgs(sp), ["log", "--task-id", "t-1", "--status", "pass"], "default status is pass");
+  throws(() => logArgs({ invoke: "x" }, "pass"), "has no estimate.task_id", "an unestimated slice can't be logged");
+  throws(() => logArgs(sp, "bogus"), "status must be one of", "a bad status is rejected before it reaches agent-time");
+});
+
+// WHY: idempotency keys the whole auto-loop — the Stop hook re-fires on every session end, so a false
+// negative here would double-count outcomes and skew calibration; a false positive would drop a real one.
+test("alreadyLogged: true only for an outcome record matching the task_id", () => {
+  const hist = [
+    JSON.stringify({ type: "estimate", task_id: "t-1" }),   // a pending estimate is NOT an outcome
+    JSON.stringify({ type: "outcome", task_id: "t-2" }),
+    "not json at all",                                        // junk lines are skipped, not fatal
+    JSON.stringify({ type: "outcome", task_id: "t-1" }),
+  ].join("\n");
+  ok(alreadyLogged(hist, "t-1"), "an outcome for t-1 is found past the pending record + junk");
+  ok(!alreadyLogged(hist, "t-3"), "no outcome for t-3 → false");
+  ok(!alreadyLogged(JSON.stringify({ type: "estimate", task_id: "t-9" }), "t-9"), "a pending estimate alone is not 'logged'");
+  ok(!alreadyLogged("", "t-1"), "empty history → false");
+});
+
+// WHY: this is the loop's write path — the outcome must fire once with the right task_id, NEVER double-fire
+// (idempotent per task_id, since the Stop hook re-runs), and refuse an unestimated slice rather than crash.
+test("runLog fires the outcome, is idempotent per task_id, --force re-logs, errors on unestimated", () => {
+  const root = mkdtempSync(join(tmpdir(), "roadmap-log-"));
+  mkdirSync(join(root, "docs", "roadmap"), { recursive: true });
+  writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"),
+    `meta:\n  schema_version: 1\n  program: T\npis:\n  - id: a\n    title: A\n    status: active\n    sprints:\n      - { id: s1, title: Done, status: complete, invoke: done, estimate: { minutes: { low: 1, expected: 2, high: 3 }, task_id: t-abc } }\n      - { id: s2, title: Raw, status: next, invoke: raw }\n`, "utf8");
+  const calls = [];
+  const runEstimator = (args) => { calls.push(args); return { status: 0, stdout: "", stderr: "" }; };
+
+  const r1 = runLog(root, { invoke: "done", status: "pass", runEstimator });
+  eq(r1.invoke, "done", "the outcome fired for this slice");
+  ok(r1.logged, "logged flag set");
+  ok(calls[0].join(" ").includes("log --task-id t-abc --status pass"), "estimator log carries the slice's task_id");
+
+  // agent-time would append the outcome; simulate that, then a re-fire must skip (the hook re-runs).
+  const hist = resolveHistory(root);
+  mkdirSync(join(root, ".claude", "agent-time"), { recursive: true });
+  writeFileSync(hist, JSON.stringify({ type: "outcome", task_id: "t-abc", status: "pass" }) + "\n", "utf8");
+  const before = calls.length;
+  ok(runLog(root, { invoke: "done", status: "pass", runEstimator }).skipped, "already-logged task_id → skipped (idempotent)");
+  eq(calls.length, before, "no second estimator fire");
+
+  eq(runLog(root, { invoke: "done", status: "pass", force: true, runEstimator }).invoke, "done", "--force re-logs past the guard");
+  throws(() => runLog(root, { invoke: "raw", runEstimator }), "has no estimate.task_id", "an unestimated slice can't be logged");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: agent-time REJECTS an outcome with no actuals (no round-counter data ran) — that real failure must
+// be RETURNED, never thrown, or the Stop hook firing runLog on every session end would crash session end.
+test("runLog surfaces a rejected log's error and never throws (the no-actuals degradation path)", () => {
+  const root = mkdtempSync(join(tmpdir(), "roadmap-log-fail-"));
+  mkdirSync(join(root, "docs", "roadmap"), { recursive: true });
+  writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"),
+    `meta:\n  schema_version: 1\n  program: T\npis:\n  - id: a\n    title: A\n    status: active\n    sprints:\n      - { id: s1, title: Done, status: complete, invoke: done, estimate: { minutes: { low: 1, expected: 2, high: 3 }, task_id: t-x } }\n`, "utf8");
+  const runEstimator = () => ({ status: 2, stdout: "", stderr: "error: --actual-rounds is required" });
+  const r = runLog(root, { invoke: "done", status: "pass", runEstimator });
+  ok(r.error && r.error.includes("--actual-rounds is required"), "the rejection reason is surfaced, not thrown");
+  ok(!r.logged, "nothing is recorded as logged on failure");
+  rmSync(root, { recursive: true, force: true });
 });
 
 await Promise.all(pending);

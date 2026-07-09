@@ -30,7 +30,7 @@ if (!process.env.LINEAR_API_KEY) done();   // unauthed → nothing to post to
 try {
   const graphMod = await import(new URL("../scripts/lib/graph.mjs", import.meta.url));
   const { normalizeLinearConfig } = await import(new URL("../scripts/lib/linear-core.mjs", import.meta.url));
-  const { autoPostPlan } = await import(new URL("../scripts/lib/journal-core.mjs", import.meta.url));
+  const { autoPostPlan, sliceForBranch } = await import(new URL("../scripts/lib/journal-core.mjs", import.meta.url));
 
   const graph = graphMod.loadGraph(join(root, "docs", "roadmap", "roadmap.yaml"));
   if (!normalizeLinearConfig(graph.meta || {})) done();   // Linear not configured for this roadmap
@@ -39,6 +39,21 @@ try {
   const base = (graph.meta && graph.meta.base_branch) || "main";
   const commits = (git(root, ["log", "--format=%s", `${base}..HEAD`]) || "").split("\n").filter(Boolean);
   const dirty = git(root, ["status", "-s"]) || "";
+
+  // Calibration loop (best-effort, silent): if this branch's slice is now DONE and was estimated, log
+  // its outcome to agent-time so the estimate self-corrects. Idempotent per task_id (runLog checks
+  // agent-time's history), so firing on every session end is safe. Rides this Linear-gated hook, so it's
+  // active when Linear is configured; otherwise use `roadmap estimate log` or agent-time's own hooks.
+  // ponytail: without agent-time's round-counter hook, log() has no actuals and is rejected, so this
+  // re-fires one silent spawnSync every session end on a done+estimated slice until an outcome lands.
+  // Bounded per session, harmless; the upgrade path is enabling that hook (then the first fire succeeds).
+  try {
+    const slice = sliceForBranch(graph, branch);
+    if (slice && graphMod.isDone(slice.status) && slice.estMinutes) {
+      const { runLog } = await import(new URL("../scripts/estimate.mjs", import.meta.url));
+      runLog(root, { invoke: slice.invoke, status: "pass" });
+    }
+  } catch { /* best-effort — a calibration miss must never block session end */ }
 
   const plan = autoPostPlan(graph, { branch, commits, dirty });
   if (!plan) done();   // branch isn't a mapped slice, or no real work to report
