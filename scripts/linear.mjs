@@ -235,12 +235,20 @@ export async function runSync(root, opts = {}) {
     } else if (ops.length) {
       const projectIds = projectIdsByPi(pushGraph);
       const writeBacks = { pis: [], sprints: [], items: [] };
-      // Icon names are a fixed Linear set we can't introspect without write-probing the board; a bad
-      // palette entry would abort the whole push. Retry once without `icon` so it degrades to "no
-      // icon" (color still groups) instead of failing the sync. Only icon needs this — every other
-      // field is a validated shape.
+      // Unverified-VALUE fields (project icon names, issue completedAt) would abort the whole
+      // push on rejection. Shared degrade: retry ONCE without that one field, else rethrow.
+      // Icon self-heals on a later sync (it's re-diffed); completedAt is create-only, so its
+      // degrade is one-way — the issue stays Done-at-creation-time (acceptable: it's history).
       const isIconErr = (e) => /icon|argument validation/i.test(e.message || "");
-      const stripIcon = (p) => { const { icon, ...rest } = p; return rest; };
+      const isCompletedAtErr = (e) => /completedAt|argument validation/i.test(e.message || "");
+      const withFieldStripRetry = async (mk, payload, field, isRetryable) => {
+        try { return await mk(payload); }
+        catch (e) {
+          if (payload[field] == null || !isRetryable(e)) throw e;
+          const { [field]: _stripped, ...rest } = payload;
+          return mk(rest);
+        }
+      };
       // finally-flush: if an op throws mid-push, everything Linear already created still gets
       // its id written back — otherwise the next sync would create duplicates for those nodes.
       try {
@@ -248,30 +256,18 @@ export async function runSync(root, opts = {}) {
           if (op.op === "createProject") {
             const mk = (payload) => gql(`mutation($input: ProjectCreateInput!) { projectCreate(input: $input) { project { id } } }`,
               { input: { ...payload, teamIds: [team.id] } }, io);   // spread: dropping fields here caused live churn (description)
-            let d;
-            try { d = await mk(op.payload); }
-            catch (e) { if (op.payload.icon && isIconErr(e)) d = await mk(stripIcon(op.payload)); else throw e; }
+            const d = await withFieldStripRetry(mk, op.payload, "icon", isIconErr);
             projectIds[op.projectRef] = d.projectCreate.project.id;
             writeBacks.pis.push({ pi: op.writeBack.pi, project: d.projectCreate.project.id });
           } else if (op.op === "updateProject") {
             const mk = (payload) => gql(`mutation($id: String!, $input: ProjectUpdateInput!) { projectUpdate(id: $id, input: $input) { project { id } } }`,
               { id: op.id, input: payload }, io);
-            try { await mk(op.payload); }
-            catch (e) { if (op.payload.icon && isIconErr(e)) await mk(stripIcon(op.payload)); else throw e; }
+            await withFieldStripRetry(mk, op.payload, "icon", isIconErr);
           } else if (op.op === "createIssue") {
             const input = { teamId: team.id, ...op.payload, ...(op.projectRef && projectIds[op.projectRef] ? { projectId: projectIds[op.projectRef] } : {}) };
             const mkIssue = (inp) => gql(`mutation($input: IssueCreateInput!) { issueCreate(input: $input) { issue { id identifier } } }`,
               { input: inp }, io);
-            // completedAt (history backfill) is a verified FIELD but the value semantics aren't —
-            // retry without it like the project-icon degrade: worst case Done-at-creation-time.
-            let d;
-            try { d = await mkIssue(input); }
-            catch (e) {
-              if (input.completedAt && /completedAt|argument validation/i.test(e.message || "")) {
-                const { completedAt, ...rest } = input;
-                d = await mkIssue(rest);
-              } else throw e;
-            }
+            const d = await withFieldStripRetry(mkIssue, input, "completedAt", isCompletedAtErr);
             const identifier = d.issueCreate.issue.identifier;
             if (op.writeBack.kind === "sprint") writeBacks.sprints.push({ invoke: op.writeBack.invoke, identifier });
             else writeBacks.items.push({ id: op.writeBack.id, identifier });

@@ -36,7 +36,7 @@ import {
   normalizeLinearConfig, effectiveGranularity, effectiveVerbosity, linearState, checkPiOverrideAck,
   resolvePushState, resolveProjectStatus, pullStatusFor, priorityToLinear, LINEAR_TO_PRIORITY,
   issueDescription, machineFooter, buildPushPlan, buildPullProposals, validateLinearConfig, holdsFor,
-  desiredLabels, projectDescription, projectSubtitleRaw, projectName, projectContent, normalizeLinearMarkdown,
+  desiredLabels, projectDescription, projectSubtitleRaw, projectName, projectContent, normalizeLinearMarkdown, withinHistory,
   projectColorFor, projectIconFor, MARKER_LABEL, PLATE_LABEL, LINEAR_PROJECT_NAME_MAX, LINEAR_PROJECT_DESC_MAX,
   initiativePlan, initiativeStyle, startStampTargets, milestonePlan, HELD_STATUSES, cyclePlan,
   provisionPlan, manualViewChecklist, dispatchGuidance, STANDARD_VIEWS,
@@ -1517,6 +1517,10 @@ test("history knob: off skips done work, full projects it Done with completedAt,
   // window: 7-day meta knob — old (4 days ago) inside, ancient (34 days) and undated outside
   const win = mk("window");
   eq(win.ops.filter((o) => o.op === "createIssue").map((o) => o.writeBack.invoke), ["old"], "window honors meta.completed_window_days, undated never resurrects");
+  // pin the inclusive boundary: exactly N days ago is inside; 1ms older is outside
+  const wcfg = normalizeLinearConfig({ linear: { team: "ENG", history: "window" } });
+  ok(withinHistory(wcfg, { completedOn: "2026-06-28T12:00:00Z" }, { completed_window_days: 7 }, NOW), "exact 7-day boundary is inside (<=)");
+  ok(!withinHistory(wcfg, { completedOn: "2026-06-28T11:59:59.999Z" }, { completed_window_days: 7 }, NOW), "1ms past the boundary is outside");
   const v = validateLinearConfig({ meta: { schema_version: 1, program: "T", linear: { team: "ENG", history: "always" } }, pis: [] });
   ok(v.errors.some((e) => e.includes('history "always"')), "invalid history value blocks at validate");
 });
