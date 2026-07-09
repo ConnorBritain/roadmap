@@ -52,23 +52,29 @@ function writeCursor(root, lastSync) {
 }
 
 // ── queries ───────────────────────────────────────────────────────────────────
-async function fetchTeamBundle(teamKey, io) {
+// withCycle: only the cycles feature asks for activeCycle — with cycles off the query is
+// byte-identical to the pre-cycles tool (the off-path contract every knob keeps).
+async function fetchTeamBundle(teamKey, io, withCycle = false) {
   const data = await gql(
     `query($key: String!) { teams(filter: { key: { eq: $key } }) { nodes {
        id key name
-       activeCycle { id }
-       states { nodes { id name type position } }
+       ${withCycle ? "activeCycle { id }\n       " : ""}states { nodes { id name type position } }
        labels { nodes { id name } } } } }`,
     { key: teamKey }, io);
   const team = data.teams.nodes[0];
   if (!team) throw new Error(`no Linear team with key "${teamKey}" (check meta.linear.team)`);
   return {
     id: team.id,
-    activeCycleId: team.activeCycle ? team.activeCycle.id : null,   // null: cycles off in Linear, or between cycles
+    activeCycleId: (withCycle && team.activeCycle && team.activeCycle.id) || null,   // null: cycles off in Linear, or between cycles
     states: [...team.states.nodes].sort((a, b) => a.position - b.position),
     labels: Object.fromEntries(((team.labels && team.labels.nodes) || []).map((l) => [l.name, l.id])),
   };
 }
+
+// The one issueUpdate literal — four call sites (push, milestone attach, cycle assign/clear)
+// share the identical mutation shape.
+const updateIssue = (id, input, io) =>
+  gql(`mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { issue { id } } }`, { id, input }, io);
 
 // Project drift snapshot, keyed by the mapped project ids only (NOT all team projects). `content`
 // is a heavy rich-text field — fetching it for every project inside the team bundle blows Linear's
@@ -146,7 +152,7 @@ export async function runSync(root, opts = {}) {
   const now = opts.now || new Date().toISOString();
 
   const backlog = loadBacklog(root);
-  const team = await fetchTeamBundle(cfg.team, io);
+  const team = await fetchTeamBundle(cfg.team, io, cfg.cycles === "on");
   const mapped = collectIdentifiers(graph, backlog);
   const existing = { issues: await fetchIssueSnapshot(mapped, io), projects: await fetchProjectSnapshot(mappedProjectIds(graph), io) };
   const docsUrl = repoDocsUrl(root, graph);
@@ -260,8 +266,7 @@ export async function runSync(root, opts = {}) {
             if (op.writeBack.kind === "sprint") writeBacks.sprints.push({ invoke: op.writeBack.invoke, identifier });
             else writeBacks.items.push({ id: op.writeBack.id, identifier });
           } else if (op.op === "updateIssue") {
-            await gql(`mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { issue { id } } }`,
-              { id: op.id, input: op.payload }, io);
+            await updateIssue(op.id, op.payload, io);
           }
           result.pushed.push(`${op.op}${op.identifier ? ` ${op.identifier}` : op.writeBack ? ` ${op.writeBack.invoke || op.writeBack.id || op.writeBack.pi}` : ""}`);
         }
@@ -410,8 +415,7 @@ export async function syncMilestones(root, io) {
       const targetId = byName.get(s.milestone);
       const c = cur[s.linear];
       if (!c || !targetId || c.milestoneId === targetId) continue;   // unmapped-in-snapshot or already attached
-      await gql(`mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { issue { id } } }`,
-        { id: c.id, input: { projectMilestoneId: targetId } }, io);
+      await updateIssue(c.id, { projectMilestoneId: targetId }, io);
       attached.push(`${s.invoke} → ${s.milestone}`);
     }
   }
@@ -442,17 +446,11 @@ export async function syncCycles(root, io, activeCycleId) {
   const issues = await fetchIssueCycles(candidates.map((n) => n.linear), io);
   const plan = cyclePlan({ graph, activeCycleId, issues });
   const assigned = [], cleared = [];
-  for (const a of plan.assign) {
-    if (!a.id) continue;   // mapped but not in Linear (deleted?) — leave for the human
-    await gql(`mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { issue { id } } }`,
-      { id: a.id, input: { cycleId: activeCycleId } }, io);
-    assigned.push(a.invoke);
-  }
-  for (const c of plan.clear) {
-    if (!c.id) continue;
-    await gql(`mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { issue { id } } }`,
-      { id: c.id, input: { cycleId: null } }, io);
-    cleared.push(c.invoke);
+  const ops = [...plan.assign.map((a) => ({ ...a, cycleId: activeCycleId })), ...plan.clear.map((c) => ({ ...c, cycleId: null }))];
+  for (const o of ops) {
+    if (!o.id) continue;   // mapped but not in Linear (deleted?) — leave for the human
+    await updateIssue(o.id, { cycleId: o.cycleId }, io);
+    (o.cycleId === null ? cleared : assigned).push(o.invoke);
   }
   return { assigned, cleared };
 }
@@ -533,7 +531,7 @@ export async function runProvision(root, opts = {}) {
   const io = { apiKey: env.LINEAR_API_KEY, fetchImpl: opts.fetchImpl || fetch };
   const team = await fetchTeamBundle(state.cfg.team, io);
 
-  const plan = provisionPlan({ graph, teamLabels: team.labels });
+  const plan = provisionPlan({ graph, teamLabels: team.labels, cfg: state.cfg });
   const result = { labelsCreated: [], labelsExisting: plan.existingLabels, views: [], viewChecklist: null };
 
   for (const name of plan.createLabels) {

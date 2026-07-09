@@ -470,12 +470,11 @@ function trackViews(graph) {
 // The cycle-era view — only offered when cycles are on (provision degrades like STANDARD_VIEWS).
 const THIS_CYCLE_VIEW = { name: "This cycle", hint: "current-cycle issues labeled roadmap — the elected batch the sync maintains (active + next)" };
 
-export function provisionPlan({ graph, teamLabels }) {
+export function provisionPlan({ graph, teamLabels, cfg = null }) {
   const have = new Set(Object.keys(teamLabels || {}));
   const nodes = flatten(graph).nodes;
   const tracks = new Set(nodes.map((n) => n.track).filter(Boolean));
   const heldPresent = HELD_STATUSES.filter((s) => nodes.some((n) => n.status === s));
-  const cfg = normalizeLinearConfig(graph.meta || {});
   const wanted = [
     MARKER_LABEL, ...KIND_LABELS,
     ...[...tracks].sort().map((t) => `track:${t}`),

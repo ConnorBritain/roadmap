@@ -1508,9 +1508,8 @@ test("cyclePlan assigns active/next on drift, clears only current-cycle demotion
   eq(plan.assign.map((x) => x.invoke), ["a"], "only the drifted active/next issue assigns");
   eq(plan.clear.map((x) => x.invoke), ["c"], "only the current-cycle demotion clears — future parking and done work untouched");
   eq(cyclePlan({ graph: g, activeCycleId: null, issues }), { assign: [], clear: [] }, "no active cycle → nothing");
-  ok(provisionPlan({ graph: g, teamLabels: {} }).views.some((v) => v.name === "This cycle"), "cycles on → This cycle view offered");
-  const off = { meta: { ...g.meta, linear: { team: "ENG" } }, pis: g.pis };
-  ok(!provisionPlan({ graph: off, teamLabels: {} }).views.some((v) => v.name === "This cycle"), "cycles off → view not offered");
+  ok(provisionPlan({ graph: g, teamLabels: {}, cfg: normalizeLinearConfig(g.meta) }).views.some((v) => v.name === "This cycle"), "cycles on → This cycle view offered");
+  ok(!provisionPlan({ graph: g, teamLabels: {}, cfg: normalizeLinearConfig({ linear: { team: "ENG" } }) }).views.some((v) => v.name === "This cycle"), "cycles off → view not offered");
   const v = validateLinearConfig({ meta: { schema_version: 1, program: "T", linear: { team: "ENG", cycles: "weekly" } }, pis: [] });
   ok(v.errors.some((e) => e.includes('cycles "weekly"')), "invalid cycles value blocks at validate");
 });
@@ -2345,6 +2344,7 @@ test("runSync cycles: assigns active+next, clears demotions, converges, degrades
   const fake2 = fakeLinear({ snapshot: snap(), projectSnapshot: proj(), activeCycle: { id: "cyc-1" }, failOn: "cycleUpdate" });
   const r3 = await runSync(root2, { fetchImpl: fake2.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-09T12:00:00Z" });
   ok(r3.cyclesError && r3.cyclesError.includes("simulated cycle rejection"), "cycle rejection recorded; sync completed");
+  ok(r3.pushed.some((p) => p.includes("updateIssue")), "the core push completed before the cycle rejection");
   rmSync(root2, { recursive: true, force: true });
   const root3 = mkRoot();
   const fake3 = fakeLinear({ snapshot: snap(), projectSnapshot: proj() });   // no active cycle in Linear
@@ -2352,6 +2352,11 @@ test("runSync cycles: assigns active+next, clears demotions, converges, degrades
   ok(r4.cyclesNote && r4.cyclesNote.includes("no active cycle"), "no active cycle → a note, never a guess");
   eq(cycleOps(fake3).length, 0, "zero cycle mutations without an active cycle");
   rmSync(root3, { recursive: true, force: true });
+  const root4 = linearRepo();   // cycles absent → even the teams QUERY must stay pre-cycles byte-identical
+  const fake4 = fakeLinear();
+  await runSync(root4, { fetchImpl: fake4.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-09T12:00:00Z" });
+  ok(!fake4.calls.some((c) => c.query.includes("activeCycle")), "cycles off → activeCycle never requested");
+  rmSync(root4, { recursive: true, force: true });
 });
 
 // WHY: the LIVE-verified clobber race — push ran before pull and overwrote a human's
