@@ -72,6 +72,7 @@ if (isMain) {
       if (!p.packed.length) console.log(`  (nothing — capacity full or no estimated ready candidates)`);
       if (p.overflow.length) console.log(`over capacity (ready, estimated, doesn't fit): ${p.overflow.map((x) => x.invoke).join(", ")}`);
       if (p.unestimated.length) console.log(`unestimated (never auto-packed — price or pass): ${p.unestimated.map((x) => x.invoke).join(", ")}`);
+      if (p.unpricedElected.length) console.log(`⚠ committed but unpriced (counts as ZERO in capacity — price these): ${p.unpricedElected.map((x) => x.invoke).join(", ")}`);
       console.log(`lock with: roadmap cycle lock --promote <a,b,...> [--demote <x,y,...>]  · then 'roadmap linear sync' projects the cycle`);
     } else if (sub === "lock") {
       const r = runCycleLock(root, { promote: list("--promote"), demote: list("--demote") });

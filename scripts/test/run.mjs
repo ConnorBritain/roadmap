@@ -1548,6 +1548,9 @@ test("electionPlan: committed-first capacity, strict priority prefix, unestimate
   const p = electionPlan(g, { capacity: 10, staleInvokes: ["committed"] });
   eq(p.elected.map((x) => x.invoke).sort(), ["committed", "nextup"], "elected = the committed set (active+next)");
   ok(p.elected.find((x) => x.invoke === "committed").stale, "the stale flag rides the elected list — reviewed first");
+  eq(p.unpricedElected, [], "all committed work is priced here — no capacity blind spot");
+  const gUnpriced = { ...g, pis: [{ ...g.pis[0], sprints: [{ id: "s0", title: "Mystery", status: "active", invoke: "mystery" }, ...g.pis[0].sprints] }] };
+  eq(electionPlan(gUnpriced, { capacity: 10 }).unpricedElected.map((x) => x.invoke), ["mystery"], "committed-but-unpriced work is flagged, never a silent zero in the capacity math");
   eq(p.candidates.map((x) => x.invoke), ["big", "small", "unpriced"], "candidates = READY scheduled only, priority-sorted, unpriced last (gated/dep-blocked/optionality excluded)");
   // committed 5s + big 9s would blow 10 → strict prefix stops at big; small does NOT sneak past the P0
   eq(p.packed, [], "a too-big P0 at the head blocks the prefix — the signal is split-it, not skip-it");
@@ -1625,6 +1628,8 @@ test("cyclePlan assigns active/next on drift, clears only current-cycle demotion
   ok(!provisionPlan({ graph: g, teamLabels: {}, cfg: normalizeLinearConfig({ linear: { team: "ENG" } }) }).views.some((v) => v.name === "This cycle"), "cycles off → view not offered");
   const v = validateLinearConfig({ meta: { schema_version: 1, program: "T", linear: { team: "ENG", cycles: "weekly" } }, pis: [] });
   ok(v.errors.some((e) => e.includes('cycles "weekly"')), "invalid cycles value blocks at validate");
+  const vc = validateLinearConfig({ meta: { schema_version: 1, program: "T", linear: { team: "ENG", cycle_capacity: 0 } }, pis: [] });
+  ok(vc.errors.some((e) => e.includes("cycle_capacity")), "cycle_capacity 0 rejected — a bad knob must not silently disable the cap");
 });
 
 // ── linear-core: PI status → project status ──────────────────────────────────

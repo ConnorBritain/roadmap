@@ -34,6 +34,9 @@ export function electionPlan(graph, { capacity = 10, staleInvokes = [] } = {}) {
   const brief = summarize(stale);
 
   const elected = model.nodes.filter((n) => !isDone(n.status) && CYCLE_STATUSES.includes(n.status)).map(brief);
+  // Elected-but-unpriced work can't hide from the capacity math as a silent zero — it's
+  // surfaced beside the candidate-side honesty gate so the ritual prices it or calls it out.
+  const unpricedElected = elected.filter((x) => x.est == null);
   let used = elected.reduce((s, x) => s + (x.est || 0), 0);
 
   const candidates = readyNodes(model)
@@ -51,5 +54,5 @@ export function electionPlan(graph, { capacity = 10, staleInvokes = [] } = {}) {
   }
   const overflow = estimable.slice(packed.length);
 
-  return { elected, candidates, packed, overflow, unestimated, capacity, estUsed: used };
+  return { elected, unpricedElected, candidates, packed, overflow, unestimated, capacity, estUsed: used };
 }

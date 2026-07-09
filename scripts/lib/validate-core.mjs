@@ -37,6 +37,19 @@ export function validateGraph(graph) {
       if (meta.discipline.coherence != null && typeof meta.discipline.coherence !== "boolean") {
         err("meta.discipline.coherence must be a boolean");
       }
+      if (meta.discipline.pi_min_slices != null && !(Number.isInteger(meta.discipline.pi_min_slices) && meta.discipline.pi_min_slices >= 1)) {
+        err("meta.discipline.pi_min_slices must be an integer >= 1 (a bad knob silently disabling a guardrail is the failure mode)");
+      }
+      // Composition SHAPE (capture_ratio guards growth RATE): a PI under the floor is usually a
+      // slice wearing a PI's coat — 13 one-slice PIs is how a 64-project wall happens. ONE
+      // aggregated warning (signal, not a wall); complete PIs exempt (history is what it is).
+      const floor = meta.discipline.pi_min_slices;
+      if (Number.isInteger(floor) && floor >= 1) {
+        const thin = (graph.pis || []).filter((pi) => !isDone(pi.status) && (pi.sprints || []).length < floor);
+        if (thin.length) {
+          warn(`composition: ${thin.length} non-complete PI(s) hold fewer than ${floor} slice(s) (${thin.map((p) => p.id).join(", ")}) — a PI is a strategic bet; fold these into siblings or grow them`);
+        }
+      }
     }
   }
   if (meta.last_review != null) {
