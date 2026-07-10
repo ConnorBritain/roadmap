@@ -1891,6 +1891,21 @@ test("granularity gates issue ops globally and per-PI", () => {
   eq(itemOps.length, 1, "open item pushes; promoted item skipped (its sprint carries it)");
 });
 
+// WHY: Linear mints its own identifier (PID-n) AFTER creation, so the backlog number a human
+// actually talks about ("look at b60") is invisible in Linear's triage view unless the title
+// carries it — without the prefix, finding an item means opening issues one by one.
+test("backlog items push to Linear with their id prefixed into the title, without double-prefixing", () => {
+  const withBacklog = pushGraph({ granularity: "slices+backlog" });
+  const backlog = { meta: { schema_version: 1 }, items: [
+    { id: "b7", title: "Fix the flaky thing", kind: "bug", status: "open" },
+    { id: "b8", title: "b8 · Already prefixed by a round-trip", kind: "chore", status: "open" },
+  ]};
+  const plan = buildPushPlan({ graph: withBacklog, backlog, cfg: normalizeLinearConfig(withBacklog.meta), teamStates: L_STATES, existing: SNAP() });
+  const items = plan.ops.filter((o) => o.writeBack && o.writeBack.kind === "item");
+  eq(items.find((o) => o.writeBack.id === "b7").payload.title, "b7 · Fix the flaky thing", "id lands in front of the title");
+  eq(items.find((o) => o.writeBack.id === "b8").payload.title, "b8 · Already prefixed by a round-trip", "an already-prefixed title is left alone");
+});
+
 // WHY: an unacked per-PI override silently reshapes what the whole team sees in Linear;
 // the ack must gate the mutation BEFORE anything is written, with the exact actionable message.
 test("addPi rejects a conflicting linear override without the ack, exact message; ack or match passes", () => {

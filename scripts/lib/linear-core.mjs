@@ -658,7 +658,13 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
     for (const it of backlog.items || []) {
       if (it.status === "promoted") continue;   // the promoted sprint carries it
       if (!it.linear && (it.status === "done" || it.status === "dropped")) continue;
-      const node = { invoke: it.id, title: it.title, what: it.title, gate: it.gate || null,
+      // Backlog items surface in Linear prefixed with their roadmap id ("b60 · …"): the
+      // Linear identifier (PID-n) is minted at creation and can't carry the backlog number,
+      // so without the prefix "find b60" means opening issues one by one. Prefixed titles
+      // sort in backlog order in any alphanumeric view. Guard: a round-tripped title that
+      // already carries its prefix is not double-prefixed.
+      const node = { invoke: it.id, title: it.title.startsWith(`${it.id} · `) ? it.title : `${it.id} · ${it.title}`,
+        what: it.title, gate: it.gate || null,
         estSessions: it.est_sessions ?? null, priority: it.priority || null, source: it.source || null,
         kind: it.kind, linear: it.linear || null };
       pushIssueOp(node, { type: "backlog", key: it.id }, it.status, resolveItemPushState, null);
