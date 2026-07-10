@@ -2352,6 +2352,7 @@ function fakeLinear({ failOn = null, snapshot = {}, projectSnapshot = {}, issueC
     }
     if (query.includes("issueUpdate")) {
       if (failOn === "cycleUpdate" && "cycleId" in (variables.input || {})) throw new Error("simulated cycle rejection");
+      if (failOn === "descriptionDocContent" && "description" in (variables.input || {})) throw new Error("Linear API: conflict on insert of DocumentContent");
       const rec = Object.values({ ...snapshot, ...createdIssues }).find((r) => r && r.id === variables.id);
       if (rec) {   // faithful: persist the patch (like projectUpdate above) so a second run converges
         const inp = variables.input || {};
@@ -2493,6 +2494,27 @@ test("runSync cycles: assigns active+next, clears demotions, converges, degrades
   await runSync(root4, { fetchImpl: fake4.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-09T12:00:00Z" });
   ok(!fake4.calls.some((c) => c.query.includes("activeCycle")), "cycles off → activeCycle never requested");
   rmSync(root4, { recursive: true, force: true });
+});
+
+// WHY: Linear stores issue descriptions as DocumentContent and can refuse the write with
+// "conflict on insert of DocumentContent" (live-caught 2026-07-10 under concurrent syncs).
+// The conflict pins to ONE issue, but without the description-strip degrade it aborts every
+// op queued behind it — new issues are never created and the board freezes until a human digs.
+test("runSync updateIssue strips the description and retries when Linear refuses it as DocumentContent", async () => {
+  const yaml = `meta:\n  schema_version: 1\n  program: T\n  linear:\n    team: ENG\npis:\n  - id: p\n    title: P\n    status: active\n    linear: { project: proj-1 }\n    sprints:\n      - { id: s1, title: A, status: active, invoke: a, linear: ENG-1, what: drifted body }\n      - { id: s2, title: B, status: next, invoke: b }\n`;
+  const root = mkdtempSync(join(tmpdir(), "roadmap-doccontent-"));
+  mkdirSync(join(root, "docs", "roadmap"), { recursive: true });
+  writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"), yaml, "utf8");
+  const iss = { id: "u-ENG-1", identifier: "ENG-1", title: "A", description: "", priority: 0, estimate: null,
+    state: { id: "st-s" }, project: { id: "proj-1" }, assignee: null, labels: { nodes: [] } };
+  const fake = fakeLinear({ snapshot: { "ENG-1": iss }, projectSnapshot: { "proj-1": { id: "proj-1", name: "P" } }, failOn: "descriptionDocContent" });
+  const r = await runSync(root, { fetchImpl: fake.fetchImpl, env: { LINEAR_API_KEY: "k" }, now: "2026-07-10T12:00:00Z" });   // must NOT throw
+  const upd = fake.calls.filter((c) => c.query.includes("issueUpdate") && c.variables.id === "u-ENG-1");
+  ok(upd.some((c) => "description" in (c.variables.input || {})), "first attempt carried the drifted description");
+  ok(upd.some((c) => !("description" in (c.variables.input || {}))), "retried once WITHOUT the description (the conflict field, nothing else, is dropped)");
+  ok(fake.calls.some((c) => c.query.includes("issueCreate")), "the create queued BEHIND the conflicted update still ran");
+  ok(r.pushed.some((p) => p.includes("createIssue")), "push reports the create — the sync finished instead of aborting");
+  rmSync(root, { recursive: true, force: true });
 });
 
 // WHY: the history backfill must ride the LIVE pipeline — a Done issue lands with its true
