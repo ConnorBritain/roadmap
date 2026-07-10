@@ -40,6 +40,10 @@ export const TOOLS = [
       id: { type: "string" }, title: { type: "string" }, status: { enum: STATUSES },
       theme: { type: "string" }, program_label: { type: "string" }, estimate_weeks: { type: "string" },
       exit_criteria: { type: "string" }, deps: { type: "array", items: { type: "string" } },
+      summary: { type: "string", description: "One crisp human line — the Linear project subtitle; a PI without one lands as a shell" },
+      priority: { type: "object", properties: { tier: { enum: ["P0", "P1", "P2", "P3"] }, weight: { type: "number", minimum: 0, maximum: 100 }, reason: { type: "string" } } },
+      initiative: { type: "string" }, detail: { type: "string" }, exec_hint: { type: "string" },
+      start_date: { type: "string" }, target_date: { type: "string" },
       linear: { type: "object", properties: { granularity: { enum: ["pis", "slices", "slices+backlog"] }, project: { type: "string" } } },
       yes_linear_override: { type: "boolean" } } } },
   { name: "add_sprint", description: "Append a sprint to an existing PI. Validates and re-renders SLICES.md. Scope discipline: scope decisions belong to the human — prefer backlog_add for follow-up work discovered mid-session; add sprints only when the user asked for them.",
@@ -50,7 +54,9 @@ export const TOOLS = [
       owns: { type: "array", items: { type: "string" } }, gate: { type: "string" },
       weight: { enum: ["heavy", "medium", "light"] }, gated_on: { type: "string" },
       read_order: { type: "array", items: { type: "string" } }, resume_action: { type: "string" },
-      prompt: { type: "string" }, milestone: { type: "string" },
+      prompt: { type: "string" }, milestone: { type: "string" }, status_label: { type: "string" },
+      dispatch_tier: { type: "string" }, kickoff_brief: { type: "string" }, optional: { type: "boolean" },
+      track: { type: "string" }, risks: { type: "array", items: { type: "string" } },
       priority: { type: "object", properties: { tier: { enum: ["P0", "P1", "P2", "P3"] }, weight: { type: "number", minimum: 0, maximum: 100 }, reason: { type: "string" } } } } } },
   { name: "set_status", description: "Set a slice's status (by invoke), optionally recording PRs + completed_on. Re-renders.",
     inputSchema: { type: "object", required: ["invoke", "status"], properties: {
@@ -131,6 +137,15 @@ function sprintLocByInvoke(doc, invoke) {
 }
 
 // ── mutation functions (operate on a yaml Document; mutate in place, return a summary) ──
+// Linear-ready field sets: what a node needs so it lands on the board (and in an election)
+// fully dialed instead of as a shell needing a second pass. Returned as `missing` by the add
+// mutations — a nudge at the add seam, never a block (drafts are legitimate).
+const PI_READY = ["summary", "priority"];
+const SPRINT_READY = ["what", "gate", "est_sessions", "priority"];
+export function readinessGaps(node, kind) {
+  return (kind === "pi" ? PI_READY : SPRINT_READY).filter((k) => node[k] == null);
+}
+
 export function addPi(doc, args) {
   if (!args || !args.id || !args.title) throw new Error("add_pi requires id + title");
   if (piIndexById(doc, args.id) >= 0) throw new Error(`PI "${args.id}" already exists`);
@@ -138,13 +153,18 @@ export function addPi(doc, args) {
   // (mirrors --yes-spawn-autonomous); the throw happens before any Document mutation.
   if (args.linear) checkPiOverrideAck(normalizeLinearConfig(doc.toJS().meta || {}), args.linear, args.yes_linear_override, args.id);
   const node = { id: args.id, title: args.title, status: args.status || "scheduled" };
-  for (const k of ["theme", "program_label", "estimate_weeks", "exit_criteria", "linear"]) if (args[k] != null) node[k] = args[k];
+  // Every schema-legal add-time field is copied. This list silently dropping fields the
+  // caller passed is exactly how a fully-specified PI landed on the live board as a shell
+  // (summary/priority/initiative vanished) — extend it whenever the schema grows.
+  for (const k of ["theme", "program_label", "estimate_weeks", "exit_criteria", "linear",
+    "summary", "priority", "initiative", "detail", "exec_hint", "start_date", "target_date"]) if (args[k] != null) node[k] = args[k];
   if (Array.isArray(args.deps)) node.deps = args.deps;
   node.sprints = [];
   // createNode: addIn stores a plain object un-wrapped, which breaks later AST reads (.get)
   // on the same Document (e.g. add_pi then add_sprint in one batch).
   doc.addIn(["pis"], doc.createNode(node));
-  return { added: "pi", id: args.id };
+  const missing = readinessGaps(node, "pi");
+  return missing.length ? { added: "pi", id: args.id, missing } : { added: "pi", id: args.id };
 }
 
 export function addSprint(doc, args) {
@@ -152,12 +172,15 @@ export function addSprint(doc, args) {
   const pi = piIndexById(doc, args.pi);
   if (pi < 0) throw new Error(`no PI "${args.pi}"`);
   const node = { id: args.id, title: args.title, status: args.status || "scheduled", invoke: args.invoke };
-  for (const k of ["what", "est_sessions", "gate", "weight", "gated_on", "resume_action", "prompt", "priority", "linear", "milestone"]) if (args[k] != null) node[k] = args[k];
-  for (const k of ["deps", "touches", "owns", "read_order"]) if (Array.isArray(args[k])) node[k] = args[k];
+  // Same silent-drop hazard as addPi: keep in step with the sprint schema.
+  for (const k of ["what", "est_sessions", "gate", "weight", "gated_on", "resume_action", "prompt", "priority", "linear", "milestone",
+    "shape", "estimate", "optional", "kickoff_brief", "track", "execution", "status_label", "dispatch_tier"]) if (args[k] != null) node[k] = args[k];
+  for (const k of ["deps", "touches", "owns", "read_order", "risks"]) if (Array.isArray(args[k])) node[k] = args[k];
   const piMap = pisSeq(doc).items[pi];
   if (!piMap.has("sprints") || !piMap.get("sprints")) doc.setIn(["pis", pi, "sprints"], doc.createNode([node]));
   else doc.addIn(["pis", pi, "sprints"], doc.createNode(node));
-  return { added: "sprint", pi: args.pi, invoke: args.invoke };
+  const missing = readinessGaps(node, "sprint");
+  return missing.length ? { added: "sprint", pi: args.pi, invoke: args.invoke, missing } : { added: "sprint", pi: args.pi, invoke: args.invoke };
 }
 
 export function setStatus(doc, args) {
