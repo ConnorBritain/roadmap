@@ -104,6 +104,7 @@ export function readShow(graph, args) {
     estSessions: n.estSessions, prs: n.prs,
     track: n.track, execution: normalizeExecution(n.execution), suggestedConcurrency: suggestedConcurrency(n),
     priority: n.priority, prompt: n.prompt, linear: n.linear,
+    ...(n.dispatchTier ? { dispatchTier: n.dispatchTier } : {}),
   };
 }
 export function readValidate(graph) {

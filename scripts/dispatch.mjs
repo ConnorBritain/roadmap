@@ -130,7 +130,7 @@ export async function runDispatch(root, key, opts = {}) {
   const find = () => {
     const graph = loadGraph(roadmapPaths(root).yaml);
     const node = flatten(graph).nodes.find((n) => n.invoke === key);
-    if (node) return { type: "slice", identifier: node.linear, graph, status: node.status, tier: node.dispatch_tier || null };
+    if (node) return { type: "slice", identifier: node.linear, graph, status: node.status, tier: node.dispatchTier || null };
     const item = ((loadBacklog(root) || {}).items || []).find((i) => i.id === key);
     if (item) return { type: "backlog", identifier: item.linear, graph, tier: item.dispatch_tier || null };
     return null;
@@ -234,9 +234,32 @@ export async function runFanCloud(root, opts = {}) {
   }
   const slices = wave.map((n) => n.invoke);
   if (!opts.confirm) {
-    return { preview: true, wave: waveIdx, cap, slices,
+    // Read-only pre-flight: resolve each slice's routine (its dispatch_tier against the
+    // active profile) WITHOUT firing, so a wave that would burn N frontier launches shows
+    // its unresolvable slices before confirm instead of failing them mid-wave. Resolution
+    // failures are captured per-slice — the whole point is showing them, never throwing.
+    const d = opts.dispatch || {};
+    const envv = d.env || opts.env || process.env;
+    const profiles = d.profiles !== undefined ? d.profiles : loadRoutineProfiles(envv);
+    const accountEmail = d.accountEmail !== undefined ? d.accountEmail : currentClaudeAccount();
+    const repoSlug = d.repoSlug !== undefined ? d.repoSlug : repoSlugOf(root);
+    const byTier = new Map();
+    const preflight = (tier) => {
+      if (!byTier.has(tier)) {
+        try { resolveRoutine({ env: envv, profiles, accountEmail, repoSlug, tier }); byTier.set(tier, { resolvable: true }); }
+        catch (e) { byTier.set(tier, { resolvable: false, error: e.message }); }
+      }
+      return byTier.get(tier);
+    };
+    const detail = wave.map((nd) => {
+      const tier = nd.dispatchTier || null;
+      const pf = preflight(tier);
+      return { invoke: nd.invoke, tier, resolvable: pf.resolvable, ...(pf.error ? { error: pf.error } : {}) };
+    });
+    const unresolvable = detail.filter((s) => !s.resolvable).map((s) => s.invoke);
+    return { preview: true, wave: waveIdx, cap, slices: detail,
       ...(excluded.length ? { excludedOutOfCycle: excluded } : {}),
-      note: `${slices.length} slice(s) would each fire a cloud session on the authed claude.ai account and open a PR.${excluded.length ? ` ${excluded.length} out-of-cycle slice(s) excluded (${excluded.join(", ")}) — elect them or pass all=true.` : ""} Re-call with confirm=true to fire.` };
+      note: `${detail.length} slice(s) would each fire a cloud session on the authed claude.ai account and open a PR.${unresolvable.length ? ` ${unresolvable.length} slice(s) CANNOT resolve their routine (${unresolvable.join(", ")}) — fix ~/.claude-routines.json or their dispatch_tier before confirming.` : ""}${excluded.length ? ` ${excluded.length} out-of-cycle slice(s) excluded (${excluded.join(", ")}) — elect them or pass all=true.` : ""} Re-call with confirm=true to fire.` };
   }
   const results = [];
   for (const invoke of slices) {

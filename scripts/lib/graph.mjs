@@ -79,6 +79,7 @@ export function flatten(graph) {
         priority: sp.priority || null,      // optional { tier, weight, reason } (see lib/priority.mjs)
         prompt: sp.prompt || null,          // optional author-stashed pickup instructions
         linear: sp.linear || null,          // optional Linear issue identifier (see lib/linear-core.mjs)
+        dispatchTier: sp.dispatch_tier || null, // optional cloud-routine tier (see dispatch.mjs resolveRoutine)
         readOrder: sp.read_order || [],
         resumeAction: sp.resume_action || "",
         kickoffBrief: sp.kickoff_brief || "brief",
