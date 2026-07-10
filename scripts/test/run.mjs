@@ -3282,11 +3282,13 @@ test("runFanCloud excludes out-of-cycle slices from the wave, reports them, incl
   const root = mkdtempSync(join(tmpdir(), "roadmap-fancycle-"));
   mkdirSync(join(root, "docs", "roadmap"), { recursive: true });
   writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"), yaml, "utf8");
-  const p = await runFanCloud(root, {});
-  eq(p.slices, ["a"], "only in-cycle work in the launch selection");
+  const dispatch = { env: {}, profiles: { p: { account: "a@b.c", routines: { default: { trigger: "t", token: "k" } } } }, accountEmail: "a@b.c", repoSlug: null };
+  const p = await runFanCloud(root, { dispatch });
+  eq(p.slices.map((s) => s.invoke), ["a"], "only in-cycle work in the launch selection");
+  ok(p.slices.every((s) => s.resolvable === true), "pre-flight resolves the untiered slice");
   eq(p.excludedOutOfCycle, ["c"], "exclusions reported, never silent");
-  const all = await runFanCloud(root, { all: true });
-  eq(all.slices.sort(), ["a", "c"], "all=true includes out-of-cycle explicitly");
+  const all = await runFanCloud(root, { all: true, dispatch });
+  eq(all.slices.map((s) => s.invoke).sort(), ["a", "c"], "all=true includes out-of-cycle explicitly");
   ok(!all.excludedOutOfCycle, "explicit include reports no exclusions");
   rmSync(root, { recursive: true, force: true });
 });
@@ -3468,7 +3470,8 @@ test("runFanCloud previews by default (fires nothing), fires only on confirm", a
 
   const preview = await runFanCloud(root, { wave: 1, dispatch });
   eq(preview.preview, true, "default = preview");
-  eq(preview.slices.sort(), ["one", "two"], "the ready wave is listed");
+  eq(preview.slices.map((s) => s.invoke).sort(), ["one", "two"], "the ready wave is listed");
+  ok(preview.slices.every((s) => s.resolvable === true && s.tier === null), "pre-flight: untiered slices resolve against the fixture profile");
   eq(fires.length, 0, "preview fires NOTHING");
 
   const fired = await runFanCloud(root, { wave: 1, confirm: true, dispatch });
@@ -3477,6 +3480,82 @@ test("runFanCloud previews by default (fires nothing), fires only on confirm", a
   ok(fired.results.every((r) => r.ok && r.sessionUrl), "each result carries a session url");
   eq(fires.filter((u) => u.includes("anthropic.com")).length, 2, "two routine fires, one per slice");
   rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: a wave mixing tiers must show, BEFORE confirm, which slices cannot resolve their
+// routine — otherwise a frontier wave burns real launches discovering config gaps mid-fire,
+// and the throw-on-missing tier semantics would sink slices one by one after money is spent.
+test("runFanCloud preview pre-flights tiers: unresolvable tier flagged with its routine key, nothing fired", async () => {
+  const root = mkdtempSync(join(tmpdir(), "roadmap-fantier-"));
+  mkdirSync(join(root, "docs", "roadmap"), { recursive: true });
+  writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"),
+    `meta:\n  schema_version: 1\n  program: T\npis:\n  - id: a\n    title: A\n    status: active\n    sprints:\n      - { id: s1, title: One, status: next, invoke: plain, touches: [f1] }\n      - { id: s2, title: Two, status: next, invoke: ftier, dispatch_tier: fable, touches: [f2] }\n`, "utf8");
+  const fires = [];
+  const fakeFetch = async (url) => { fires.push(url); return { ok: true, json: async () => ({ claude_code_session_id: "s", claude_code_session_url: "u" }) }; };
+  const noFable = { p: { account: "a@b.c", routines: { default: { trigger: "t", token: "k" } } } };
+  const p = await runFanCloud(root, { dispatch: { fetchImpl: fakeFetch, env: {}, profiles: noFable, accountEmail: "a@b.c", repoSlug: null } });
+  const fab = p.slices.find((s) => s.invoke === "ftier");
+  eq(fab.tier, "fable", "the slice's declared tier is surfaced");
+  eq(fab.resolvable, false, "missing tier routine → resolvable false, not a throw");
+  ok(fab.error.includes("default#fable"), "the error names the routine key it looked for");
+  eq(p.slices.find((s) => s.invoke === "plain").resolvable, true, "the untiered slice still resolves");
+  ok(p.note.includes("CANNOT resolve"), "the note flags the unresolvable slice");
+  eq(fires.length, 0, "pre-flight is read-only — nothing fired");
+  const withFable = { p: { account: "a@b.c", routines: { default: { trigger: "t", token: "k" }, "default#fable": { trigger: "tf", token: "kf" } } } };
+  const p2 = await runFanCloud(root, { dispatch: { env: {}, profiles: withFable, accountEmail: "a@b.c", repoSlug: null } });
+  ok(p2.slices.every((s) => s.resolvable === true), "fully-configured profile → every slice resolvable");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: the YAML dispatch_tier field is the DURABLE routing (--tier is per-launch) — this is
+// the end-to-end proof the field reaches the routine choice. It was silently broken at
+// landing: flatten never mapped dispatch_tier, so the node read undefined forever and every
+// "fable" slice would have fired on the standard routine without a word.
+test("slice dispatch_tier in roadmap.yaml routes the dispatch to the tier routine end-to-end", async () => {
+  const root = mkdtempSync(join(tmpdir(), "roadmap-tierroute-"));
+  mkdirSync(join(root, "docs", "roadmap"), { recursive: true });
+  writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"),
+    `meta:\n  schema_version: 1\n  program: T\npis:\n  - id: a\n    title: A\n    status: active\n    sprints:\n      - { id: s1, title: F, status: next, invoke: ftier, dispatch_tier: fable }\n`, "utf8");
+  const fires = [];
+  const fakeFetch = async (url) => { fires.push(url); return { ok: true, json: async () => ({ claude_code_session_id: "s", claude_code_session_url: "u" }) }; };
+  const profiles = { p: { account: "a@b.c", routines: { default: { trigger: "trig_std", token: "k" }, "default#fable": { trigger: "trig_fable", token: "kf" } } } };
+  const r = await runDispatch(root, "ftier", { fetchImpl: fakeFetch, env: {}, profiles, accountEmail: "a@b.c", repoSlug: null });
+  ok(fires[0].includes("trig_fable"), "fired the fable routine, not the standard one");
+  ok(r.routine.includes("#fable"), "the result names the tier source for the dispatch log");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: backlog items are dispatchable work too — dispatch_tier must survive add → validate →
+// dispatch, or tier routing silently applies to slices only and a frontier backlog item runs cheap.
+test("backlog item dispatch_tier round-trips add → validate → tier resolution", async () => {
+  const root = mkdtempSync(join(tmpdir(), "roadmap-tieritem-"));
+  mkdirSync(join(root, "docs", "roadmap"), { recursive: true });
+  writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"), `meta:\n  schema_version: 1\n  program: T\npis: []\n`, "utf8");
+  const bdoc = parseDocument(`meta:\n  schema_version: 1\nitems: []\n`);
+  addItem(bdoc, { title: "Frontier item", kind: "chore", dispatch_tier: "fable" });
+  const js = bdoc.toJS();
+  eq(js.items[0].dispatch_tier, "fable", "add persists the tier");
+  eq(validateBacklog(js).errors, [], "schema-shaped backlog with dispatch_tier validates clean");
+  writeFileSync(join(root, "docs", "roadmap", "backlog.yaml"), String(bdoc), "utf8");
+  const fires = [];
+  const fakeFetch = async (url) => { fires.push(url); return { ok: true, json: async () => ({ claude_code_session_id: "s", claude_code_session_url: "u" }) }; };
+  const profiles = { p: { account: "a@b.c", routines: { default: { trigger: "trig_std", token: "k" }, "default#fable": { trigger: "trig_fable", token: "kf" } } } };
+  await runDispatch(root, js.items[0].id, { fetchImpl: fakeFetch, env: {}, profiles, accountEmail: "a@b.c", repoSlug: null });
+  ok(fires[0].includes("trig_fable"), "the item's tier routed to the fable routine");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: the tier must be VISIBLE where humans read the board file — and slices WITHOUT it
+// must render byte-identically, or landing the feature churns every roadmap in every repo.
+test("SLICES.md renders a dispatch badge only for tiered slices", () => {
+  const graph = { meta: { schema_version: 1, program: "T" }, pis: [{ id: "a", title: "A", status: "active", sprints: [
+    { id: "s1", title: "One", status: "next", invoke: "plain" },
+    { id: "s2", title: "Two", status: "next", invoke: "ftier", dispatch_tier: "fable" },
+  ] }] };
+  const md = renderMarkdown(graph);
+  const rows = md.split("\n").filter((l) => l.startsWith("|") && l.includes("/slice "));
+  ok(rows.find((l) => l.includes("ftier")).includes("`dispatch: fable`"), "tiered slice carries the compact badge");
+  ok(!rows.find((l) => l.includes("plain")).includes("dispatch:"), "untiered slice renders with no badge (byte-stable)");
 });
 
 // WHY: one slice failing mid-wave (bad routine, transport error) must not sink the rest —

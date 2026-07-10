@@ -55,6 +55,7 @@
         "est_sessions": { "type": "number", "minimum": 0 },
         "gate": { "type": "string", "description": "'default' inherits the roadmap's meta.default_gate" },
         "prompt": { "type": "string", "description": "Author-stashed pickup instructions, embedded verbatim in the grab kickoff brief" },
+        "dispatch_tier": { "type": "string", "description": "Cloud-dispatch routine tier for this item (e.g. 'fable'). Dispatch resolves routines[\"<owner/repo>#<tier>\"] (or \"default#<tier>\") from ~/.claude-routines.json and THROWS if the tier isn't configured — never a silent fallback to the standard routine. Absent: the standard repo routine. CLI --tier overrides per launch." },
         "prs": { "type": "array", "items": { "type": "string" } },
         "completed_on": { "type": "string", "description": "ISO date the item closed (done/dropped)" },
         "promoted_to": { "type": "string", "description": "pi-id/sprint-id nodeKey written by promote; the back-link to the roadmap" }

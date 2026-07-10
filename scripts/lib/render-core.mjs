@@ -100,7 +100,8 @@ export function renderMarkdown(graph, opts = {}) {
       const deps = depCell(node);
       const prs = (sp.prs && sp.prs.length) ? ` · ${sp.prs.join(" ")}` : "";
       const badge = tierBadge(sp.priority);
-      w(`| ${sp.id.toUpperCase()} | ${B}/slice ${sp.invoke}${B} | ${statusDisplay(sp.status, sp.status_label)}${badge ? ` · **${badge}**` : ""} | ${sess} | ${deps} | ${sp.what || sp.title}${prs} |`);
+      const dtier = sp.dispatch_tier ? ` · ${B}dispatch: ${sp.dispatch_tier}${B}` : "";
+      w(`| ${sp.id.toUpperCase()} | ${B}/slice ${sp.invoke}${B} | ${statusDisplay(sp.status, sp.status_label)}${badge ? ` · **${badge}**` : ""}${dtier} | ${sess} | ${deps} | ${sp.what || sp.title}${prs} |`);
     }
     w("");
   }
