@@ -262,6 +262,11 @@ export async function runSync(root, opts = {}) {
       // degrade is one-way — the issue stays Done-at-creation-time (acceptable: it's history).
       const isIconErr = (e) => /icon|argument validation/i.test(e.message || "");
       const isCompletedAtErr = (e) => /completedAt|argument validation/i.test(e.message || "");
+      // Linear stores issue descriptions as DocumentContent and can refuse the write with
+      // "conflict on insert of DocumentContent" (live-caught 2026-07-10 under concurrent
+      // syncs). The conflict pins to one issue but aborts every op queued behind it.
+      // Description is re-diffed on the next sync, so stripping it self-heals like icon.
+      const isDocContentErr = (e) => /DocumentContent/i.test(e.message || "");
       const withFieldStripRetry = async (mk, payload, field, isRetryable) => {
         try { return await mk(payload); }
         catch (e) {
@@ -293,7 +298,7 @@ export async function runSync(root, opts = {}) {
             if (op.writeBack.kind === "sprint") writeBacks.sprints.push({ invoke: op.writeBack.invoke, identifier });
             else writeBacks.items.push({ id: op.writeBack.id, identifier });
           } else if (op.op === "updateIssue") {
-            await updateIssue(op.id, op.payload, io);
+            await withFieldStripRetry((payload) => updateIssue(op.id, payload, io), op.payload, "description", isDocContentErr);
           }
           result.pushed.push(`${op.op}${op.identifier ? ` ${op.identifier}` : op.writeBack ? ` ${op.writeBack.invoke || op.writeBack.id || op.writeBack.pi}` : ""}`);
         }
