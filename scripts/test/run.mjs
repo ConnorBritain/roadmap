@@ -3324,6 +3324,8 @@ const PROFILES = {
   connor: { account: "connor@x.com", routines: {
     default: { trigger: "trig_c_def", token: "tok_c_def" },
     "acme/app": { trigger: "trig_c_app", token: "tok_c_app" },
+    "acme/app#fable": { trigger: "trig_c_fable", token: "tok_c_fable" },
+    "default#fable": { trigger: "trig_c_fable_def", token: "tok_c_fable_def" },
   }},
   alex: { account: "alex@y.com", routines: { default: { trigger: "trig_a", token: "tok_a" } } },
 };
@@ -3343,6 +3345,21 @@ test("resolveRoutine precedence: env > profile pin > authed account; repo routin
   throws(() => resolveRoutine({ env: { CLAUDE_ROUTINE_PROFILE: "ghost" }, profiles: PROFILES }), 'not in the routines file', "bad pin is actionable");
   throws(() => resolveRoutine({ profiles: null }), "no claude-cloud routine configured", "nothing configured is actionable");
   throws(() => resolveRoutine({ profiles: { p: { account: "a@b.c", routines: {} } }, accountEmail: "a@b.c", repoSlug: "x/y" }), "no routine for x/y", "empty profile is actionable");
+});
+
+// WHY: a slice marked dispatch_tier gets frontier intelligence or it gets NOTHING — a silent
+// fallback to the standard routine would run a judgment-heavy slice on the wrong model and
+// report success, which is worse than failing loudly.
+test("resolveRoutine tier: repo#tier > default#tier; a missing tier throws instead of downgrading", () => {
+  const t = resolveRoutine({ profiles: PROFILES, accountEmail: "connor@x.com", repoSlug: "acme/app", tier: "fable" });
+  eq(t.trigger, "trig_c_fable", "repo-bound tier routine wins");
+  eq(t.source, "profile:connor:acme/app#fable", "source names the tier for the dispatch log");
+  eq(resolveRoutine({ profiles: PROFILES, accountEmail: "connor@x.com", repoSlug: "other/repo", tier: "fable" }).trigger,
+    "trig_c_fable_def", "unknown repo falls back to default#tier, never to the untiered routine");
+  throws(() => resolveRoutine({ profiles: { p: { account: "a@b.c", routines: { default: { trigger: "t", token: "k" } } } }, accountEmail: "a@b.c", repoSlug: "x/y", tier: "fable" }),
+    'no "fable"-tier routine', "unconfigured tier throws (no silent downgrade to default)");
+  eq(resolveRoutine({ env: { CLAUDE_ROUTINE_TRIGGER: "t", CLAUDE_ROUTINE_TOKEN: "k" }, profiles: PROFILES, tier: "fable" }).source,
+    "env", "explicit env pair still wins outright (CI/manual override)");
 });
 
 // WHY: claude-cloud is the Linear-FREE transport — it must dispatch from a repo with no
