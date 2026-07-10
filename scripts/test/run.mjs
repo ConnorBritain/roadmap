@@ -1906,6 +1906,27 @@ test("backlog items push to Linear with their id prefixed into the title, withou
   eq(items.find((o) => o.writeBack.id === "b8").payload.title, "b8 · Already prefixed by a round-trip", "an already-prefixed title is left alone");
 });
 
+// WHY: addPi/addSprint copy args field-by-field; a field the copy-list omits is DROPPED
+// SILENTLY — that is exactly how a fully-specified PI (summary, priority, initiative all
+// passed by the caller) landed on the live board as a shell needing a manual repair pass.
+// The `missing` list is the add-seam nudge that makes new work Linear-ready out of the box.
+test("addPi/addSprint persist every add-time field and report Linear-readiness gaps", () => {
+  const doc = parseDocument(`meta:\n  schema_version: 1\n  program: T\npis: []\n`);
+  const r1 = addPi(doc, { id: "p1", title: "P1", status: "active", summary: "One line", priority: { tier: "P1", reason: "r" }, initiative: "Engine credibility", target_date: "2026-08-01" });
+  const pi = doc.toJS().pis[0];
+  eq(pi.summary, "One line", "summary persists (was silently dropped)");
+  eq(pi.priority.tier, "P1", "priority persists (was silently dropped)");
+  eq(pi.initiative, "Engine credibility", "initiative persists (was silently dropped)");
+  eq(pi.target_date, "2026-08-01", "add-time dates persist");
+  ok(!r1.missing, "fully-dialed PI reports no gaps");
+  eq(addPi(doc, { id: "p2", title: "P2" }).missing, ["summary", "priority"], "shell PI reports its readiness gaps");
+  const r3 = addSprint(doc, { pi: "p2", id: "s1", title: "S", invoke: "s1x", status_label: "FABLE-5 candidate — x", dispatch_tier: "fable" });
+  eq(doc.toJS().pis[1].sprints[0].dispatch_tier, "fable", "newer sprint fields persist through add");
+  eq(r3.missing, ["what", "gate", "est_sessions", "priority"], "bare sprint reports its gaps");
+  ok(!addSprint(doc, { pi: "p2", id: "s2", title: "S2", invoke: "s2x", what: "w", gate: "g", est_sessions: 1, priority: { tier: "P2", reason: "r" } }).missing,
+    "dialed sprint reports no gaps");
+});
+
 // WHY: an unacked per-PI override silently reshapes what the whole team sees in Linear;
 // the ack must gate the mutation BEFORE anything is written, with the exact actionable message.
 test("addPi rejects a conflicting linear override without the ack, exact message; ack or match passes", () => {
