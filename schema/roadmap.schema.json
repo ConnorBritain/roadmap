@@ -231,6 +231,7 @@
         "priority": { "$ref": "#/$defs/priority" },
         "prompt": { "type": "string", "description": "Author-stashed pickup instructions, embedded VERBATIM in the synthesized kickoff brief and shown by /slice and roadmap show. Update as new info comes in (set_fields / roadmap set)." },
         "milestone": { "type": "string", "description": "Optional stage name within the PI's Linear project (e.g. 'harness', 'hardening', 'ship'). Sync creates the distinct milestones per project and attaches this slice's issue — turning a project's flat issue list into legible stages. Project-scoped: the same name under two PIs is two milestones. Opt-in; absent everywhere → no milestone sync." },
+        "dispatch_tier": { "type": "string", "description": "Cloud-dispatch routine tier for this slice (e.g. 'fable' = a routine whose claude.ai model selector is set to the frontier tier). Dispatch resolves routines[\"<owner/repo>#<tier>\"] (or \"default#<tier>\") from ~/.claude-routines.json and THROWS if the tier isn't configured — a frontier slice never silently falls back to the standard routine. Absent: the standard repo routine. CLI --tier overrides per launch." },
         "linear": { "type": "string", "description": "Linear issue identifier (e.g. ABC-123) this slice maps to — written back by the first push. The {linear} branch_convention token uses it so Linear auto-links the PR." }
       }
     },

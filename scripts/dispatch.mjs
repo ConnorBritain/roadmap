@@ -34,7 +34,12 @@ export const DISPATCH_AGENTS = { claude: "@Claude", codex: "@Codex", oz: "@Oz" }
 //      this is the multi-account hot-swap: `claude /login` as someone else, next dispatch
 //      fires on their limits, no config change.
 // Within a profile: routines[<owner/repo>] wins over routines.default (routines are repo-bound).
-export function resolveRoutine({ env = {}, profiles = null, accountEmail = null, repoSlug = null } = {}) {
+// `tier` selects an alternate routine variant keyed "<repo>#<tier>" (or "default#<tier>") —
+// e.g. a "fable" routine whose claude.ai model selector is set to the frontier tier for
+// slices that need judgment, not just execution. A requested tier that isn't configured
+// THROWS rather than silently downgrading: the slice asked for frontier intelligence, and a
+// quiet fallback to the standard tier is exactly the kind of silent failure that erodes trust.
+export function resolveRoutine({ env = {}, profiles = null, accountEmail = null, repoSlug = null, tier = null } = {}) {
   if (env.CLAUDE_ROUTINE_TRIGGER && env.CLAUDE_ROUTINE_TOKEN) {
     return { trigger: env.CLAUDE_ROUTINE_TRIGGER, token: env.CLAUDE_ROUTINE_TOKEN, source: "env" };
   }
@@ -51,6 +56,13 @@ export function resolveRoutine({ env = {}, profiles = null, accountEmail = null,
     [label, entry] = found;
   }
   const routines = entry.routines || {};
+  if (tier) {
+    const rt = (repoSlug && routines[`${repoSlug}#${tier}`]) || routines[`default#${tier}`];
+    if (!rt || !rt.trigger || !rt.token) {
+      throw new Error(`profile "${label}" has no "${tier}"-tier routine for ${repoSlug || "(unknown repo)"} — add routines["${repoSlug || "owner/repo"}#${tier}"] (or routines["default#${tier}"]) { trigger, token }; a ${tier}-tier dispatch never silently falls back to the standard routine`);
+    }
+    return { trigger: rt.trigger, token: rt.token, source: `profile:${label}:${repoSlug && routines[`${repoSlug}#${tier}`] ? repoSlug : "default"}#${tier}`, account: entry.account };
+  }
   const r = (repoSlug && routines[repoSlug]) || routines.default;
   if (!r || !r.trigger || !r.token) {
     throw new Error(`profile "${label}" has no routine for ${repoSlug || "(unknown repo)"} and no default — add routines["${repoSlug || "owner/repo"}"] or routines.default { trigger, token }`);
@@ -118,9 +130,9 @@ export async function runDispatch(root, key, opts = {}) {
   const find = () => {
     const graph = loadGraph(roadmapPaths(root).yaml);
     const node = flatten(graph).nodes.find((n) => n.invoke === key);
-    if (node) return { type: "slice", identifier: node.linear, graph, status: node.status };
+    if (node) return { type: "slice", identifier: node.linear, graph, status: node.status, tier: node.dispatch_tier || null };
     const item = ((loadBacklog(root) || {}).items || []).find((i) => i.id === key);
-    if (item) return { type: "backlog", identifier: item.linear, graph };
+    if (item) return { type: "backlog", identifier: item.linear, graph, tier: item.dispatch_tier || null };
     return null;
   };
 
@@ -136,11 +148,15 @@ export async function runDispatch(root, key, opts = {}) {
 
   // ── claude-cloud: fire a Claude Code cloud session directly (NO Linear required) ──
   if (to === "claude-cloud") {
+    // Tier precedence: explicit --tier beats the node's declared dispatch_tier (the human is
+    // overriding for this one launch); the node's field is the durable routing.
+    const tier = opts.tier || found.tier || null;
     const routine = resolveRoutine({
       env,
       profiles: opts.profiles !== undefined ? opts.profiles : loadRoutineProfiles(env),
       accountEmail: opts.accountEmail !== undefined ? opts.accountEmail : currentClaudeAccount(),
       repoSlug: opts.repoSlug !== undefined ? opts.repoSlug : repoSlugOf(root),
+      tier,
     });
     const text = [
       machineFooter({ type: found.type, key }, null),
@@ -243,7 +259,7 @@ if (isMain) {
     process.exit(2);
   }
   try {
-    const r = await runDispatch(process.cwd(), key, { to: val("--to"), force: args.includes("--force") });
+    const r = await runDispatch(process.cwd(), key, { to: val("--to"), force: args.includes("--force"), tier: val("--tier") });
     if (r.transport === "claude-cloud") {
       console.log(`dispatched ${r.dispatched} → Claude Code cloud session (${r.routine}).`);
       console.log(`session: ${r.sessionUrl}`);
