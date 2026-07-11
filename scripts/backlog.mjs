@@ -9,7 +9,7 @@
 import { readFileSync } from "node:fs";
 import YAML from "yaml";
 import { parseAssignments } from "./lib/cli-core.mjs";
-import { loadBacklog, mutateBacklog } from "./lib/store.mjs";
+import { loadBacklog, mutateBacklog, originBacklogIds } from "./lib/store.mjs";
 import { addItem, setItemFields, sortByPriority, openCount, KINDS } from "./lib/backlog-core.mjs";
 import { tierBadge } from "./lib/priority.mjs";
 
@@ -59,7 +59,7 @@ try {
     if (tier || weight || why) item.priority = { ...(tier ? { tier } : {}), ...(weight != null ? { weight: Number(weight) } : {}), ...(why ? { reason: why } : {}) };
     if (note || slice) item.source = { ...(slice ? { slice } : {}), date: new Date().toISOString().slice(0, 10), ...(note ? { note } : {}) };
     else item.source = { date: new Date().toISOString().slice(0, 10) };
-    const r = mutateBacklog(process.cwd(), (doc) => addItem(doc, item), { createIfMissing: true });
+    const r = mutateBacklog(process.cwd(), (doc) => addItem(doc, { ...item, origin_ids: originBacklogIds(process.cwd()) }), { createIfMissing: true });
     console.log(`✓ added ${r.added}  (re-rendered ${r.rerendered})`);
   } else if (sub === "set") {
     const id = rest.find((a) => !a.includes("=") && !a.startsWith("-"));

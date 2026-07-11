@@ -55,20 +55,28 @@ function itemLocById(doc, id) {
   return -1;
 }
 
-// Next free auto-id b1..bN (scans existing bN ids; custom slugs don't collide).
-function nextAutoId(doc) {
+// Next free auto-id b1..bN. Scans the local doc AND any caller-supplied id list — the IO
+// layers pass origin/main's ids (store.originBacklogIds) so concurrent sessions allocating
+// against stale checkouts stop minting the same bNN (five live collisions on 2026-07-10).
+// Custom slugs don't collide with the counter.
+function nextAutoId(doc, alsoIds = []) {
   let max = 0;
-  for (const it of itemsSeq(doc).items) {
-    const m = /^b(\d+)$/.exec(String(it.get("id")));
-    if (m) max = Math.max(max, Number(m[1]));
-  }
+  const bump = (id) => { const m = /^b(\d+)$/.exec(String(id)); if (m) max = Math.max(max, Number(m[1])); };
+  for (const it of itemsSeq(doc).items) bump(it.get("id"));
+  for (const id of alsoIds) bump(id);
   return `b${max + 1}`;
 }
 
 export function addItem(doc, args) {
   if (!args || !args.title) throw new Error("backlog_add requires title");
-  const id = args.id || nextAutoId(doc);
+  const originIds = args.origin_ids || [];
+  const id = args.id || nextAutoId(doc, originIds);
   if (itemLocById(doc, id) >= 0) throw new Error(`backlog item "${id}" already exists`);
+  // An explicit id that origin/main already holds is the OTHER half of the id race — the
+  // local file hasn't pulled it yet, so the local-duplicate check above can't see it.
+  if (args.id && originIds.includes(String(args.id))) {
+    throw new Error(`backlog item "${args.id}" already exists on origin/main — pull/rebase first, or choose another id`);
+  }
   const node = { id, title: args.title, kind: args.kind || "chore", status: args.status || "open" };
   for (const k of ["priority", "source", "refs", "touches", "est_sessions", "gate", "prompt", "linear", "dispatch_tier"]) {
     if (args[k] != null) node[k] = args[k];
@@ -290,7 +298,8 @@ export const BACKLOG_TOOLS = [
         linear: { type: "object", properties: { team: { type: "string" }, project: { type: "string" }, issue: { type: "string" } } } } },
       refs: { type: "array", items: { type: "string" } }, touches: { type: "array", items: { type: "string" } },
       est_sessions: { type: "number" }, gate: { type: "string" }, prompt: { type: "string" }, linear: { type: "string" },
-      dispatch_tier: { type: "string" } } } },
+      dispatch_tier: { type: "string" },
+      origin_ids: { type: "array", items: { type: "string" }, description: "ids already taken upstream (the MCP server injects origin/main's ids automatically; callers normally omit this)" } } } },
   { name: "backlog_set", description: "Set allowed fields on a backlog item (by id). null value deletes a field. Re-renders BACKLOG.md.",
     inputSchema: { type: "object", required: ["id", "fields"], properties: {
       id: { type: "string" }, fields: { type: "object" } } } },
