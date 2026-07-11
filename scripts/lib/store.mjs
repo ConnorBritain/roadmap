@@ -7,6 +7,7 @@
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import YAML from "yaml";
 import { REL } from "./cli-core.mjs";
 import { loadGraph } from "./graph.mjs";
@@ -29,6 +30,21 @@ export function loadBacklog(root) {
   const p = backlogPaths(root).yaml;
   if (!existsSync(p)) return null;
   return YAML.parse(readFileSync(p, "utf8"));
+}
+
+// Backlog item ids as of origin/main's LAST-FETCHED state (the remote-tracking ref — no
+// network call). Concurrent sessions each allocate ids against their own stale checkout;
+// five bNN collisions in one day (2026-07-10) came from exactly that. Feeding these ids
+// into addItem closes most of the race window without a fetch. Degrades to [] on any
+// failure (no git, no remote-tracking ref, no backlog upstream) — allocation then falls
+// back to local-only, exactly the pre-guard behavior.
+export function originBacklogIds(root, { ref = "origin/main" } = {}) {
+  try {
+    const r = spawnSync("git", ["show", `${ref}:${BACKLOG_REL.join("/")}`], { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+    if (r.status !== 0 || !r.stdout) return [];
+    const parsed = YAML.parse(r.stdout);
+    return (parsed && parsed.items ? parsed.items : []).map((i) => String(i.id));
+  } catch { return []; }
 }
 
 // Render opts for SLICES.md: the backlog pointer appears only when backlog.yaml exists.

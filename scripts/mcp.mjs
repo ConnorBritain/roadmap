@@ -10,7 +10,7 @@
 import { createInterface } from "node:readline";
 import { findRepoRoot, REL } from "./lib/cli-core.mjs";
 import { loadGraph } from "./lib/graph.mjs";
-import { mutateRoadmap, mutateBacklog, mutateBoth, loadBacklog, roadmapPaths } from "./lib/store.mjs";
+import { mutateRoadmap, mutateBacklog, mutateBoth, loadBacklog, roadmapPaths, originBacklogIds } from "./lib/store.mjs";
 import { TOOLS, READ_HANDLERS, MUTATION_HANDLERS } from "./lib/mcp-core.mjs";
 import { BACKLOG_TOOLS, BACKLOG_READ_HANDLERS, BACKLOG_MUTATION_HANDLERS, performPromotion } from "./lib/backlog-core.mjs";
 import { linearState, linearStatusLine, normalizeLinearConfig } from "./lib/linear-core.mjs";
@@ -92,7 +92,9 @@ function callTool(name, args) {
     return BACKLOG_READ_HANDLERS[name](loadBacklog(repoRoot()), args || {});
   }
   if (BACKLOG_MUTATION_HANDLERS[name]) {
-    return mutateBacklog(repoRoot(), (doc) => BACKLOG_MUTATION_HANDLERS[name](doc, args || {}),
+    // backlog_add gets origin/main ids injected so concurrent sessions cannot mint the same bNN.
+    const margs = name === "backlog_add" ? { ...(args || {}), origin_ids: (args && args.origin_ids) || originBacklogIds(repoRoot()) } : (args || {});
+    return mutateBacklog(repoRoot(), (doc) => BACKLOG_MUTATION_HANDLERS[name](doc, margs),
       { createIfMissing: name === "backlog_add" });
   }
   if (name === "backlog_promote") {

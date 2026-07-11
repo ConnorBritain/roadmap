@@ -999,6 +999,18 @@ test("parseAssignments splits on the first '=', marks @file, and passes null thr
 });
 
 // ── backlog: validation + mutations ──────────────────────────────────────────
+// WHY: concurrent sessions allocate ids against their own stale checkouts — five bNN
+// collisions landed in ONE day (2026-07-10), each costing a manual renumber at merge time.
+// origin_ids feeds upstream's ids into allocation: auto-ids skip past them, and an explicit
+// id upstream already holds is refused BEFORE the write instead of colliding at merge.
+test("addItem allocates past origin/main ids and refuses an explicitly-taken one", () => {
+  const doc = parseDocument("meta:\n  schema_version: 1\nitems:\n  - { id: b2, title: Local, kind: chore, status: open }\n");
+  eq(addItem(doc, { title: "A", origin_ids: ["b7", "pid-99"] }).added, "b8", "auto-id skips past upstream's max, not just local's");
+  throws(() => addItem(doc, { id: "b7", title: "B", origin_ids: ["b7"] }), "already exists on origin/main", "explicit upstream-taken id refused before writing");
+  eq(addItem(doc, { id: "b7x-custom", title: "C", origin_ids: ["b7"] }).added, "b7x-custom", "custom slugs unaffected by the counter");
+  ok(!doc.toJS().items.find((i) => i.title === "A").origin_ids, "origin_ids is allocation input, never persisted onto the item");
+});
+
 // WHY: a duplicate id makes grab/promote act on the wrong item; a typo'd kind/status silently
 // buckets work out of the open view. Both must be hard errors before write.
 test("validateBacklog rejects duplicate ids and bad kind/status; a full valid item passes", () => {
