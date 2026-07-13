@@ -16,8 +16,10 @@ export function graphDiff(oldGraph, newGraph) {
   const oldByInvoke = new Map(oldM.nodes.map((n) => [n.invoke, n]));
   const newByInvoke = new Map(newM.nodes.map((n) => [n.invoke, n]));
   const oldPis = new Set(((oldGraph && oldGraph.pis) || []).map((p) => p.id));
+  const newPis = new Set((newGraph.pis || []).map((p) => p.id));
 
   const addedPis = (newGraph.pis || []).filter((p) => !oldPis.has(p.id)).map((p) => ({ id: p.id, title: p.title }));
+  const removedPis = ((oldGraph && oldGraph.pis) || []).filter((p) => !newPis.has(p.id)).map((p) => ({ id: p.id, title: p.title }));
   const addedSprints = [];
   const completedSlices = [];
   const statusFlips = [];
@@ -44,7 +46,7 @@ export function graphDiff(oldGraph, newGraph) {
   const removedSprints = oldM.nodes.filter((o) => !newByInvoke.has(o.invoke))
     .map((o) => ({ invoke: o.invoke, pi: o.piId, title: o.title }));
 
-  return { addedPis, addedSprints, completedSlices, removedSprints, statusFlips, priorityChanges, stillHeld };
+  return { addedPis, removedPis, addedSprints, completedSlices, removedSprints, statusFlips, priorityChanges, stillHeld };
 }
 
 // Either snapshot may be null (no backlog.yaml then/now).
@@ -81,6 +83,10 @@ export function pisInFlight(graph) {
 export function reviewDigest({ gd, bd, graph }) {
   const added = bd.captured.length + gd.addedSprints.length;
   const completed = gd.completedSlices.length;
+  // Closure budget: sessions still owed across every not-done slice (null est → 0).
+  const estOpenSessions = flatten(graph).nodes
+    .filter((n) => !isDone(n.status))
+    .reduce((acc, n) => acc + (n.estSessions || 0), 0);
   return {
     shipped: gd.completedSlices,
     captured: { items: bd.captured, sprints: gd.addedSprints },
@@ -96,6 +102,8 @@ export function reviewDigest({ gd, bd, graph }) {
     }),
     aging: gd.stillHeld,
     newPis: gd.addedPis,
+    removedPis: gd.removedPis,
+    estOpenSessions,
     removed: gd.removedSprints,
     pisInFlight: pisInFlight(graph),
     priorityChanges: gd.priorityChanges,
