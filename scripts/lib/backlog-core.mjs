@@ -3,8 +3,8 @@
 // the item→node adapter that lets `grab` reuse the fanout brief machinery, and pickNext —
 // the highest-priority ready thing across roadmap AND backlog. No IO.
 
-import { flatten, readyNodes } from "./graph.mjs";
-import { comparePriority, tierBadge, validatePriority, TIERS } from "./priority.mjs";
+import { flatten, readyNodes, commandLaneMembers, commandLaneActive } from "./graph.mjs";
+import { comparePriority, laneComparator, tierBadge, validatePriority, TIERS } from "./priority.mjs";
 import { addSprint } from "./mcp-core.mjs";
 
 export const KINDS = ["bug", "chore", "followup", "urgent", "idea"];
@@ -229,11 +229,16 @@ export function backlogItemToNode(item) {
 
 // ── pickNext: the single highest-priority ready thing across both trackers ───
 // Roadmap wins full ties (planned value work outranks erratic work at equal priority).
-// backlog may be null (no backlog.yaml). Returns { type: "slice"|"backlog", node|item } or null.
-export function pickNext(graph, backlog) {
+// backlog may be null (no backlog.yaml). `today` (YYYY-MM-DD, optional) arms the command-lane
+// boost among slices; absent → lane inactive → the pick order is byte-identical to today.
+// Returns { type: "slice"|"backlog", node|item } or null.
+export function pickNext(graph, backlog, today) {
   const ready = readyNodes(flatten(graph));
+  const laneCmp = laneComparator(commandLaneMembers(graph), commandLaneActive(graph, today));
   const topSlice = ready.length
     ? [...ready].sort((a, b) => {
+        const lc = laneCmp(a, b);
+        if (lc) return lc;
         const pc = comparePriority(a.priority, b.priority);
         if (pc) return pc;
         return a.invoke.localeCompare(b.invoke);

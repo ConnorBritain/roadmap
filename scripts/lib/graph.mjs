@@ -6,7 +6,7 @@
 
 import { readFileSync } from "node:fs";
 import YAML from "yaml";
-import { comparePriority } from "./priority.mjs";
+import { comparePriority, laneComparator } from "./priority.mjs";
 
 export const STATUS = {
   active:      { emoji: "🟢", label: "Active",      done: false, rank: 0 },
@@ -284,6 +284,8 @@ export function commandLaneActive(graph, today) {
 // Compute execution waves under a concurrency cap N.
 // Returns { waves: [[node,...],...], held: { onHuman:[node], blocked:[node] } }.
 // opts.coherence (default true): PI-coherence tiebreak in the ready sort — see coherenceEnabled.
+// opts.meta + opts.today: an active command lane (see commandLaneMembers/Active) floats its member
+//   slices to the top of the ready sort. Both absent → lane inactive → ordering byte-identical to today.
 export function computeWaves(model, N = 3, opts = {}) {
   const coherence = opts.coherence !== false;
   const { nodes, sprintIndex } = model;
@@ -293,6 +295,12 @@ export function computeWaves(model, N = 3, opts = {}) {
     err.cycle = cyc;
     throw err;
   }
+
+  // Command-lane boost, computed once per call. model.pis is graph.pis; meta rides in via opts.
+  const laneGraph = { meta: opts.meta, pis: model.pis };
+  const laneMembers = commandLaneMembers(laneGraph);
+  const laneActive = commandLaneActive(laneGraph, opts.today);
+  const laneCmp = laneComparator(laneMembers, laneActive);
 
   // Work on a mutable copy of statuses so optimistic completion drives layering.
   const status = new Map(nodes.map((n) => [n.nodeKey, n.status]));
@@ -329,6 +337,8 @@ export function computeWaves(model, N = 3, opts = {}) {
     }
 
     ready.sort((a, b) => {
+      const lc = laneCmp(a, b);                             // active command lane floats its members first
+      if (lc) return lc;                                    // inactive/absent → 0 → priority, coherence, existing order
       const pc = comparePriority(a.priority, b.priority);  // declared priority wins the cap slot
       if (pc) return pc;                                    // both absent → 0 → coherence, then existing order
       if (coherence && a.piId !== b.piId) {
