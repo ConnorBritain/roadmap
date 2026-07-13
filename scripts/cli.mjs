@@ -39,6 +39,8 @@ COMMANDS
   mcp             run the MCP server (stdio); read + mutate tools over JSON-RPC
   watch           watch fanout PRs and print a line as each lands (lead notifications)
   review          date-anchored review digest: what shipped vs what grew since meta.last_review
+  doctor          reconcile the roadmap against reality (merged PRs, docs, Linear, worktrees,
+                  structure) and report drift — read-only; exits non-zero when drift is found
   linear          optional Linear sync: status [--probe] | auth | setup --team KEY | provision | sync [--dry]
                   | note <key> "<text>" [--kind progress|blocker|done] | notes <key> | post-update
   init            create a minimal roadmap or configure portable assistant profiles

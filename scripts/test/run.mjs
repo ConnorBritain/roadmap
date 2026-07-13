@@ -52,6 +52,7 @@ import { runCyclePlan, runCycleLock } from "../cycle.mjs";
 import { readReadyWave } from "../lib/mcp-core.mjs";
 import { loadGraph } from "../lib/graph.mjs";
 import { graphDiff, backlogDiff, reviewDigest, pisInFlight } from "../lib/review-core.mjs";
+import { doctorReport } from "../lib/doctor-core.mjs";
 import { parseDocument } from "yaml";
 import { join, resolve } from "node:path";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
@@ -3954,6 +3955,53 @@ test("runLog surfaces a rejected log's error and never throws (the no-actuals de
   ok(r.error && r.error.includes("--actual-rounds is required"), "the rejection reason is surfaced, not thrown");
   ok(!r.logged, "nothing is recorded as logged on failure");
   rmSync(root, { recursive: true, force: true });
+});
+
+// ── doctor (drift reconciliation) ────────────────────────────────────────────
+// A structurally-clean graph so the STRUCTURAL section stays empty — every drift signal in
+// this test comes from an injected input, proving each detector maps to its own section.
+const docG = { meta: { schema_version: 1, program: "T" }, pis: [
+  { id: "a", title: "A", status: "active", sprints: [sp("s1", { invoke: "alpha", status: "next", est_sessions: 1 })] },
+]};
+
+// WHY: doctor is the finishing-discipline safety net — if a real drift signal (a merged-but-open
+// slice, stale docs, a Linear disagreement, a stuck PR, a parked worktree) fails to surface, the
+// human trusts a roadmap that has silently diverged from reality. Every class must land in the report.
+test("doctorReport surfaces each drift class as its own section and counts them", () => {
+  const branch = branchFor(flatten(docG).nodes[0], docG);   // the slice's real fanout branch
+  const report = doctorReport({
+    graph: docG,
+    mergedPrs: [{ number: 7, headRefName: "x", title: "t", body: "roadmap: slice=alpha" }],   // shipped-but-open (marker match)
+    allPrs: [{ number: 9, headRefName: branch, state: "OPEN", isDraft: true, mergeStateStatus: "CLEAN", statusCheckRollup: [] }], // stuck (draft)
+    worktrees: [{ branch: "a/s1", path: "/wt/x", dirty: true, merged: false }],   // parked, dirty
+    renderedVsDisk: { staleDocs: ["docs/SLICES.md"] },                            // docs behind the YAML
+    linearDeltas: [{ kind: "slice", key: "alpha", field: "status", from: "next", to: "active", note: null }],
+  });
+  const titles = report.sections.map((s) => s.title);
+  ok(titles.includes("Shipped but not marked complete"), "unrecorded merge surfaced");
+  ok(titles.includes("Generated docs stale"), "stale docs surfaced");
+  ok(titles.includes("Linear disagrees with the roadmap"), "linear delta surfaced");
+  ok(titles.includes("Open PRs needing attention"), "stuck PR surfaced");
+  ok(titles.includes("Stale fanout worktrees"), "dirty worktree surfaced");
+  ok(!titles.includes("Structural validation"), "clean graph → no structural noise");
+  ok(report.sections.find((s) => s.title === "Shipped but not marked complete").items[0].includes("alpha"), "names the slice");
+  eq(report.driftCount, 5, "one signal per class");
+});
+
+// WHY: a clean roadmap must read as clean — a doctor that cries drift on a reconciled repo trains
+// the human to ignore it, and the one real signal later gets ignored with the noise.
+test("doctorReport reports zero drift for a reconciled roadmap", () => {
+  const report = doctorReport({ graph: docG, mergedPrs: [], allPrs: [], worktrees: [], renderedVsDisk: { staleDocs: [] }, linearDeltas: null });
+  eq(report.driftCount, 0, "no inputs → no drift");
+  eq(report.sections.length, 0, "clean → no sections");
+});
+
+// WHY: Linear is optional; when it's unconfigured/unreachable the gatherer passes null, and doctor
+// must SKIP that section rather than emit an empty/garbage one — otherwise an off-Linear repo can
+// never reach zero drift.
+test("doctorReport skips the Linear section when deltas are null", () => {
+  const report = doctorReport({ graph: docG, linearDeltas: null });
+  ok(!report.sections.some((s) => s.title === "Linear disagrees with the roadmap"), "null linearDeltas → no section");
 });
 
 await Promise.all(pending);
