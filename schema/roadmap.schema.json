@@ -112,7 +112,8 @@
           "properties": {
             "capture_ratio": { "type": "number", "exclusiveMinimum": 0, "default": 2, "description": "Max (captured backlog items + added sprints) per completed slice per review window before the sprawl warning fires" },
             "pi_min_slices": { "type": "integer", "minimum": 1, "description": "Composition floor: validate warns (one aggregated line) when a non-complete PI holds fewer slices than this. A PI under ~3 slices is usually a slice wearing a PI's coat — fold it into a sibling or grow it. Absent → off." },
-            "coherence": { "type": "boolean", "default": true, "description": "Wave-packing coherence: prefer finishing started PIs over opening fresh ones (strictly below declared priority). false restores pure priority/status/est ordering." }
+            "coherence": { "type": "boolean", "default": true, "description": "Wave-packing coherence: prefer finishing started PIs over opening fresh ones (strictly below declared priority). false restores pure priority/status/est ordering." },
+            "required_receipts": { "type": "array", "items": { "enum": ["build", "test", "clone_install", "screenshot", "signoff", "publish"] }, "description": "Finishing-discipline knob: receipt keys a slice MUST carry once complete. A complete slice missing any listed key WARNS (opt-in — absent → off)." }
           }
         },
         "last_review": {
@@ -232,7 +233,20 @@
         "prompt": { "type": "string", "description": "Author-stashed pickup instructions, embedded VERBATIM in the synthesized kickoff brief and shown by /slice and roadmap show. Update as new info comes in (set_fields / roadmap set)." },
         "milestone": { "type": "string", "description": "Optional stage name within the PI's Linear project (e.g. 'harness', 'hardening', 'ship'). Sync creates the distinct milestones per project and attaches this slice's issue — turning a project's flat issue list into legible stages. Project-scoped: the same name under two PIs is two milestones. Opt-in; absent everywhere → no milestone sync." },
         "dispatch_tier": { "type": "string", "description": "Cloud-dispatch routine tier for this slice (e.g. 'fable' = a routine whose claude.ai model selector is set to the frontier tier). Dispatch resolves routines[\"<owner/repo>#<tier>\"] (or \"default#<tier>\") from ~/.claude-routines.json and THROWS if the tier isn't configured — a frontier slice never silently falls back to the standard routine. Absent: the standard repo routine. CLI --tier overrides per launch." },
-        "linear": { "type": "string", "description": "Linear issue identifier (e.g. ABC-123) this slice maps to — written back by the first push. The {linear} branch_convention token uses it so Linear auto-links the PR." }
+        "linear": { "type": "string", "description": "Linear issue identifier (e.g. ABC-123) this slice maps to — written back by the first push. The {linear} branch_convention token uses it so Linear auto-links the PR." },
+        "receipts": {
+          "type": "object", "additionalProperties": false,
+          "description": "Optional per-slice completion evidence — each value is a PR#, path, url, or note proving a finishing step actually happened. Opt-in enforcement: list keys in meta.discipline.required_receipts and a complete slice missing one WARNS. Absent → no-op.",
+          "properties": {
+            "build": { "type": "string" },
+            "test": { "type": "string" },
+            "clone_install": { "type": "string" },
+            "screenshot": { "type": "string" },
+            "signoff": { "type": "string" },
+            "publish": { "type": "string" }
+          }
+        },
+        "outcome": { "type": "string", "description": "Optional founder-review outcome this slice rolls up into — sibling slices sharing a name group into one OUTCOME line in SLICES.md summarizing their done-state. Absent → no rollup." }
       }
     },
     "priority": {

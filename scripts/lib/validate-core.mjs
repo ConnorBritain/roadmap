@@ -10,6 +10,10 @@ import { validateEstimation } from "./estimate-core.mjs";
 
 const isDone = (s) => !!(STATUS[s] && STATUS[s].done);
 
+// Known per-slice completion-evidence keys (sp.receipts). meta.discipline.required_receipts
+// opts a repo into WARNing when a complete slice omits one.
+export const RECEIPT_KEYS = ["build", "test", "clone_install", "screenshot", "signoff", "publish"];
+
 export function validateGraph(graph) {
   const errors = [];
   const warnings = [];
@@ -49,6 +53,12 @@ export function validateGraph(graph) {
       }
       if (meta.discipline.active_pi_cap != null && !(Number.isInteger(meta.discipline.active_pi_cap) && meta.discipline.active_pi_cap >= 1)) {
         err("meta.discipline.active_pi_cap must be an integer >= 1 (the max concurrently-active PIs the portfolio allows)");
+      }
+      // Finishing-discipline: which receipts a complete slice must carry (opt-in). A bad value
+      // would silently disable the check, so reject a non-array or an unknown key.
+      const rr = meta.discipline.required_receipts;
+      if (rr != null && !(Array.isArray(rr) && rr.every((k) => RECEIPT_KEYS.includes(k)))) {
+        err(`meta.discipline.required_receipts must be an array of known receipt keys (${RECEIPT_KEYS.join("|")})`);
       }
       // Composition SHAPE (capture_ratio guards growth RATE): a PI under the floor is usually a
       // slice wearing a PI's coat — 13 one-slice PIs is how a 64-project wall happens. ONE
@@ -112,6 +122,7 @@ export function validateGraph(graph) {
   for (const e of est.errors) err(e);
   for (const w of est.warnings) warn(w);
 
+  const requiredReceipts = (meta.discipline && Array.isArray(meta.discipline.required_receipts)) ? meta.discipline.required_receipts : [];
   const validStatus = new Set(Object.keys(STATUS));
   const seenPiIds = new Set();
   for (const pi of graph.pis || []) {
@@ -137,6 +148,12 @@ export function validateGraph(graph) {
       if (!validStatus.has(sp.status)) err(`${where}: status "${sp.status}" invalid`);
       if (!sp.invoke) err(`${where}: invoke key required`);
       if (sp.gated_on && sp.status !== "gated") warn(`${where}: gated_on set but status is "${sp.status}" (expected gated)`);
+      // Finishing discipline (opt-in): a done slice must carry every required receipt; a missing one
+      // means "done" was declared without the evidence. Off entirely when required_receipts is absent.
+      if (requiredReceipts.length && isDone(sp.status)) {
+        const missing = requiredReceipts.filter((k) => !(sp.receipts && sp.receipts[k]));
+        if (missing.length) warn(`receipt: ${where} is complete but missing required receipt(s): ${missing.join(", ")}`);
+      }
       if (!isDone(sp.status) && sp.est_sessions == null) warn(`${where}: no est_sessions (sessions-remaining rollup will undercount)`);
       // Optional execution-strategy hint. Absent → no-op (backward-compatible); present → enum/type/consistency checks.
       const exec = validateExecution(sp.execution, where);
