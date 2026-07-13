@@ -3,6 +3,7 @@ node_modules/
 .DS_Store
 .codex/
 .roadmap-linear-state.json
+.roadmap/config.local.yaml
 
 # Session artifacts
 .claude/

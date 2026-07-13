@@ -12,6 +12,7 @@ import { nodeWeight, recommendConcurrency, probeDisk } from "../lib/recommend.mj
 import { synthesizeBrief, branchFor, worktreeFor, baseRefOf, baseBranchOf, remoteOf, launchPrompt, agentCmdFor, DEFAULT_AGENT_CMD } from "../lib/brief.mjs";
 import { route, classify, buildArgs, findRepoRoot, missingRoadmapHelp, expandShort, REL } from "../lib/cli-core.mjs";
 import { launchDecision } from "../lib/fanout-core.mjs";
+import { configuredProfiles, resolveProfile, commandFor, launchDecisionForProfile, safeConfig } from "../lib/assistant-core.mjs";
 import { terminalChoices, moveSelection, parseCap, buildFanArgs, autoOutName } from "../lib/wizard-core.mjs";
 import { TOOLS, addSprint, setStatus, setFields, bulkSet, prune, validateDocOrThrow, readValidate, serialize } from "../lib/mcp-core.mjs";
 import { parseAssignments } from "../lib/cli-core.mjs";
@@ -431,6 +432,19 @@ test("launchDecision: launch by default, --dry/--out preview, autonomous double-
   eq(launchDecision({ out: "x.sh" }).spawn, false, "--out → no spawn (wrote script)");
   eq(launchDecision({ autonomous: true }), { spawn: false, mode: "autonomous-needs-ack" }, "autonomous w/o ack → held");
   eq(launchDecision({ autonomous: true, okAutonomous: true }), { spawn: true, mode: "autonomous" }, "autonomous + ack → launch");
+});
+
+// WHY: a portable install must never surprise-start an agent; local authorization is the
+// boundary between a useful fanout script and an unintended autonomous coding session.
+test("assistant profiles default to manual and require local launch authorization", () => {
+  const graph = { meta: { assistants: { default: "manual" } } };
+  eq(resolveProfile(graph, {}, null).name, "manual", "manual is the safe default");
+  eq(launchDecisionForProfile(resolveProfile(graph, {}, null), { requestedLaunch: false }), { spawn: false, mode: "manual" }, "manual only emits handoffs");
+  const codex = resolveProfile(graph, { assistants: { codex: { launch: true, command: "codex {prompt}" } } }, "codex");
+  ok(launchDecisionForProfile(codex, { requestedLaunch: true }).spawn, "explicitly authorized local profile may launch");
+  eq(commandFor(codex, { prompt: "read brief" }), 'codex "read brief"', "template expands a quoted prompt");
+  throws(() => safeConfig({ token: "not-allowed" }), "credential", "local assistant config rejects secret-like fields");
+  ok(configuredProfiles(graph, {}).profiles.claude, "built-in profiles are discoverable");
 });
 
 // ── short flags + self-contained worker prompt ──────────────────────────────
