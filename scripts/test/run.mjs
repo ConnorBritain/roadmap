@@ -3083,6 +3083,28 @@ test("buildPlan waveCloses names the PIs a wave finishes", () => {
   ok(plan.waveCloses[plan.waves.length - 1].includes("b"), "the final wave closes b");
 });
 
+// WHY: the command-lane sort primitive is unit-tested in computeWaves, but `plan` only honors it if
+// buildPlan threads meta+today into computeWaves — the wiring that connects the feature to the actual
+// command. Without it an active command lane silently boosts nothing (the exact gap this closes).
+test("buildPlan honors an active command_lane: the lane slice floats above a higher-priority non-lane slice", () => {
+  const g = (command_lane) => ({
+    meta: { schema_version: 1, program: "T", ...(command_lane ? { command_lane } : {}) },
+    pis: [
+      { id: "a", title: "A", status: "active", sprints: [
+        { id: "s1", title: "hi", status: "active", invoke: "a-hi", priority: { tier: "P0" }, touches: ["f1"], est_sessions: 1 } ] },
+      { id: "b", title: "B", status: "active", sprints: [
+        { id: "s1", title: "lane", status: "active", invoke: "b-lane", priority: { tier: "P3" }, touches: ["f2"], est_sessions: 1 } ] },
+    ],
+  });
+  const lane = { objective: "ship b", until: "2026-12-31", slices: ["b-lane"] };
+  const active = buildPlan(g(lane), { cap: 3, disk: null, reviewDebt: 0, today: "2026-07-13" });
+  eq(active.waves[0][0].invoke, "b-lane", "active lane floats its slice above the P0 non-lane slice");
+  const expired = buildPlan(g(lane), { cap: 3, disk: null, reviewDebt: 0, today: "2027-01-01" });
+  eq(expired.waves[0][0].invoke, "a-hi", "past `until` → priority wins again (lane released)");
+  const none = buildPlan(g(null), { cap: 3, disk: null, reviewDebt: 0, today: "2026-07-13" });
+  eq(none.waves[0][0].invoke, "a-hi", "no command_lane → unchanged (P0 first)");
+});
+
 // ── review-core: the /debrief evidence base ───────────────────────────────────
 const oldReviewGraph = {
   meta: { schema_version: 1, program: "T" },

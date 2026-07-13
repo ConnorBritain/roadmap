@@ -16,15 +16,18 @@ const round = (x) => Math.round(x * 10) / 10;
 export function buildPlan(graph, opts = {}) {
   const model = flatten(graph);
   const ready = readyNodes(model);
+  const today = opts.today ?? new Date().toISOString().slice(0, 10);
   const rec = recommendConcurrency(ready, graph, {
     useFree: opts.useFree,
     reviewCeiling: opts.reviewCeiling ?? 5,
     reviewDebt: opts.reviewDebt !== undefined ? opts.reviewDebt : probeReviewDebt(process.cwd(), graph),
-    today: opts.today ?? new Date().toISOString().slice(0, 10),
+    today,
     disk: opts.disk !== undefined ? opts.disk : probeDisk(graph),
   });
   const cap = opts.cap != null ? Number(opts.cap) : rec.recommended;
-  const { waves, held } = computeWaves(model, cap, { coherence: coherenceEnabled(graph.meta) });
+  // Command-lane float: pass meta + today so an active lane's member slices sort first in the wave
+  // (see computeWaves). Inactive/absent lane → byte-identical to the pre-lane order.
+  const { waves, held } = computeWaves(model, cap, { coherence: coherenceEnabled(graph.meta), meta: graph.meta, today });
 
   // Which PIs each wave CLOSES (all sprints done once the wave lands, counting earlier waves
   // optimistically) — the coherence read-out: "this wave finishes auth".

@@ -13,7 +13,7 @@ import { tierBadge } from "./lib/priority.mjs";
 
 const graph = loadGraph("docs/roadmap/roadmap.yaml");
 const backlog = loadBacklog(process.cwd());
-const next = pickNext(graph, backlog);
+const next = pickNext(graph, backlog, new Date().toISOString().slice(0, 10));
 
 if (!next) {
   console.log("Nothing ready: no runnable slices, no open backlog items. ('roadmap plan' shows what's held and why.)");
