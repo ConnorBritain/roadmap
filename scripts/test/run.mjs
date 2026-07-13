@@ -3359,6 +3359,30 @@ test("buildPushPlan pushes project startDate + targetDate; idempotent", () => {
   ok(!buildPushPlan({ graph: g2, backlog: null, cfg, teamStates: L_STATES, existing: cur, labels: {} }).ops.some((o) => o.op === "updateProject"), "matching start/target → no project re-push");
 });
 
+// WHY: the push sends only the CHANGED date, but Linear validates the resulting PAIR — a stale
+// estimate projection (targetDate in the past) against a tracker-stamped startDate 400s the ENTIRE
+// 15-op push with "invalid date range" (live incident 2026-07-13, phl-3). The guard must skip the
+// violating date without blocking a jointly-valid both-dates-forward move.
+test("buildPushPlan date-pair guard: skips a targetDate behind the tracker's startDate; allows a joint forward move", () => {
+  const mk = (pi, curProj) => {
+    const g = { meta: { schema_version: 1, program: "T", linear: { team: "ENG" } }, pis: [{ ...pi, linear: { project: "proj-1" } }] };
+    const cfg = normalizeLinearConfig(g.meta);
+    const cur = { projects: { "proj-1": { id: "proj-1", name: pi.title, description: "", content: "", color: "", icon: "", priority: 0, ...curProj } }, issues: {} };
+    return buildPushPlan({ graph: g, backlog: null, cfg, teamStates: L_STATES, existing: cur, labels: {} }).ops.find((o) => o.op === "updateProject");
+  };
+  const base = { id: "a", title: "A", status: "active", sprints: [{ id: "s1", title: "S", status: "next", invoke: "x" }] };
+  // live case: stale projection 07-10 vs tracker startDate 07-13 → targetDate NOT pushed
+  const stale = mk({ ...base, projected_target_date: "2026-07-10" }, { startDate: "2026-07-13", targetDate: null });
+  ok(!stale || stale.payload.targetDate === undefined, "stale past-projection is skipped, not 400ing the push");
+  // healthy: target after the stored start → pushed
+  const healthy = mk({ ...base, projected_target_date: "2026-07-20" }, { startDate: "2026-07-13", targetDate: null });
+  eq(healthy.payload.targetDate, "2026-07-20", "a valid target still pushes");
+  // joint forward move: both change, final pair valid → both push
+  const joint = mk({ ...base, start_date: "2026-07-14", target_date: "2026-07-16" }, { startDate: "2026-07-08", targetDate: "2026-07-12" });
+  eq(joint.payload.startDate, "2026-07-14", "joint move pushes the new start");
+  eq(joint.payload.targetDate, "2026-07-16", "joint move pushes the new target");
+});
+
 // WHY: the auto-stamp DECISION is pure + unit-tested (mirrors plateDrainKeys), not buried in the IO layer —
 // only active PIs lacking an explicit start_date get stamped; explicit + non-active are excluded.
 test("startStampTargets: active PIs without an explicit start_date", () => {

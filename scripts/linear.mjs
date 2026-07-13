@@ -279,6 +279,7 @@ export async function runSync(root, opts = {}) {
       // its id written back — otherwise the next sync would create duplicates for those nodes.
       try {
         for (const op of ops) {
+          try {
           if (op.op === "createProject") {
             const mk = (payload) => gql(`mutation($input: ProjectCreateInput!) { projectCreate(input: $input) { project { id } } }`,
               { input: { ...payload, teamIds: [team.id] } }, io);   // spread: dropping fields here caused live churn (description)
@@ -301,6 +302,13 @@ export async function runSync(root, opts = {}) {
             await withFieldStripRetry((payload) => updateIssue(op.id, payload, io), op.payload, "description", isDocContentErr);
           }
           result.pushed.push(`${op.op}${op.identifier ? ` ${op.identifier}` : op.writeBack ? ` ${op.writeBack.invoke || op.writeBack.id || op.writeBack.pi}` : ""}`);
+          } catch (e) {
+            // Name the failing op — a bare Linear message ("invalid date range") is undebuggable
+            // across a 15-op push. The payload keys narrow WHICH field the API rejected.
+            const who = op.identifier || (op.writeBack && (op.writeBack.invoke || op.writeBack.id || op.writeBack.pi)) || op.projectRef || op.id || "?";
+            e.message = `${op.op} ${who} (fields: ${Object.keys(op.payload || {}).join(",") || "none"}): ${e.message}`;
+            throw e;
+          }
         }
       } finally {
         // one write-back batch per file, through the store's validated path
