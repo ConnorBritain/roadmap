@@ -632,8 +632,21 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
       if (color && (cur.color || "") !== color) changed.color = color;
       if (icon && (cur.icon || "") !== icon) changed.icon = icon;
       if (priority != null && (cur.priority || 0) !== priority) changed.priority = priority;
-      if (startDate && (cur.startDate || null) !== startDate) changed.startDate = startDate;
-      if (targetDate && (cur.targetDate || null) !== targetDate) changed.targetDate = targetDate;
+      // Date-pair guard: the push sends only the CHANGED side, but Linear validates the resulting
+      // PAIR — pushing a targetDate earlier than the tracker's stored startDate (or vice versa) 400s
+      // the WHOLE push with "invalid date range". The live case: a stale estimate projection
+      // (projected_target_date computed days ago, now in the past) colliding with the startDate a
+      // human's In-Progress move stamped tracker-side. Validate the FINAL pair (changed side + the
+      // side that would remain): if it's invalid, skip the changed date — a stale projection is
+      // noise, not truth; the estimate refresh or a pull resolves it. Both-dates-changing pushes the
+      // pair atomically, so a jointly-valid forward move is never blocked.
+      const wantStart = startDate && (cur.startDate || null) !== startDate;
+      const wantTarget = targetDate && (cur.targetDate || null) !== targetDate;
+      const nextStart = wantStart ? startDate : (cur.startDate || null);
+      const nextTarget = wantTarget ? targetDate : (cur.targetDate || null);
+      const pairOk = !(nextStart && nextTarget && nextStart > nextTarget);
+      if (wantStart && pairOk) changed.startDate = startDate;
+      if (wantTarget && pairOk) changed.targetDate = targetDate;
       if (projStatus && (cur.statusId || null) !== projStatus.id) changed.statusId = projStatus.id;
       if (Object.keys(changed).length) ops.push({ op: "updateProject", id: projId, payload: changed });
     }
