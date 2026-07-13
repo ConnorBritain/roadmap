@@ -6,7 +6,9 @@
 
 import {
   flatten, detectCycle, computeWaves, execPlan, sessionsRemaining, resolveGate, isDone, readyNodes, coherenceEnabled,
+  commandLaneMembers, commandLaneActive,
 } from "../lib/graph.mjs";
+import { parseWorktrees } from "../lib/external-state.mjs";
 import { buildPlan } from "../lib/plan.mjs";
 import { nodeWeight, recommendConcurrency, probeDisk } from "../lib/recommend.mjs";
 import { synthesizeBrief, branchFor, worktreeFor, baseRefOf, baseBranchOf, remoteOf, launchPrompt, agentCmdFor, DEFAULT_AGENT_CMD } from "../lib/brief.mjs";
@@ -2763,6 +2765,42 @@ test("active-integrity: flags a stale-active (all-complete) PI and a held-only '
       { id: "s2", title: "y", status: "gated", gated_on: "h", invoke: "ok-s2" } ] },
   ])).warnings.filter((w) => w.startsWith("active-integrity:"));
   eq(real.length, 0, "an active PI with even one runnable slice is fine");
+});
+
+// WHY: the command-lane's membership + active-gate are the foundation the sort-boost AND the
+// concurrency-cap both read; if membership or the date/completion release is wrong, the override
+// either never fires or never lets go — the roadmap stops returning to normal priority after the ship.
+test("commandLaneMembers + commandLaneActive: membership by pi/slices; releases on date-past or all-done", () => {
+  const g = (command_lane, pis) => ({ meta: { schema_version: 1, program: "T", ...(command_lane ? { command_lane } : {}) }, pis });
+  const pis = [
+    { id: "P", title: "P", status: "active", sprints: [
+      { id: "s1", title: "a", status: "active", invoke: "p-a" },
+      { id: "s2", title: "b", status: "complete", invoke: "p-b" } ] },
+    { id: "Q", title: "Q", status: "active", sprints: [{ id: "s1", title: "c", status: "active", invoke: "q-c" }] },
+  ];
+  eq([...commandLaneMembers(g({ objective: "x", pi: "P" }, pis))].sort(), ["p-a", "p-b"], "pi → all its sprint invokes");
+  eq([...commandLaneMembers(g({ objective: "x", slices: ["q-c"] }, pis))], ["q-c"], "slices → the listed invokes");
+  eq(commandLaneMembers(g(null, pis)).size, 0, "no command_lane → empty membership");
+  eq(commandLaneActive(g({ objective: "x", pi: "P", until: "2026-07-15" }, pis), "2026-07-13"), true, "open member + before until → active");
+  eq(commandLaneActive(g({ objective: "x", pi: "P", until: "2026-07-15" }, pis), "2026-07-16"), false, "past until → released");
+  const doneP = [{ id: "P", title: "P", status: "active", sprints: [{ id: "s1", title: "a", status: "complete", invoke: "p-a" }] }];
+  eq(commandLaneActive(g({ objective: "x", pi: "P", until: "2026-12-31" }, doneP), "2026-07-13"), false, "all members complete → released");
+  eq(commandLaneActive(g(null, pis), "2026-07-13"), false, "no command_lane → never active");
+});
+
+// WHY: review-debt backpressure + drift-doctor both count unresolved worktrees off this parse; a wrong
+// branch/merged mapping would hide a stuck worktree (no backpressure) or flag a clean one as debt.
+test("parseWorktrees: maps porcelain to path/branch/isMerged; empty porcelain is guarded", () => {
+  const porcelain = [
+    "worktree /repo\nbranch refs/heads/main",
+    "worktree /wt/a\nbranch refs/heads/feat-a",
+    "worktree /wt/b\nbranch refs/heads/feat-b",
+  ].join("\n\n");
+  const all = parseWorktrees(porcelain, { mergedSet: new Set(["feat-a"]) });
+  eq(all.length, 3, "all worktrees parsed when no wtRoot filter");
+  eq(all.find((w) => w.branch === "feat-a").isMerged, true, "merged branch flagged from the set");
+  eq(all.find((w) => w.branch === "feat-b").isMerged, false, "unmerged branch not flagged");
+  eq(parseWorktrees("", {}).length, 0, "empty porcelain → no worktrees (guarded)");
 });
 
 test("sprawlWarnings: ratio fires above threshold, quiet at it, quiet on an empty window", () => {

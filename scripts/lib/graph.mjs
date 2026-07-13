@@ -253,6 +253,34 @@ export function coherenceEnabled(meta) {
   return !(meta && meta.discipline && meta.discipline.coherence === false);
 }
 
+// Command lane: meta.command_lane = { objective, until: "YYYY-MM-DD", pi?, slices?: [invoke,...] }.
+// A dated objective that outranks generic priority until its date passes OR its slices all complete —
+// so the roadmap makes finishing the most important outcome easier than discovering the next slice.
+// members(): the set of slice invoke keys in the lane (by explicit `slices` and/or every sprint of `pi`).
+export function commandLaneMembers(graph) {
+  const lane = graph && graph.meta && graph.meta.command_lane;
+  if (!lane) return new Set();
+  const members = new Set();
+  if (Array.isArray(lane.slices)) for (const s of lane.slices) members.add(s);
+  if (lane.pi) for (const pi of graph.pis || []) if (pi.id === lane.pi) for (const sp of pi.sprints || []) if (sp.invoke) members.add(sp.invoke);
+  return members;
+}
+
+// active: lane set, not past `until` (YYYY-MM-DD lexical compare), and >=1 member slice still open.
+// Once every member ships (or the date passes) the override releases and ordering returns to normal.
+// `today` is injected (a YYYY-MM-DD string) so the gate is testable and deterministic.
+export function commandLaneActive(graph, today) {
+  const lane = graph && graph.meta && graph.meta.command_lane;
+  if (!lane) return false;
+  if (lane.until && today && String(today) > lane.until) return false;
+  const members = commandLaneMembers(graph);
+  if (!members.size) return false;
+  for (const pi of graph.pis || []) for (const sp of pi.sprints || []) {
+    if (sp.invoke && members.has(sp.invoke) && !isDone(sp.status)) return true;
+  }
+  return false;
+}
+
 // Compute execution waves under a concurrency cap N.
 // Returns { waves: [[node,...],...], held: { onHuman:[node], blocked:[node] } }.
 // opts.coherence (default true): PI-coherence tiebreak in the ready sort — see coherenceEnabled.
