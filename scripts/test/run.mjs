@@ -3030,15 +3030,15 @@ const newReviewGraph = {
   meta: { schema_version: 1, program: "T", discipline: { capture_ratio: 2 } },
   pis: [
     { id: "auth", title: "Auth", status: "active", sprints: [
-      { id: "s1", title: "Login", status: "complete", invoke: "auth-login", prs: ["#12"] },   // shipped
-      { id: "s2", title: "Tokens", status: "blocked", invoke: "auth-tokens", priority: { tier: "P1" } },  // flip + priority
-      { id: "s4", title: "Stuck", status: "gated", gated_on: "Connor", invoke: "auth-stuck" },            // held in both
-      { id: "s5", title: "New A", status: "next", invoke: "auth-new-a" },                                  // added
+      { id: "s1", title: "Login", status: "complete", invoke: "auth-login", prs: ["#12"], est_sessions: 5 },   // shipped — est excluded (done)
+      { id: "s2", title: "Tokens", status: "blocked", invoke: "auth-tokens", priority: { tier: "P1" }, est_sessions: 2 },  // flip + priority
+      { id: "s4", title: "Stuck", status: "gated", gated_on: "Connor", invoke: "auth-stuck" },            // held in both — no est (null-safe 0)
+      { id: "s5", title: "New A", status: "next", invoke: "auth-new-a", est_sessions: 3 },                 // added
       { id: "s6", title: "New B", status: "next", invoke: "auth-new-b" },                                  // added
       { id: "s7", title: "New C", status: "next", invoke: "auth-new-c" },                                  // added
     ]},                                                                                                     // s3 pruned
     { id: "billing", title: "Billing", status: "scheduled", sprints: [
-      { id: "s1", title: "Seed", status: "scheduled", invoke: "billing-seed" },                            // new PI
+      { id: "s1", title: "Seed", status: "scheduled", invoke: "billing-seed", est_sessions: 1 },           // new PI
     ]},
   ],
 };
@@ -3093,6 +3093,29 @@ test("reviewDigest composes counts, reuses sprawlWarnings verbatim, and counts P
     { id: "c", sprints: [{ status: "next" }] },
     { id: "d", sprints: [{ status: "complete" }] },
   ]}), 2, "started+open counts; untouched and fully-done don't");
+});
+
+// WHY: a closure budget that only counts PI births hides consolidation — a killed or merged-away
+// PI must register as a DEATH, or the review over-reports open scope and finishing looks harder
+// than it is. removedPis must be symmetric to addedPis, not silently zero.
+test("graphDiff detects removedPis when a PI disappears (symmetric to addedPis)", () => {
+  const gd = graphDiff(newReviewGraph, oldReviewGraph);   // billing present in old-arg, gone in new-arg
+  eq(gd.removedPis, [{ id: "billing", title: "Billing" }], "billing died");
+  eq(gd.addedPis, [], "no PI born in this direction");
+  eq(graphDiff(oldReviewGraph, newReviewGraph).removedPis, [], "forward window: billing born, none died");
+});
+
+// WHY: the closure budget's "open sessions remaining" is the finish-line number — it must EXCLUDE
+// already-shipped slices and survive slices carrying no estimate. Counting a done slice inflates
+// the runway; NaN-ing on a null est_sessions poisons the whole sum. Either makes finishing look
+// unreachable when it isn't.
+test("reviewDigest.estOpenSessions sums only non-done est_sessions (null-safe); ratio unchanged", () => {
+  const gd = graphDiff(oldReviewGraph, newReviewGraph);
+  const bd = backlogDiff(null, { meta: { schema_version: 1 }, items: [{ id: "b1", title: "Cap", kind: "bug", status: "open" }] });
+  const d = reviewDigest({ gd, bd, graph: newReviewGraph });
+  eq(d.estOpenSessions, 6, "s2(2)+s5(3)+billing(1)=6; done s1(5) excluded, sprints w/o est count 0");
+  eq(d.removedPis, [], "nothing died this window");
+  eq(d.netGrowth.ratio, 5, "capture-to-ship ratio unchanged by the new rollup");
 });
 
 // WHY: the CLI is the anchor→git-show→digest wiring /debrief trusts — one real-git test
