@@ -33,10 +33,11 @@ const hasCap = has("--cap");
 const capVal = hasCap ? Number(val("--cap", "")) : null;
 
 const graph = loadGraph(inPath);
+const today = new Date().toISOString().slice(0, 10);   // one clock read for the whole run (plan + banner)
 
 let plan;
 try {
-  plan = buildPlan(graph, { cap: hasCap && Number.isFinite(capVal) ? capVal : undefined, useFree, reviewCeiling });
+  plan = buildPlan(graph, { cap: hasCap && Number.isFinite(capVal) ? capVal : undefined, useFree, reviewCeiling, today });
 } catch (e) {
   console.error(`✗ ${e.message}`);
   process.exit(1);
@@ -48,9 +49,8 @@ if (asJson) {
 }
 
 // ── human plan ─────────────────────────────────────────────────────────────
-// Command-lane banner (IO layer — a real clock is fine here). Prints only while the lane is armed:
-// past `until` or once every member ships, commandLaneActive goes false and the banner disappears.
-const today = new Date().toISOString().slice(0, 10);
+// Command-lane banner. Prints only while the lane is armed: past `until` or once every member ships,
+// commandLaneActive goes false and the banner disappears. Reuses the single `today` computed above.
 if (commandLaneActive(graph, today)) {
   const lane = graph.meta.command_lane;
   const members = commandLaneMembers(graph);

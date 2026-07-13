@@ -2,7 +2,7 @@
 // No IO. validate.mjs prints + exits on the result; the MCP `validate` read tool returns it.
 // Structural checks + dependency resolution (via flatten) + cycle detection.
 
-import { flatten, detectCycle, STATUS, HELD_STATUSES } from "./graph.mjs";
+import { flatten, detectCycle, STATUS, HELD_STATUSES, validateCommandLane } from "./graph.mjs";
 import { validateExecution } from "./execution.mjs";
 import { validatePriority } from "./priority.mjs";
 import { validateLinearConfig } from "./linear-core.mjs";
@@ -88,29 +88,11 @@ export function validateGraph(graph) {
     }
   }
 
-  // Optional meta.command_lane: a dated finishing override (see graph.mjs commandLaneMembers/Active).
-  // SHAPE only — the pure validator has no clock, so expiry vs `until` is checked at PLAN time.
-  // A dangling pi/slice ref only WARNS: the lane would look armed but boost nothing.
-  if (meta.command_lane != null) {
-    const lane = meta.command_lane;
-    if (typeof lane !== "object" || Array.isArray(lane)) {
-      err("meta.command_lane must be a mapping { objective, until, pi?, slices? }");
-    } else {
-      if (typeof lane.objective !== "string" || !lane.objective) err("meta.command_lane.objective must be a non-empty string");
-      if (typeof lane.until !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(lane.until)) err(`meta.command_lane.until must be YYYY-MM-DD (got ${JSON.stringify(lane.until)})`);
-      const piIds = new Set((graph.pis || []).map((p) => p.id));
-      const invokeKeys = new Set();
-      for (const p of graph.pis || []) for (const s of p.sprints || []) if (s.invoke) invokeKeys.add(s.invoke);
-      if (lane.pi != null) {
-        if (typeof lane.pi !== "string") err("meta.command_lane.pi must be a PI id string");
-        else if (!piIds.has(lane.pi)) warn(`meta.command_lane.pi "${lane.pi}" matches no PI — the lane covers nothing via pi`);
-      }
-      if (lane.slices != null) {
-        if (!Array.isArray(lane.slices)) err("meta.command_lane.slices must be an array of invoke keys");
-        else for (const s of lane.slices) if (!invokeKeys.has(s)) warn(`meta.command_lane.slices: "${s}" resolves to no slice invoke`);
-      }
-    }
-  }
+  // Optional meta.command_lane: a dated finishing override, SHAPE-validated in graph.mjs beside the
+  // lane helpers (expiry vs `until` is a PLAN-time concern — the pure validator has no clock).
+  const cl = validateCommandLane(graph);
+  for (const e of cl.errors) err(e);
+  for (const w of cl.warnings) warn(w);
 
   // Optional meta.linear + per-PI overrides + sprint linear fields. Absent → no-op.
   const lin = validateLinearConfig(graph);

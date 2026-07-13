@@ -3,11 +3,11 @@
 // PRs, open PRs, fanout worktrees, the rendered-vs-disk doc diff, and the Linear pull deltas,
 // then this classifies them into report sections. It REUSES the existing detection brains
 // (findUnrecordedMerges, prPhase/matchesRoadmapBranches, validateGraph) rather than re-deriving
-// them, so doctor can never disagree with /sync, the PR watcher, or /validate.
+// them, so doctor can never disagree with /sync or the PR watcher. Structural (static) checks are
+// NOT drift — they're `roadmap validate`'s job — so they are deliberately not folded in here.
 
 import { findUnrecordedMerges } from "./sync-core.mjs";
-import { prPhase, matchesRoadmapBranches } from "./pr-watch-core.mjs";
-import { validateGraph } from "./validate-core.mjs";
+import { prPhase, matchesRoadmapBranches, checksOf } from "./pr-watch-core.mjs";
 
 // Open-PR phases that count as drift — a PR sitting in one of these needs a human/agent nudge.
 // "ready" (mergeable) and the transient "checks-pending" are NOT drift; merged/closed aren't open.
@@ -44,8 +44,11 @@ export function doctorReport({ graph, mergedPrs = [], allPrs = [], worktrees = [
 
   // 4. OPEN-PR REALITY — roadmap-branch PRs stuck in a drift phase (draft/conflicts/failing).
   //    allPrs may be null (gh absent) — external-state signals "unknown" that way; treat as none.
+  //    Normalize the raw rollup → `checks` via checksOf FIRST (the same step watch-prs does): prPhase
+  //    keys off pr.checks, so without this the "checks-failing" signal could never fire.
   add("Open PRs needing attention",
     (allPrs || [])
+      .map((pr) => ({ ...pr, checks: checksOf(pr) }))
       .filter((pr) => matchesRoadmapBranches(pr.headRefName, graph) && OPEN_PR_DRIFT.has(prPhase(pr)))
       .map((pr) => `PR #${pr.number} (${pr.headRefName}) — ${prPhase(pr)}.`));
 
@@ -54,13 +57,6 @@ export function doctorReport({ graph, mergedPrs = [], allPrs = [], worktrees = [
     worktrees
       .filter((w) => !w.isMerged || w.dirty)
       .map((w) => `${w.branch || "(detached)"} — ${w.isMerged ? "merged" : "UNMERGED"}, ${w.dirty ? "dirty" : "clean"} (${w.path}).`));
-
-  // 6. STRUCTURAL — validate the graph; surface its own error/warning findings.
-  const { errors, warnings } = validateGraph(graph);
-  add("Structural validation", [
-    ...errors.map((e) => `error: ${e}`),
-    ...warnings.map((w) => `warning: ${w}`),
-  ]);
 
   const driftCount = sections.reduce((n, s) => n + s.items.length, 0);
   return { sections, driftCount };

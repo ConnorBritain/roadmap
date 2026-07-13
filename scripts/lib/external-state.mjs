@@ -9,11 +9,9 @@ import { resolve, sep } from "node:path";
 
 const git = (root, ...a) => spawnSync("git", a, { cwd: root, encoding: "utf8" });
 
-// gh on PATH + runnable?
-export function ghAvailable() {
-  try { return spawnSync("gh", ["--version"], { encoding: "utf8" }).status === 0; }
-  catch { return false; }
-}
+// TODO(dedupe): hooks/session-start.mjs, scripts/watch-prs.mjs, and scripts/cleanup.mjs still carry
+// their own inline copies of these gatherers (pre-dating this module). Fold them onto this one home
+// in a follow-up so there's a single implementation. Tracked in the finishing-discipline backlog.
 
 // Merged PRs: [{ number, headRefName, title, body }]. [] on any failure. 5s cap.
 export function mergedPrs(root) {

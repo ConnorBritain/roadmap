@@ -4295,6 +4295,20 @@ test("doctorReport surfaces each drift class as its own section and counts them"
   eq(report.driftCount, 5, "one signal per class");
 });
 
+// WHY: prPhase keys off the NORMALIZED `checks` field, not the raw statusCheckRollup — so doctor must
+// run each PR through checksOf first, or the "checks-failing" signal can NEVER fire and a red-CI PR
+// reads as "ready" (the arch-review blocker). A failing non-draft PR must surface as checks-failing.
+test("doctorReport normalizes the rollup so a non-draft PR with FAILING checks surfaces", () => {
+  const branch = branchFor(flatten(docG).nodes[0], docG);
+  const report = doctorReport({
+    graph: docG,
+    allPrs: [{ number: 11, headRefName: branch, state: "OPEN", isDraft: false, mergeStateStatus: "CLEAN",
+      statusCheckRollup: [{ conclusion: "FAILURE" }] }],
+  });
+  const sec = report.sections.find((s) => s.title === "Open PRs needing attention");
+  ok(sec && sec.items[0].includes("checks-failing"), "red-CI non-draft PR lands as checks-failing, not silently 'ready'");
+});
+
 // WHY: a clean roadmap must read as clean — a doctor that cries drift on a reconciled repo trains
 // the human to ignore it, and the one real signal later gets ignored with the noise.
 test("doctorReport reports zero drift for a reconciled roadmap", () => {

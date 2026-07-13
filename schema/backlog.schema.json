@@ -58,7 +58,19 @@
         "dispatch_tier": { "type": "string", "description": "Cloud-dispatch routine tier for this item (e.g. 'fable'). Dispatch resolves routines[\"<owner/repo>#<tier>\"] (or \"default#<tier>\") from ~/.claude-routines.json and THROWS if the tier isn't configured — never a silent fallback to the standard routine. Absent: the standard repo routine. CLI --tier overrides per launch." },
         "prs": { "type": "array", "items": { "type": "string" } },
         "completed_on": { "type": "string", "description": "ISO date the item closed (done/dropped)" },
-        "promoted_to": { "type": "string", "description": "pi-id/sprint-id nodeKey written by promote; the back-link to the roadmap" }
+        "promoted_to": { "type": "string", "description": "pi-id/sprint-id nodeKey written by promote; the back-link to the roadmap" },
+        "receipts": {
+          "type": "object", "additionalProperties": false,
+          "description": "Optional completion evidence — same shape as a slice's receipts; each value is a PR#, path, url, or note. Carried by grab-launched work.",
+          "properties": {
+            "build": { "type": "string" },
+            "test": { "type": "string" },
+            "clone_install": { "type": "string" },
+            "screenshot": { "type": "string" },
+            "signoff": { "type": "string" },
+            "publish": { "type": "string" }
+          }
+        }
       }
     }
   }

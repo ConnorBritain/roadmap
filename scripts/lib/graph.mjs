@@ -283,6 +283,34 @@ export function commandLaneActive(graph, today) {
   return false;
 }
 
+// SHAPE validation for meta.command_lane (called by validate-core, living beside the lane helpers the
+// way validatePriority lives beside comparePriority). Errors on a malformed lane; WARNS on a dangling
+// pi/slice ref — the lane would look armed but boost nothing. No clock here: expiry vs `until` is a
+// PLAN-time concern. Returns { errors, warnings }; empty when no command_lane is set.
+export function validateCommandLane(graph) {
+  const errors = [], warnings = [];
+  const lane = graph && graph.meta && graph.meta.command_lane;
+  if (lane == null) return { errors, warnings };
+  if (typeof lane !== "object" || Array.isArray(lane)) {
+    errors.push("meta.command_lane must be a mapping { objective, until, pi?, slices? }");
+    return { errors, warnings };
+  }
+  if (typeof lane.objective !== "string" || !lane.objective) errors.push("meta.command_lane.objective must be a non-empty string");
+  if (typeof lane.until !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(lane.until)) errors.push(`meta.command_lane.until must be YYYY-MM-DD (got ${JSON.stringify(lane.until)})`);
+  const piIds = new Set((graph.pis || []).map((p) => p.id));
+  const invokeKeys = new Set();
+  for (const p of graph.pis || []) for (const s of p.sprints || []) if (s.invoke) invokeKeys.add(s.invoke);
+  if (lane.pi != null) {
+    if (typeof lane.pi !== "string") errors.push("meta.command_lane.pi must be a PI id string");
+    else if (!piIds.has(lane.pi)) warnings.push(`meta.command_lane.pi "${lane.pi}" matches no PI — the lane covers nothing via pi`);
+  }
+  if (lane.slices != null) {
+    if (!Array.isArray(lane.slices)) errors.push("meta.command_lane.slices must be an array of invoke keys");
+    else for (const s of lane.slices) if (!invokeKeys.has(s)) warnings.push(`meta.command_lane.slices: "${s}" resolves to no slice invoke`);
+  }
+  return { errors, warnings };
+}
+
 // Compute execution waves under a concurrency cap N.
 // Returns { waves: [[node,...],...], held: { onHuman:[node], blocked:[node] } }.
 // opts.coherence (default true): PI-coherence tiebreak in the ready sort — see coherenceEnabled.
