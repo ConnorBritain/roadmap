@@ -6,7 +6,9 @@
 
 import {
   flatten, detectCycle, computeWaves, execPlan, sessionsRemaining, resolveGate, isDone, readyNodes, coherenceEnabled,
+  commandLaneMembers, commandLaneActive,
 } from "../lib/graph.mjs";
+import { parseWorktrees } from "../lib/external-state.mjs";
 import { buildPlan } from "../lib/plan.mjs";
 import { nodeWeight, recommendConcurrency, probeDisk } from "../lib/recommend.mjs";
 import { synthesizeBrief, branchFor, worktreeFor, baseRefOf, baseBranchOf, remoteOf, launchPrompt, agentCmdFor, DEFAULT_AGENT_CMD } from "../lib/brief.mjs";
@@ -2719,6 +2721,87 @@ test("composition lint: one aggregated warning under pi_min_slices; complete PIs
   ok(!warns[0].includes("full"), "PIs at/over the floor don't warn");
   eq(validateGraph(g(null)).warnings.filter((w) => w.startsWith("composition:")).length, 0, "absent knob → lint off (no warning wall on unopted repos)");
   ok(validateGraph(g({ pi_min_slices: 0 })).errors.some((e) => e.includes("pi_min_slices")), "0 rejected — a bad knob must not silently disable the guardrail");
+});
+
+// WHY: too many concurrently-active PIs is how a portfolio stops finishing and starts sprawling. The
+// cap turns "finish before you start" into a checkable rule — the governing principle in one knob.
+test("WIP cap: warns when active PIs exceed active_pi_cap; off when absent; only active counts; 0 rejected", () => {
+  const g = (discipline) => ({ meta: { schema_version: 1, program: "T", ...(discipline ? { discipline } : {}) }, pis: [
+    { id: "a1", title: "A1", status: "active", sprints: [{ id: "s", title: "x", status: "active", invoke: "a1-s" }] },
+    { id: "a2", title: "A2", status: "active", sprints: [{ id: "s", title: "x", status: "active", invoke: "a2-s" }] },
+    { id: "a3", title: "A3", status: "active", sprints: [{ id: "s", title: "x", status: "active", invoke: "a3-s" }] },
+    { id: "done", title: "D", status: "complete", sprints: [{ id: "s", title: "x", status: "complete", invoke: "d-s" }] },
+    { id: "sched", title: "S", status: "scheduled", sprints: [{ id: "s", title: "x", status: "scheduled", invoke: "sc-s" }] },
+  ]});
+  const warns = validateGraph(g({ active_pi_cap: 2 })).warnings.filter((w) => w.startsWith("WIP:"));
+  eq(warns.length, 1, "one aggregated WIP line");
+  ok(warns[0].includes("3 active PI(s) exceed the cap of 2") && warns[0].includes("a1") && warns[0].includes("a3"), "names the active PIs over the cap");
+  ok(!warns[0].includes("done") && !warns[0].includes("sched"), "only active status counts against the cap");
+  eq(validateGraph(g({ active_pi_cap: 3 })).warnings.filter((w) => w.startsWith("WIP:")).length, 0, "at the cap → quiet");
+  eq(validateGraph(g(null)).warnings.filter((w) => w.startsWith("WIP:")).length, 0, "absent knob → off (no wall on unopted repos)");
+  ok(validateGraph(g({ active_pi_cap: 0 })).errors.some((e) => e.includes("active_pi_cap")), "0 rejected — a bad knob must not silently disable the guardrail");
+});
+
+// WHY: an "active" PI with no runnable work makes the board lie about what's in flight and the
+// concurrency planner over-recommend — the exact failure that dispatched sessions while a human-gated
+// deadline lane sat "active". Both stale-active and held-only-active must surface; real work is spared.
+test("active-integrity: flags a stale-active (all-complete) PI and a held-only 'active' lane; spares real work", () => {
+  const g = (pis) => ({ meta: { schema_version: 1, program: "T" }, pis });
+  const stale = validateGraph(g([
+    { id: "stale", title: "S", status: "active", sprints: [{ id: "s", title: "x", status: "complete", invoke: "stale-s" }] },
+  ])).warnings.filter((w) => w.startsWith("active-integrity:"));
+  eq(stale.length, 1, "stale-active flagged");
+  ok(stale[0].includes("stale") && stale[0].includes("every sprint is complete"), "names the PI + the rollup miss");
+  const lane = validateGraph(g([
+    { id: "lane", title: "L", status: "active", sprints: [
+      { id: "s1", title: "x", status: "gated", gated_on: "human", invoke: "lane-s1" },
+      { id: "s2", title: "y", status: "complete", invoke: "lane-s2" },
+      { id: "s3", title: "z", status: "optionality", invoke: "lane-s3" } ] },
+  ])).warnings.filter((w) => w.startsWith("active-integrity:"));
+  eq(lane.length, 1, "held-only active lane flagged");
+  ok(lane[0].includes("no agent-runnable slice") && lane[0].includes("1 held") && lane[0].includes("1 optionality"), "counts held + parked");
+  const real = validateGraph(g([
+    { id: "ok", title: "O", status: "active", sprints: [
+      { id: "s1", title: "x", status: "active", invoke: "ok-s1" },
+      { id: "s2", title: "y", status: "gated", gated_on: "h", invoke: "ok-s2" } ] },
+  ])).warnings.filter((w) => w.startsWith("active-integrity:"));
+  eq(real.length, 0, "an active PI with even one runnable slice is fine");
+});
+
+// WHY: the command-lane's membership + active-gate are the foundation the sort-boost AND the
+// concurrency-cap both read; if membership or the date/completion release is wrong, the override
+// either never fires or never lets go — the roadmap stops returning to normal priority after the ship.
+test("commandLaneMembers + commandLaneActive: membership by pi/slices; releases on date-past or all-done", () => {
+  const g = (command_lane, pis) => ({ meta: { schema_version: 1, program: "T", ...(command_lane ? { command_lane } : {}) }, pis });
+  const pis = [
+    { id: "P", title: "P", status: "active", sprints: [
+      { id: "s1", title: "a", status: "active", invoke: "p-a" },
+      { id: "s2", title: "b", status: "complete", invoke: "p-b" } ] },
+    { id: "Q", title: "Q", status: "active", sprints: [{ id: "s1", title: "c", status: "active", invoke: "q-c" }] },
+  ];
+  eq([...commandLaneMembers(g({ objective: "x", pi: "P" }, pis))].sort(), ["p-a", "p-b"], "pi → all its sprint invokes");
+  eq([...commandLaneMembers(g({ objective: "x", slices: ["q-c"] }, pis))], ["q-c"], "slices → the listed invokes");
+  eq(commandLaneMembers(g(null, pis)).size, 0, "no command_lane → empty membership");
+  eq(commandLaneActive(g({ objective: "x", pi: "P", until: "2026-07-15" }, pis), "2026-07-13"), true, "open member + before until → active");
+  eq(commandLaneActive(g({ objective: "x", pi: "P", until: "2026-07-15" }, pis), "2026-07-16"), false, "past until → released");
+  const doneP = [{ id: "P", title: "P", status: "active", sprints: [{ id: "s1", title: "a", status: "complete", invoke: "p-a" }] }];
+  eq(commandLaneActive(g({ objective: "x", pi: "P", until: "2026-12-31" }, doneP), "2026-07-13"), false, "all members complete → released");
+  eq(commandLaneActive(g(null, pis), "2026-07-13"), false, "no command_lane → never active");
+});
+
+// WHY: review-debt backpressure + drift-doctor both count unresolved worktrees off this parse; a wrong
+// branch/merged mapping would hide a stuck worktree (no backpressure) or flag a clean one as debt.
+test("parseWorktrees: maps porcelain to path/branch/isMerged; empty porcelain is guarded", () => {
+  const porcelain = [
+    "worktree /repo\nbranch refs/heads/main",
+    "worktree /wt/a\nbranch refs/heads/feat-a",
+    "worktree /wt/b\nbranch refs/heads/feat-b",
+  ].join("\n\n");
+  const all = parseWorktrees(porcelain, { mergedSet: new Set(["feat-a"]) });
+  eq(all.length, 3, "all worktrees parsed when no wtRoot filter");
+  eq(all.find((w) => w.branch === "feat-a").isMerged, true, "merged branch flagged from the set");
+  eq(all.find((w) => w.branch === "feat-b").isMerged, false, "unmerged branch not flagged");
+  eq(parseWorktrees("", {}).length, 0, "empty porcelain → no worktrees (guarded)");
 });
 
 test("sprawlWarnings: ratio fires above threshold, quiet at it, quiet on an empty window", () => {
