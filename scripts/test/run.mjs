@@ -38,7 +38,7 @@ import { mutateRoadmap, mutateBacklog, mutateBoth } from "../lib/store.mjs";
 import {
   normalizeLinearConfig, effectiveGranularity, effectiveVerbosity, linearState, checkPiOverrideAck,
   resolvePushState, resolveProjectStatus, pullStatusFor, priorityToLinear, LINEAR_TO_PRIORITY,
-  issueDescription, machineFooter, buildPushPlan, buildPullProposals, validateLinearConfig, holdsFor,
+  issueDescription, machineFooter, buildPushPlan, buildPullProposals, validateLinearConfig, holdsFor, normalizeTitle,
   desiredLabels, projectDescription, projectSubtitleRaw, projectName, projectContent, normalizeLinearMarkdown, withinHistory, staleKeys,
   projectColorFor, projectIconFor, MARKER_LABEL, PLATE_LABEL, LINEAR_PROJECT_NAME_MAX, LINEAR_PROJECT_DESC_MAX,
   initiativePlan, initiativeStyle, startStampTargets, milestonePlan, HELD_STATUSES, cyclePlan,
@@ -1497,6 +1497,44 @@ test("buildPushPlan is idempotent: matching snapshot → only the missing-issue 
   eq(upd.id, "uuid-1", "update targets the Linear uuid");
 });
 
+// WHY: the 2026-07-11 double-sync created every issue TWICE — run 1's PID write-back was lost, so run 2
+// saw !node.linear and re-created all of them (PID-489/491-497 orphaned by hand). Adopting an unambiguous
+// same-title twin instead of blindly creating is THE guard; if it regresses, a lost write-back silently
+// duplicates the whole board again.
+test("buildPushPlan adopts an unambiguous same-title twin instead of creating a duplicate", () => {
+  const cfg = normalizeLinearConfig(pushGraph().meta);
+  const existing = { ...SNAP(), byTitle: { [normalizeTitle("Tokens")]: [{ id: "uuid-tok", identifier: "PID-77" }] } };
+  const plan = buildPushPlan({ graph: pushGraph(), backlog: null, cfg, teamStates: L_STATES, existing });
+  ok(!plan.ops.some((o) => o.op === "createIssue"), "no duplicate create for the twinned slice");
+  const adopt = plan.ops.find((o) => o.op === "adoptIssue");
+  ok(adopt, "the unmapped slice adopts its existing twin");
+  eq(adopt.id, "uuid-tok", "adopt targets the twin's Linear uuid");
+  eq(adopt.identifier, "PID-77", "adopt carries the twin's identifier (write-back + per-op error context)");
+  eq(adopt.writeBack, { kind: "sprint", invoke: "auth-tokens" }, "adopt writes the identifier back onto the slice");
+  eq(adopt.payload.title, "Tokens", "adopt reconciles the twin to our projection (title/desc/state/…)");
+});
+
+// WHY: two issues share a title → we cannot know WHICH is the real twin; adopting one would hijack an
+// unrelated issue. Ambiguity MUST fall back to create — the guard never guesses.
+test("buildPushPlan does not adopt an ambiguous (>1) same-title cluster — falls back to create", () => {
+  const cfg = normalizeLinearConfig(pushGraph().meta);
+  const existing = { ...SNAP(), byTitle: { [normalizeTitle("Tokens")]: [
+    { id: "uuid-a", identifier: "PID-77" }, { id: "uuid-b", identifier: "PID-78" } ] } };
+  const plan = buildPushPlan({ graph: pushGraph(), backlog: null, cfg, teamStates: L_STATES, existing });
+  ok(!plan.ops.some((o) => o.op === "adoptIssue"), "ambiguous cluster is never adopted");
+  eq(plan.ops.map((o) => o.op), ["createIssue"], "falls back to the ordinary create");
+});
+
+// WHY: a genuinely-new slice (title matches no twin) must still create — the guard must not suppress
+// legitimate creates or the board would never grow.
+test("buildPushPlan still creates when no twin shares the title (regression guard)", () => {
+  const cfg = normalizeLinearConfig(pushGraph().meta);
+  const existing = { ...SNAP(), byTitle: { [normalizeTitle("Something else")]: [{ id: "uuid-z", identifier: "PID-99" }] } };
+  const plan = buildPushPlan({ graph: pushGraph(), backlog: null, cfg, teamStates: L_STATES, existing });
+  ok(!plan.ops.some((o) => o.op === "adoptIssue"), "no twin → no adopt");
+  eq(plan.ops.map((o) => o.op), ["createIssue"], "ordinary create for the unmapped slice");
+});
+
 // ── linear-core: per-PI verbosity ─────────────────────────────────────────────
 // WHY: a silently-ignored per-PI verbosity override makes the board lie about detail level —
 // the user quiets a noisy PI to title (or richens an active one to full) and nothing changes.
@@ -2364,7 +2402,7 @@ function linearRepo() {
     `meta:\n  schema_version: 1\n  program: T\n  linear:\n    team: ENG\n    pull: propose\n    watch:\n      - { team: PUB, project: Submit an issue, kind: bug, priority: {tier: P3} }\npis:\n  - id: auth\n    title: Authentication\n    status: active\n    sprints:\n      - { id: s1, title: Login, status: active, invoke: auth-login }\n`, "utf8");
   return root;
 }
-function fakeLinear({ failOn = null, snapshot = {}, projectSnapshot = {}, issueComments = {}, projectMilestones = {}, inboundByTeam = null, teamLabels = [], teamProjects = [], existingViews = [], existingInitiatives = [], projectStatuses = null, activeCycle = null } = {}) {
+function fakeLinear({ failOn = null, snapshot = {}, projectSnapshot = {}, issueComments = {}, projectMilestones = {}, inboundByTeam = null, teamLabels = [], teamProjects = [], existingViews = [], existingInitiatives = [], projectStatuses = null, activeCycle = null, titleIndexIssues = [] } = {}) {
   const calls = [];
   const createdIssues = {};   // identifier → snapshot shape, so later issue(id:) lookups resolve
   const createdProjects = {};   // id → snapshot shape, so a second run's project(id:) drift diff sees what create pushed
@@ -2497,6 +2535,9 @@ function fakeLinear({ failOn = null, snapshot = {}, projectSnapshot = {}, issueC
         if (inp.labelIds) rec.labels = { nodes: inp.labelIds.map((id) => ({ id })) };
       }
       return respond({ issueUpdate: { issue: { id: variables.id } } });
+    }
+    if (query.includes("issues(filter") && query.includes("pageInfo")) {   // dedupe-by-title index: paginated team scan of live issues
+      return respond({ issues: { nodes: titleIndexIssues, pageInfo: { hasNextPage: false, endCursor: null } } });
     }
     if (query.includes("issues(filter")) {
       const team = variables.filter.team.key.eq;

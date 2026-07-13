@@ -23,7 +23,7 @@ import { noteBody } from "./lib/journal-core.mjs";
 import {
   normalizeLinearConfig, linearState, linearStatusLine, buildPushPlan, buildPullProposals, holdsFor,
   provisionPlan, manualViewChecklist, agentGuidanceText, dispatchGuidance, initiativePlan, initiativeStyle,
-  startStampTargets, milestonePlan, cyclePlan, cycleCandidates, CYCLE_STATUSES, staleKeys,
+  startStampTargets, milestonePlan, cyclePlan, cycleCandidates, CYCLE_STATUSES, staleKeys, normalizeTitle,
 } from "./lib/linear-core.mjs";
 
 const ENDPOINT = "https://api.linear.app/graphql";
@@ -125,6 +125,32 @@ async function fetchIssueSnapshot(identifiers, io) {
   return issues;
 }
 
+// Title index of the team's LIVE issues, EXCLUDING the ones we already own (mapped — those go through
+// the snapshot path). Keyed normalizedTitle → [{ id, identifier }] (an ARRAY so a same-title cluster is
+// detectable and never blind-adopted). This is the dedupe-by-title basis: a node whose PID write-back
+// was lost (the 2026-07-11 double-sync) finds its orphaned twin here so the push adopts it instead of
+// creating a duplicate. Dead issues (canceled type, or the "Duplicate" workflow state) are never adopted.
+async function fetchOpenIssueTitleIndex(teamKey, mapped, io) {
+  const owned = new Set(mapped);
+  const byTitle = {};
+  let after = null;
+  for (let page = 0; page < 40; page++) {   // ponytail: 40×250 = 10k open-issue ceiling; a bigger team re-tunes the page cap
+    const data = await gql(
+      `query($filter: IssueFilter, $after: String) { issues(filter: $filter, first: 250, after: $after) { nodes {
+         id identifier title state { type name } } pageInfo { hasNextPage endCursor } } }`,
+      { filter: { team: { key: { eq: teamKey } } }, after }, io);
+    for (const n of data.issues.nodes) {
+      if (owned.has(n.identifier)) continue;   // we already own it (mapped) — not an adoptable twin
+      if (n.state && (n.state.type === "canceled" || n.state.name === "Duplicate")) continue;   // dead — never adopt
+      const key = normalizeTitle(n.title);
+      (byTitle[key] || (byTitle[key] = [])).push({ id: n.id, identifier: n.identifier });
+    }
+    if (!data.issues.pageInfo.hasNextPage) break;
+    after = data.issues.pageInfo.endCursor;
+  }
+  return byTitle;
+}
+
 async function fetchInbound(cfg, since, io) {
   const sources = [{ team: cfg.team, project: null }, ...cfg.watch];
   const out = [];
@@ -157,7 +183,8 @@ export async function runSync(root, opts = {}) {
   const backlog = loadBacklog(root);
   const team = await fetchTeamBundle(cfg.team, io, cfg.cycles === "on");
   const mapped = collectIdentifiers(graph, backlog);
-  const existing = { issues: await fetchIssueSnapshot(mapped, io), projects: await fetchProjectSnapshot(mappedProjectIds(graph), io) };
+  const existing = { issues: await fetchIssueSnapshot(mapped, io), projects: await fetchProjectSnapshot(mappedProjectIds(graph), io),
+    byTitle: await fetchOpenIssueTitleIndex(cfg.team, mapped, io) };
   const docsUrl = repoDocsUrl(root, graph);
 
   const result = { pushed: [], proposals: null, cursorAdvanced: false, dry: !!opts.dry };
@@ -300,6 +327,13 @@ export async function runSync(root, opts = {}) {
             else writeBacks.items.push({ id: op.writeBack.id, identifier });
           } else if (op.op === "updateIssue") {
             await withFieldStripRetry((payload) => updateIssue(op.id, payload, io), op.payload, "description", isDocContentErr);
+          } else if (op.op === "adoptIssue") {
+            // A same-title twin exists (its PID write-back was lost) — reconcile it to our projection and
+            // CLAIM it via write-back, exactly like createIssue, instead of minting a duplicate. Same
+            // description strip-retry the mapped-update path uses.
+            if (Object.keys(op.payload || {}).length) await withFieldStripRetry((payload) => updateIssue(op.id, payload, io), op.payload, "description", isDocContentErr);
+            if (op.writeBack.kind === "sprint") writeBacks.sprints.push({ invoke: op.writeBack.invoke, identifier: op.identifier });
+            else writeBacks.items.push({ id: op.writeBack.id, identifier: op.identifier });
           }
           result.pushed.push(`${op.op}${op.identifier ? ` ${op.identifier}` : op.writeBack ? ` ${op.writeBack.invoke || op.writeBack.id || op.writeBack.pi}` : ""}`);
           } catch (e) {

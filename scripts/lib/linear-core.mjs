@@ -326,6 +326,11 @@ export const normalizeLinearMarkdown = (s) =>
     // single-underscore italics left alone until observed live.
     .replace(/__([^_]+)__/g, "**$1**");
 
+// Title comparison key for the dedupe-by-title guard. ONE normalizer, used both where the index
+// is built (linear.mjs) and where it's looked up (buildPushPlan) — a mismatch would silently miss
+// a twin and re-create the duplicate this exists to prevent.
+export const normalizeTitle = (t) => String(t || "").trim().toLowerCase().replace(/\s+/g, " ");
+
 // A "." that ends a common abbreviation is not a sentence end — without this the derived
 // subtitle for "…seeds every node DB (incl. Flock…)" ships as the fragment "…DB (incl."
 // (live-hit on a real board: reads like truncation, fires no over-length warning).
@@ -581,6 +586,7 @@ export function dispatchGuidance() {
 export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsUrl = null, holds = new Set(), labels = {}, viewerId = null, projectStatuses = null, now = null, stale = new Set() }) {
   const ops = [];
   const missing = new Set();
+  const claimed = new Set();   // twin identifiers adopted this run — never adopt one twin for two nodes
   const model = flatten(graph);
   const initiativeOrder = initiativePlan(graph).initiatives;   // first-seen order → stable color/icon index
   // "the plate" → My Issues (assignee=you). null when the feature is off. plateLabelId lets us tell an
@@ -722,11 +728,22 @@ export function buildPushPlan({ graph, backlog, cfg, teamStates, existing, docsU
     if (!node.linear) {
       const payload = { ...projection };
       if (!labelIds.length) delete payload.labelIds;
+      const writeBack = target.type === "slice" ? { kind: "sprint", invoke: target.key } : { kind: "item", id: target.key };
+      // Dedupe-by-title: a node whose PID write-back was LOST (2026-07-11 double-sync created every
+      // issue twice) still has its orphaned twin in Linear. Adopt it instead of minting a duplicate —
+      // reconcile the twin to our projection (the create payload, minus create-only completedAt) and
+      // write its identifier back. ONLY on an unambiguous single, unclaimed match: zero matches or a
+      // >1 same-title cluster keeps the create (we never guess WHICH twin).
+      const twins = (existing.byTitle && existing.byTitle[normalizeTitle(node.title)]) || [];
+      if (twins.length === 1 && !claimed.has(twins[0].identifier)) {
+        claimed.add(twins[0].identifier);
+        ops.push({ op: "adoptIssue", id: twins[0].id, identifier: twins[0].identifier, payload, projectRef, writeBack });
+        return;
+      }
       // History backfill: carry the true completion date (live-verified IssueCreateInput field;
       // the IO layer strip-retries if the VALUE is rejected — worst case: Done at creation time).
       if (isDone(status) && node.completedOn) payload.completedAt = node.completedOn;
-      ops.push({ op: "createIssue", payload, projectRef,
-        writeBack: target.type === "slice" ? { kind: "sprint", invoke: target.key } : { kind: "item", id: target.key } });
+      ops.push({ op: "createIssue", payload, projectRef, writeBack });
       return;
     }
     const cur = existing.issues[node.linear];
