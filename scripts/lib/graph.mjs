@@ -6,7 +6,7 @@
 
 import { readFileSync } from "node:fs";
 import YAML from "yaml";
-import { comparePriority } from "./priority.mjs";
+import { comparePriority, laneComparator } from "./priority.mjs";
 
 export const STATUS = {
   active:      { emoji: "🟢", label: "Active",      done: false, rank: 0 },
@@ -84,6 +84,8 @@ export function flatten(graph) {
         resumeAction: sp.resume_action || "",
         kickoffBrief: sp.kickoff_brief || "brief",
         prs: sp.prs || [],
+        receipts: sp.receipts || null,   // optional per-slice completion evidence (see validate-core required_receipts)
+        outcome: sp.outcome || null,     // optional founder-review rollup group (render groups siblings by this)
         completedOn: sp.completed_on || null,
         pi,
         sprint: sp,
@@ -253,9 +255,67 @@ export function coherenceEnabled(meta) {
   return !(meta && meta.discipline && meta.discipline.coherence === false);
 }
 
+// Command lane: meta.command_lane = { objective, until: "YYYY-MM-DD", pi?, slices?: [invoke,...] }.
+// A dated objective that outranks generic priority until its date passes OR its slices all complete —
+// so the roadmap makes finishing the most important outcome easier than discovering the next slice.
+// members(): the set of slice invoke keys in the lane (by explicit `slices` and/or every sprint of `pi`).
+export function commandLaneMembers(graph) {
+  const lane = graph && graph.meta && graph.meta.command_lane;
+  if (!lane) return new Set();
+  const members = new Set();
+  if (Array.isArray(lane.slices)) for (const s of lane.slices) members.add(s);
+  if (lane.pi) for (const pi of graph.pis || []) if (pi.id === lane.pi) for (const sp of pi.sprints || []) if (sp.invoke) members.add(sp.invoke);
+  return members;
+}
+
+// active: lane set, not past `until` (YYYY-MM-DD lexical compare), and >=1 member slice still open.
+// Once every member ships (or the date passes) the override releases and ordering returns to normal.
+// `today` is injected (a YYYY-MM-DD string) so the gate is testable and deterministic.
+export function commandLaneActive(graph, today) {
+  const lane = graph && graph.meta && graph.meta.command_lane;
+  if (!lane) return false;
+  if (lane.until && today && String(today) > lane.until) return false;
+  const members = commandLaneMembers(graph);
+  if (!members.size) return false;
+  for (const pi of graph.pis || []) for (const sp of pi.sprints || []) {
+    if (sp.invoke && members.has(sp.invoke) && !isDone(sp.status)) return true;
+  }
+  return false;
+}
+
+// SHAPE validation for meta.command_lane (called by validate-core, living beside the lane helpers the
+// way validatePriority lives beside comparePriority). Errors on a malformed lane; WARNS on a dangling
+// pi/slice ref — the lane would look armed but boost nothing. No clock here: expiry vs `until` is a
+// PLAN-time concern. Returns { errors, warnings }; empty when no command_lane is set.
+export function validateCommandLane(graph) {
+  const errors = [], warnings = [];
+  const lane = graph && graph.meta && graph.meta.command_lane;
+  if (lane == null) return { errors, warnings };
+  if (typeof lane !== "object" || Array.isArray(lane)) {
+    errors.push("meta.command_lane must be a mapping { objective, until, pi?, slices? }");
+    return { errors, warnings };
+  }
+  if (typeof lane.objective !== "string" || !lane.objective) errors.push("meta.command_lane.objective must be a non-empty string");
+  if (typeof lane.until !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(lane.until)) errors.push(`meta.command_lane.until must be YYYY-MM-DD (got ${JSON.stringify(lane.until)})`);
+  const piIds = new Set((graph.pis || []).map((p) => p.id));
+  const invokeKeys = new Set();
+  for (const p of graph.pis || []) for (const s of p.sprints || []) if (s.invoke) invokeKeys.add(s.invoke);
+  if (lane.pi != null) {
+    if (typeof lane.pi !== "string") errors.push("meta.command_lane.pi must be a PI id string");
+    else if (!piIds.has(lane.pi)) warnings.push(`meta.command_lane.pi "${lane.pi}" matches no PI — the lane covers nothing via pi`);
+  }
+  if (lane.slices != null) {
+    if (!Array.isArray(lane.slices)) errors.push("meta.command_lane.slices must be an array of invoke keys");
+    else for (const s of lane.slices) if (!invokeKeys.has(s)) warnings.push(`meta.command_lane.slices: "${s}" resolves to no slice invoke`);
+  }
+  return { errors, warnings };
+}
+
 // Compute execution waves under a concurrency cap N.
 // Returns { waves: [[node,...],...], held: { onHuman:[node], blocked:[node] } }.
 // opts.coherence (default true): PI-coherence tiebreak in the ready sort — see coherenceEnabled.
+// opts.meta + opts.today: an active command lane (see commandLaneMembers/Active) floats its member
+//   slices to the top of the ready sort. Both absent → lane inactive → ordering byte-identical to today.
 export function computeWaves(model, N = 3, opts = {}) {
   const coherence = opts.coherence !== false;
   const { nodes, sprintIndex } = model;
@@ -265,6 +325,12 @@ export function computeWaves(model, N = 3, opts = {}) {
     err.cycle = cyc;
     throw err;
   }
+
+  // Command-lane boost, computed once per call. model.pis is graph.pis; meta rides in via opts.
+  const laneGraph = { meta: opts.meta, pis: model.pis };
+  const laneMembers = commandLaneMembers(laneGraph);
+  const laneActive = commandLaneActive(laneGraph, opts.today);
+  const laneCmp = laneComparator(laneMembers, laneActive);
 
   // Work on a mutable copy of statuses so optimistic completion drives layering.
   const status = new Map(nodes.map((n) => [n.nodeKey, n.status]));
@@ -301,6 +367,8 @@ export function computeWaves(model, N = 3, opts = {}) {
     }
 
     ready.sort((a, b) => {
+      const lc = laneCmp(a, b);                             // active command lane floats its members first
+      if (lc) return lc;                                    // inactive/absent → 0 → priority, coherence, existing order
       const pc = comparePriority(a.priority, b.priority);  // declared priority wins the cap slot
       if (pc) return pc;                                    // both absent → 0 → coherence, then existing order
       if (coherence && a.piId !== b.piId) {

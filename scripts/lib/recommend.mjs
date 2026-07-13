@@ -9,7 +9,8 @@ import os from "node:os";
 import { existsSync, statfsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
-import { resolveGate } from "./graph.mjs";
+import { resolveGate, commandLaneActive, commandLaneMembers } from "./graph.mjs";
+import { allPrs, worktrees } from "./external-state.mjs";
 
 // Per-session resource cost by weight class — cross-language defaults (a full test
 // suite / heavy compile ~3.5GB/2 cores; a build/lint ~1.5GB/1 core; docs cheap).
@@ -113,6 +114,20 @@ export function probeDisk(graph, cwd = process.cwd()) {
   }
 }
 
+// Review-debt probe: how much unresolved review work already awaits a human — the backpressure
+// signal that dials concurrency DOWN when PRs/worktrees pile up faster than they merge. Counts open
+// non-draft PRs stuck DIRTY/BLOCKED/UNSTABLE + dirty-or-unmerged fanout worktrees. Fully GUARDED via
+// external-state (gh/git absent, slow, or outside a repo → empty), so it returns 0, never throws.
+export function probeReviewDebt(root, graph) {
+  const meta = (graph && graph.meta) || {};
+  const STUCK = new Set(["DIRTY", "BLOCKED", "UNSTABLE"]);
+  const stuckPrs = (allPrs(root) || []).filter(
+    (p) => p.state === "OPEN" && !p.isDraft && STUCK.has(p.mergeStateStatus)
+  ).length;
+  const stuckWts = worktrees(root, meta).filter((w) => w.dirty || !w.isMerged).length;
+  return stuckPrs + stuckWts;
+}
+
 export function systemInfo() {
   const cpus = os.cpus() || [];
   return {
@@ -130,7 +145,11 @@ const avg = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
 //         disk ({ perWorktreeGb, freeGb } from probeDisk; absent/null → no disk ceiling) }
 export function recommendConcurrency(ready, graph, opts = {}) {
   const sys = opts.sys || systemInfo();
-  const reviewCeiling = opts.reviewCeiling ?? 5;
+  // Review-debt backpressure: each stuck PR / unresolved worktree lowers the review ceiling, so a
+  // growing merge queue auto-throttles new fanout. reviewDebt is INJECTED (stays pure, like disk);
+  // callers probe it via probeReviewDebt. Floors at 1 — the soft ceiling never blocks the lane.
+  const reviewDebt = opts.reviewDebt ?? 0;
+  const reviewCeiling = Math.max(1, (opts.reviewCeiling ?? 5) - reviewDebt);
   const coreReserve = opts.osCoreReserve ?? 2;     // leave cores for the OS/editor/lead
   const ramReserve = opts.osRamReserveGb ?? 4;
   const disk = opts.disk || null;                  // stays PURE: callers probe (probeDisk) and inject
@@ -154,7 +173,9 @@ export function recommendConcurrency(ready, graph, opts = {}) {
     { n: cpuCap,        why: `CPU — ${sys.cores} cores (− ${coreReserve} reserved) ÷ ~${avgCores.toFixed(1)}/session` },
     { n: ramCap,        why: `RAM — ~${ramBasis.toFixed(0)}GB usable ÷ ~${avgRam.toFixed(1)}GB/session` },
     { n: workCap,       why: `work — ${ready.length} independent ready slice(s)` },
-    { n: reviewCeiling, why: `review — PR review/merge bottleneck (soft ceiling)` },
+    { n: reviewCeiling, why: reviewDebt > 0
+        ? `review — PR review/merge bottleneck (soft ceiling, −${reviewDebt} review debt)`
+        : `review — PR review/merge bottleneck (soft ceiling)` },
   ];
   // Disk ceiling — the only one allowed to compute to 0: recommended stays >= 1 (soft
   // auto-dial), but callers that create worktrees (fan, grab) hard-block on disk.cap < 1.
@@ -163,6 +184,13 @@ export function recommendConcurrency(ready, graph, opts = {}) {
     const diskReserve = opts.diskReserveGb ?? 2;
     diskCap = Math.floor(Math.max(0, disk.freeGb - diskReserve) / Math.max(disk.perWorktreeGb, 0.01));
     candidates.push({ n: Math.max(diskCap, 0), why: `disk — need ~${disk.perWorktreeGb.toFixed(1)}GB/worktree, ${disk.freeGb.toFixed(1)}GB free` });
+  }
+  // Command-lane cap — while a dated command-lane objective is ACTIVE, don't fan wider than the lane
+  // itself has ready: keep the machine finishing the committed outcome instead of diluting attention
+  // across off-lane slices. Gated on active (needs the injected `today`); absent/inactive → no candidate.
+  if (commandLaneActive(graph, opts.today)) {
+    const members = commandLaneMembers(graph);
+    candidates.push({ n: ready.filter((n) => members.has(n.invoke)).length, why: `command-lane — cap to lane` });
   }
   const binding = candidates.reduce((a, b) => (b.n < a.n ? b : a));
   return {

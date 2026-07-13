@@ -88,6 +88,16 @@ export function renderMarkdown(graph, opts = {}) {
     // sprint-status strip
     const strip = (pi.sprints || []).map((s) => `${s.id.toUpperCase()} ${emojiFor(s.status)}`).join(" · ");
     if (strip) w(`> Sprints: ${strip}`);
+    // Outcome rollups: group this PI's slices by `outcome` into one founder-review line each
+    // (done/total). First-seen order. No slice carries an outcome → no lines (byte-identical).
+    const outcomes = new Map();
+    for (const s of pi.sprints || []) {
+      if (!s.outcome) continue;
+      const o = outcomes.get(s.outcome) || { done: 0, total: 0 };
+      o.total++; if (isDone(s.status)) o.done++;
+      outcomes.set(s.outcome, o);
+    }
+    for (const [name, o] of outcomes) w(`> OUTCOME ${name}: ${o.done}/${o.total} ${emojiFor("complete")}`);
     if (plan) w(`> Exec plan: ${plan}${pi.exec_hint ? `  _(human hint: ${pi.exec_hint})_` : ""}`);
     if (pi.deps && pi.deps.length) w(`> Deps: ${pi.deps.map((d) => d.toUpperCase()).join(", ")}`);
     if (pi.exit_criteria) w(`> Exit: ${oneLine(pi.exit_criteria)}`);
@@ -99,9 +109,11 @@ export function renderMarkdown(graph, opts = {}) {
       const sess = isDone(sp.status) ? "—" : (typeof sp.est_sessions === "number" ? `~${fmt(sp.est_sessions)}` : "?");
       const deps = depCell(node);
       const prs = (sp.prs && sp.prs.length) ? ` · ${sp.prs.join(" ")}` : "";
+      const rcptKeys = sp.receipts ? Object.keys(sp.receipts).filter((k) => sp.receipts[k]) : [];
+      const rcpts = rcptKeys.length ? ` · 📎 ${rcptKeys.join(",")}` : "";
       const badge = tierBadge(sp.priority);
       const dtier = sp.dispatch_tier ? ` · ${B}dispatch: ${sp.dispatch_tier}${B}` : "";
-      w(`| ${sp.id.toUpperCase()} | ${B}/slice ${sp.invoke}${B} | ${statusDisplay(sp.status, sp.status_label)}${badge ? ` · **${badge}**` : ""}${dtier} | ${sess} | ${deps} | ${sp.what || sp.title}${prs} |`);
+      w(`| ${sp.id.toUpperCase()} | ${B}/slice ${sp.invoke}${B} | ${statusDisplay(sp.status, sp.status_label)}${badge ? ` · **${badge}**` : ""}${dtier} | ${sess} | ${deps} | ${sp.what || sp.title}${prs}${rcpts} |`);
     }
     w("");
   }

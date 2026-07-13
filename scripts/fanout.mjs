@@ -19,7 +19,7 @@ import os from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadGraph, flatten, computeWaves, readyNodes, coherenceEnabled } from "./lib/graph.mjs";
-import { recommendConcurrency, probeDisk } from "./lib/recommend.mjs";
+import { recommendConcurrency, probeDisk, probeReviewDebt } from "./lib/recommend.mjs";
 import { synthesizeBrief, branchFor, worktreeFor, launchPrompt, baseRefOf, remoteOf, agentCmdFor } from "./lib/brief.mjs";
 import { launchDecision, bashWorktreeLines, pwshWorktreeLines, diskBlockLines } from "./lib/fanout-core.mjs";
 import { terminalChoices } from "./lib/wizard-core.mjs";
@@ -78,7 +78,12 @@ if (has("--cloud")) {
 }
 
 const ready = readyNodes(model);
-const rec = recommendConcurrency(ready, graph, { reviewCeiling: Number(val("--review-ceiling", 5)), disk: probeDisk(graph) });
+const rec = recommendConcurrency(ready, graph, {
+  reviewCeiling: Number(val("--review-ceiling", 5)),
+  reviewDebt: probeReviewDebt(process.cwd(), graph),
+  today: new Date().toISOString().slice(0, 10),
+  disk: probeDisk(graph),
+});
 // Disk hard-block: auto-dialing handles the soft path (recommended >= 1), but when even ONE
 // worktree won't fit, launching would fail mid-checkout — refuse before creating anything.
 if (rec.disk && rec.disk.cap < 1) {

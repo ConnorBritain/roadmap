@@ -2,13 +2,17 @@
 // No IO. validate.mjs prints + exits on the result; the MCP `validate` read tool returns it.
 // Structural checks + dependency resolution (via flatten) + cycle detection.
 
-import { flatten, detectCycle, STATUS } from "./graph.mjs";
+import { flatten, detectCycle, STATUS, HELD_STATUSES, validateCommandLane } from "./graph.mjs";
 import { validateExecution } from "./execution.mjs";
 import { validatePriority } from "./priority.mjs";
 import { validateLinearConfig } from "./linear-core.mjs";
 import { validateEstimation } from "./estimate-core.mjs";
 
 const isDone = (s) => !!(STATUS[s] && STATUS[s].done);
+
+// Known per-slice completion-evidence keys (sp.receipts). meta.discipline.required_receipts
+// opts a repo into WARNing when a complete slice omits one.
+export const RECEIPT_KEYS = ["build", "test", "clone_install", "screenshot", "signoff", "publish"];
 
 export function validateGraph(graph) {
   const errors = [];
@@ -47,6 +51,15 @@ export function validateGraph(graph) {
       if (meta.discipline.pi_min_slices != null && !(Number.isInteger(meta.discipline.pi_min_slices) && meta.discipline.pi_min_slices >= 1)) {
         err("meta.discipline.pi_min_slices must be an integer >= 1 (a bad knob silently disabling a guardrail is the failure mode)");
       }
+      if (meta.discipline.active_pi_cap != null && !(Number.isInteger(meta.discipline.active_pi_cap) && meta.discipline.active_pi_cap >= 1)) {
+        err("meta.discipline.active_pi_cap must be an integer >= 1 (the max concurrently-active PIs the portfolio allows)");
+      }
+      // Finishing-discipline: which receipts a complete slice must carry (opt-in). A bad value
+      // would silently disable the check, so reject a non-array or an unknown key.
+      const rr = meta.discipline.required_receipts;
+      if (rr != null && !(Array.isArray(rr) && rr.every((k) => RECEIPT_KEYS.includes(k)))) {
+        err(`meta.discipline.required_receipts must be an array of known receipt keys (${RECEIPT_KEYS.join("|")})`);
+      }
       // Composition SHAPE (capture_ratio guards growth RATE): a PI under the floor is usually a
       // slice wearing a PI's coat — 13 one-slice PIs is how a 64-project wall happens. ONE
       // aggregated warning (signal, not a wall); complete PIs exempt (history is what it is).
@@ -57,6 +70,16 @@ export function validateGraph(graph) {
           warn(`composition: ${thin.length} non-complete PI(s) hold fewer than ${floor} slice(s) (${thin.map((p) => p.id).join(", ")}) — a PI is a strategic bet; fold these into siblings or grow them`);
         }
       }
+      // WIP cap: too many concurrently-ACTIVE PIs is how a portfolio stops finishing and starts
+      // sprawling. The roadmap should reward closure over discovery — one aggregated warning when
+      // the funded-active count exceeds policy (complete/held/scheduled PIs don't count against it).
+      const cap = meta.discipline.active_pi_cap;
+      if (Number.isInteger(cap) && cap >= 1) {
+        const activePis = (graph.pis || []).filter((pi) => pi.status === "active");
+        if (activePis.length > cap) {
+          warn(`WIP: ${activePis.length} active PI(s) exceed the cap of ${cap} (${activePis.map((p) => p.id).join(", ")}) — finish an active PI before starting another; the roadmap rewards closure over discovery`);
+        }
+      }
     }
   }
   if (meta.last_review != null) {
@@ -64,6 +87,12 @@ export function validateGraph(graph) {
       err("meta.last_review must be a mapping with string date + commit");
     }
   }
+
+  // Optional meta.command_lane: a dated finishing override, SHAPE-validated in graph.mjs beside the
+  // lane helpers (expiry vs `until` is a PLAN-time concern — the pure validator has no clock).
+  const cl = validateCommandLane(graph);
+  for (const e of cl.errors) err(e);
+  for (const w of cl.warnings) warn(w);
 
   // Optional meta.linear + per-PI overrides + sprint linear fields. Absent → no-op.
   const lin = validateLinearConfig(graph);
@@ -75,6 +104,7 @@ export function validateGraph(graph) {
   for (const e of est.errors) err(e);
   for (const w of est.warnings) warn(w);
 
+  const requiredReceipts = (meta.discipline && Array.isArray(meta.discipline.required_receipts)) ? meta.discipline.required_receipts : [];
   const validStatus = new Set(Object.keys(STATUS));
   const seenPiIds = new Set();
   for (const pi of graph.pis || []) {
@@ -100,6 +130,12 @@ export function validateGraph(graph) {
       if (!validStatus.has(sp.status)) err(`${where}: status "${sp.status}" invalid`);
       if (!sp.invoke) err(`${where}: invoke key required`);
       if (sp.gated_on && sp.status !== "gated") warn(`${where}: gated_on set but status is "${sp.status}" (expected gated)`);
+      // Finishing discipline (opt-in): a done slice must carry every required receipt; a missing one
+      // means "done" was declared without the evidence. Off entirely when required_receipts is absent.
+      if (requiredReceipts.length && isDone(sp.status)) {
+        const missing = requiredReceipts.filter((k) => !(sp.receipts && sp.receipts[k]));
+        if (missing.length) warn(`receipt: ${where} is complete but missing required receipt(s): ${missing.join(", ")}`);
+      }
       if (!isDone(sp.status) && sp.est_sessions == null) warn(`${where}: no est_sessions (sessions-remaining rollup will undercount)`);
       // Optional execution-strategy hint. Absent → no-op (backward-compatible); present → enum/type/consistency checks.
       const exec = validateExecution(sp.execution, where);
@@ -107,6 +143,22 @@ export function validateGraph(graph) {
       for (const w of exec.warnings) warn(w);
       // Optional priority block. Absent → no-op.
       for (const e of validatePriority(sp.priority, where).errors) err(e);
+    }
+    // Active-state integrity: an "active" PI must hold REAL agent-runnable work, or the board lies
+    // about what's in flight and the concurrency planner over-recommends. Two failure modes:
+    //   (a) every sprint is complete → a stale-active PI that should have rolled up to complete;
+    //   (b) no sprint is advanceable → every open sprint is held (gated/blocked/paused) or parked
+    //       (optionality), so it's a human-gated lane, not active development — a session dispatched
+    //       here has nothing to run. This is the "gated decision counted as runnable work" smell.
+    if (pi.status === "active" && Array.isArray(pi.sprints) && pi.sprints.length) {
+      const open = pi.sprints.filter((sp) => !isDone(sp.status));
+      if (open.length === 0) {
+        warn(`active-integrity: PI ${pi.id} is active but every sprint is complete — mark it complete (a stale-active PI inflates the in-flight count and hides real closure)`);
+      } else if (open.every((sp) => HELD_STATUSES.includes(sp.status) || sp.status === "optionality")) {
+        const held = open.filter((sp) => HELD_STATUSES.includes(sp.status)).length;
+        const parked = open.length - held;
+        warn(`active-integrity: PI ${pi.id} is active but has no agent-runnable slice — ${held} held (gated/blocked/paused)${parked ? ` + ${parked} optionality` : ""}; this is a human-gated lane, not active development`);
+      }
     }
   }
 

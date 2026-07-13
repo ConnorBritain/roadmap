@@ -72,6 +72,7 @@ out.push(anchor
 out.push(`shipped (${digest.shipped.length}): ${digest.shipped.map((s) => `${s.invoke}${s.prs && s.prs.length ? ` (${s.prs.join(" ")})` : ""}`).join(", ") || "—"}`);
 out.push(`captured (${digest.netGrowth.added}): ${digest.captured.items.length} backlog item(s), ${digest.captured.sprints.length} sprint(s)`);
 out.push(`net growth: +${digest.netGrowth.added} / -${digest.shipped.length + digest.closedItems.length} (ratio ${digest.netGrowth.ratio})`);
+out.push(`closure: ${digest.newPis.length} PI(s) born / ${digest.removedPis.length} died · capture-to-ship ratio ${digest.netGrowth.ratio} · ~${digest.estOpenSessions} open session(s) remaining`);
 if (digest.aging.length) out.push(`held since before last review: ${digest.aging.map((a) => `${a.invoke} (${a.status})`).join(", ")}`);
 if (digest.newPis.length) out.push(`new PIs: ${digest.newPis.map((p) => p.id).join(", ")}`);
 if (digest.pisInFlight > 1) out.push(`PIs in flight: ${digest.pisInFlight}`);

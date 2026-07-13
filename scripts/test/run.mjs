@@ -6,9 +6,11 @@
 
 import {
   flatten, detectCycle, computeWaves, execPlan, sessionsRemaining, resolveGate, isDone, readyNodes, coherenceEnabled,
+  commandLaneMembers, commandLaneActive,
 } from "../lib/graph.mjs";
+import { parseWorktrees } from "../lib/external-state.mjs";
 import { buildPlan } from "../lib/plan.mjs";
-import { nodeWeight, recommendConcurrency, probeDisk } from "../lib/recommend.mjs";
+import { nodeWeight, recommendConcurrency, probeDisk, probeReviewDebt } from "../lib/recommend.mjs";
 import { synthesizeBrief, branchFor, worktreeFor, baseRefOf, baseBranchOf, remoteOf, launchPrompt, agentCmdFor, DEFAULT_AGENT_CMD } from "../lib/brief.mjs";
 import { route, classify, buildArgs, findRepoRoot, missingRoadmapHelp, expandShort, REL } from "../lib/cli-core.mjs";
 import { launchDecision } from "../lib/fanout-core.mjs";
@@ -23,7 +25,7 @@ import {
   teamSize, filterByTrack, dirClusters, EXEC_MODES, EXEC_ROLES,
 } from "../lib/execution.mjs";
 import { renderMarkdown } from "../lib/render-core.mjs";
-import { comparePriority, validatePriority, tierBadge, TIERS } from "../lib/priority.mjs";
+import { comparePriority, laneComparator, validatePriority, tierBadge, TIERS } from "../lib/priority.mjs";
 import {
   validateBacklog, addItem, setItemFields, validateBacklogDocOrThrow, sortByPriority,
   openCount, renderBacklogMarkdown, backlogItemToNode, pickNext, BACKLOG_TOOLS, readBacklogList,
@@ -52,6 +54,7 @@ import { runCyclePlan, runCycleLock } from "../cycle.mjs";
 import { readReadyWave } from "../lib/mcp-core.mjs";
 import { loadGraph } from "../lib/graph.mjs";
 import { graphDiff, backlogDiff, reviewDigest, pisInFlight } from "../lib/review-core.mjs";
+import { doctorReport } from "../lib/doctor-core.mjs";
 import { parseDocument } from "yaml";
 import { join, resolve } from "node:path";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
@@ -1257,6 +1260,56 @@ test("probeDisk honors the meta.worktree_gb override and never throws", () => {
   }
   // no-git cwd → estimate path fails → null, not a throw
   eq(probeDisk({ meta: {} }, "/nonexistent-dir-for-roadmap-test"), null, "unprobeable → null");
+});
+
+// ── review-debt backpressure ────────────────────────────────────────────────
+// WHY: review-debt backpressure is the "don't over-subscribe the HUMAN" half of the recommender —
+// each stuck PR / unresolved worktree must lower the review ceiling, or a growing merge queue keeps
+// getting fed new fanout it can never drain. reviewDebt is INJECTED (the core stays pure, like disk),
+// modifies the EXISTING review candidate (adds none), and can never floor concurrency below 1.
+test("reviewDebt lowers the review ceiling and clamps recommended (injected, floors at 1)", () => {
+  const bigSys = { sys: { cores: 64, totalGb: 256, freeGb: 256, platform: "linux" } };
+  const bound = recommendConcurrency(recoReady, recoGraph, { ...bigSys, reviewCeiling: 8, reviewDebt: 5 });
+  eq(bound.recommended, 3, "8 base − 5 debt = review ceiling 3 binds (smaller than cpu/ram/work)");
+  ok(bound.binding.why.startsWith("review"), `expected review-bound, got ${bound.binding.why}`);
+  ok(/−5 review debt/.test(bound.binding.why), "why names the debt that dropped the ceiling");
+  eq(bound.candidates.length, 4, "debt modifies the review candidate, adds none — still four ceilings");
+  const floored = recommendConcurrency(recoReady, recoGraph, { ...bigSys, reviewCeiling: 2, reviewDebt: 99 });
+  eq(floored.recommended, 1, "debt floors the review ceiling at 1, never 0 (soft ceiling)");
+  const none = recommendConcurrency(recoReady, recoGraph, { ...bigSys, reviewCeiling: 8, reviewDebt: 0 });
+  eq(none.recommended, recoReady.length, "zero debt leaves the base ceiling → work (4) binds, unchanged");
+});
+
+// WHY: the command-lane cap applies "finish the committed outcome before discovering the next" to
+// CONCURRENCY — while a dated objective is active, the machine must not fan wider than the lane has
+// ready, or the wave dilutes across off-lane slices. Gated on active: released → the candidate vanishes.
+test("command-lane cap clamps concurrency to the ready lane-slice count while active; none when released", () => {
+  const g = {
+    meta: { schema_version: 1, program: "T", default_gate: "dotnet build",
+            command_lane: { objective: "ship auth", pi: "a", until: "2026-07-15" } },
+    pis: [
+      { id: "a", title: "A", status: "active", sprints: [
+        sp("s1", { status: "active", invoke: "a-1" }), sp("s2", { status: "active", invoke: "a-2" }) ] },
+      { id: "b", title: "B", status: "active", sprints: [
+        sp("s1", { status: "active", invoke: "b-1" }), sp("s2", { status: "active", invoke: "b-2" }),
+        sp("s3", { status: "active", invoke: "b-3" }) ] },
+    ],
+  };
+  const ready = readyNodes(flatten(g));   // 5 ready overall; 2 are lane members (a-1, a-2)
+  const bigSys = { sys: { cores: 64, totalGb: 256, freeGb: 256, platform: "linux" }, reviewCeiling: 50 };
+  const active = recommendConcurrency(ready, g, { ...bigSys, today: "2026-07-13" });
+  eq(active.recommended, 2, "capped to the 2 READY lane slices, not the 5 ready overall");
+  ok(active.binding.why.startsWith("command-lane"), `expected command-lane-bound, got ${active.binding.why}`);
+  ok(active.candidates.some((c) => c.why === "command-lane — cap to lane"), "lane candidate present when active");
+  const released = recommendConcurrency(ready, g, { ...bigSys, today: "2026-07-16" });
+  eq(released.recommended, ready.length, "past the until date → lane releases → work cap (5) binds again");
+  ok(!released.candidates.some((c) => c.why === "command-lane — cap to lane"), "no lane candidate once released");
+});
+
+// WHY: probeReviewDebt runs at the real IO surfaces (plan, fanout) where gh/git may be absent, slow,
+// or outside a repo; it MUST degrade to 0 (no backpressure) rather than throw and take down the plan.
+test("probeReviewDebt degrades to 0 when gh/git can't answer (guarded)", () => {
+  eq(probeReviewDebt("/nonexistent-dir-for-roadmap-test", { meta: {} }), 0, "unprobeable → 0, never throws");
 });
 
 // ── store.mjs: the file-write-ordering / rollback guarantees (fs-backed) ──────
@@ -2720,6 +2773,143 @@ test("composition lint: one aggregated warning under pi_min_slices; complete PIs
   ok(validateGraph(g({ pi_min_slices: 0 })).errors.some((e) => e.includes("pi_min_slices")), "0 rejected — a bad knob must not silently disable the guardrail");
 });
 
+// WHY: too many concurrently-active PIs is how a portfolio stops finishing and starts sprawling. The
+// cap turns "finish before you start" into a checkable rule — the governing principle in one knob.
+test("WIP cap: warns when active PIs exceed active_pi_cap; off when absent; only active counts; 0 rejected", () => {
+  const g = (discipline) => ({ meta: { schema_version: 1, program: "T", ...(discipline ? { discipline } : {}) }, pis: [
+    { id: "a1", title: "A1", status: "active", sprints: [{ id: "s", title: "x", status: "active", invoke: "a1-s" }] },
+    { id: "a2", title: "A2", status: "active", sprints: [{ id: "s", title: "x", status: "active", invoke: "a2-s" }] },
+    { id: "a3", title: "A3", status: "active", sprints: [{ id: "s", title: "x", status: "active", invoke: "a3-s" }] },
+    { id: "done", title: "D", status: "complete", sprints: [{ id: "s", title: "x", status: "complete", invoke: "d-s" }] },
+    { id: "sched", title: "S", status: "scheduled", sprints: [{ id: "s", title: "x", status: "scheduled", invoke: "sc-s" }] },
+  ]});
+  const warns = validateGraph(g({ active_pi_cap: 2 })).warnings.filter((w) => w.startsWith("WIP:"));
+  eq(warns.length, 1, "one aggregated WIP line");
+  ok(warns[0].includes("3 active PI(s) exceed the cap of 2") && warns[0].includes("a1") && warns[0].includes("a3"), "names the active PIs over the cap");
+  ok(!warns[0].includes("done") && !warns[0].includes("sched"), "only active status counts against the cap");
+  eq(validateGraph(g({ active_pi_cap: 3 })).warnings.filter((w) => w.startsWith("WIP:")).length, 0, "at the cap → quiet");
+  eq(validateGraph(g(null)).warnings.filter((w) => w.startsWith("WIP:")).length, 0, "absent knob → off (no wall on unopted repos)");
+  ok(validateGraph(g({ active_pi_cap: 0 })).errors.some((e) => e.includes("active_pi_cap")), "0 rejected — a bad knob must not silently disable the guardrail");
+});
+
+// WHY: an "active" PI with no runnable work makes the board lie about what's in flight and the
+// concurrency planner over-recommend — the exact failure that dispatched sessions while a human-gated
+// deadline lane sat "active". Both stale-active and held-only-active must surface; real work is spared.
+test("active-integrity: flags a stale-active (all-complete) PI and a held-only 'active' lane; spares real work", () => {
+  const g = (pis) => ({ meta: { schema_version: 1, program: "T" }, pis });
+  const stale = validateGraph(g([
+    { id: "stale", title: "S", status: "active", sprints: [{ id: "s", title: "x", status: "complete", invoke: "stale-s" }] },
+  ])).warnings.filter((w) => w.startsWith("active-integrity:"));
+  eq(stale.length, 1, "stale-active flagged");
+  ok(stale[0].includes("stale") && stale[0].includes("every sprint is complete"), "names the PI + the rollup miss");
+  const lane = validateGraph(g([
+    { id: "lane", title: "L", status: "active", sprints: [
+      { id: "s1", title: "x", status: "gated", gated_on: "human", invoke: "lane-s1" },
+      { id: "s2", title: "y", status: "complete", invoke: "lane-s2" },
+      { id: "s3", title: "z", status: "optionality", invoke: "lane-s3" } ] },
+  ])).warnings.filter((w) => w.startsWith("active-integrity:"));
+  eq(lane.length, 1, "held-only active lane flagged");
+  ok(lane[0].includes("no agent-runnable slice") && lane[0].includes("1 held") && lane[0].includes("1 optionality"), "counts held + parked");
+  const real = validateGraph(g([
+    { id: "ok", title: "O", status: "active", sprints: [
+      { id: "s1", title: "x", status: "active", invoke: "ok-s1" },
+      { id: "s2", title: "y", status: "gated", gated_on: "h", invoke: "ok-s2" } ] },
+  ])).warnings.filter((w) => w.startsWith("active-integrity:"));
+  eq(real.length, 0, "an active PI with even one runnable slice is fine");
+});
+
+// WHY: the command-lane's membership + active-gate are the foundation the sort-boost AND the
+// concurrency-cap both read; if membership or the date/completion release is wrong, the override
+// either never fires or never lets go — the roadmap stops returning to normal priority after the ship.
+test("commandLaneMembers + commandLaneActive: membership by pi/slices; releases on date-past or all-done", () => {
+  const g = (command_lane, pis) => ({ meta: { schema_version: 1, program: "T", ...(command_lane ? { command_lane } : {}) }, pis });
+  const pis = [
+    { id: "P", title: "P", status: "active", sprints: [
+      { id: "s1", title: "a", status: "active", invoke: "p-a" },
+      { id: "s2", title: "b", status: "complete", invoke: "p-b" } ] },
+    { id: "Q", title: "Q", status: "active", sprints: [{ id: "s1", title: "c", status: "active", invoke: "q-c" }] },
+  ];
+  eq([...commandLaneMembers(g({ objective: "x", pi: "P" }, pis))].sort(), ["p-a", "p-b"], "pi → all its sprint invokes");
+  eq([...commandLaneMembers(g({ objective: "x", slices: ["q-c"] }, pis))], ["q-c"], "slices → the listed invokes");
+  eq(commandLaneMembers(g(null, pis)).size, 0, "no command_lane → empty membership");
+  eq(commandLaneActive(g({ objective: "x", pi: "P", until: "2026-07-15" }, pis), "2026-07-13"), true, "open member + before until → active");
+  eq(commandLaneActive(g({ objective: "x", pi: "P", until: "2026-07-15" }, pis), "2026-07-16"), false, "past until → released");
+  const doneP = [{ id: "P", title: "P", status: "active", sprints: [{ id: "s1", title: "a", status: "complete", invoke: "p-a" }] }];
+  eq(commandLaneActive(g({ objective: "x", pi: "P", until: "2026-12-31" }, doneP), "2026-07-13"), false, "all members complete → released");
+  eq(commandLaneActive(g(null, pis), "2026-07-13"), false, "no command_lane → never active");
+});
+
+// WHY: laneComparator is the boost primitive both sort sites share — if it ranks members first while
+// INACTIVE it would silently override priority on every graph; if it stays neutral while ACTIVE the
+// command lane never fires. The active/inactive split IS the feature and the backward-compat guarantee.
+test("laneComparator ranks in-lane slices first only when active", () => {
+  const members = new Set(["in"]);
+  const inNode = { invoke: "in" }, outNode = { invoke: "out" };
+  const active = laneComparator(members, true);
+  ok(active(inNode, outNode) < 0, "active → member sorts before non-member");
+  ok(active(outNode, inNode) > 0, "active → non-member sorts after member");
+  eq(active({ invoke: "out1" }, { invoke: "out2" }), 0, "active → two non-members tie (fall through to next key)");
+  const inactive = laneComparator(members, false);
+  eq(inactive(inNode, outNode), 0, "inactive → always 0, ordering untouched");
+});
+
+// WHY: an active command lane must float its member slices ahead of even a declared P0 — that IS the
+// finishing override. And an absent/expired lane must reorder nothing, or every existing plan reshuffles.
+test("computeWaves floats command-lane members to the top when active; untouched when inactive/absent", () => {
+  const build = (lane) => ({ meta: { schema_version: 1, program: "T", ...(lane ? { command_lane: lane } : {}) }, pis: [
+    { id: "a", title: "A", status: "active", sprints: [
+      sp("s1", { invoke: "aaa", touches: ["f1"], priority: { tier: "P0" } }),   // highest declared priority
+      sp("s2", { invoke: "zzz-lane", touches: ["f2"] }),                          // lane member, no priority
+    ]}]});
+  const lane = { objective: "ship it", until: "2026-12-31", slices: ["zzz-lane"] };
+  const gl = build(lane);
+  eq(computeWaves(flatten(gl), 1, { meta: gl.meta, today: "2026-07-13" }).waves[0].map((n) => n.invoke), ["zzz-lane"], "active lane beats the P0");
+  eq(computeWaves(flatten(gl), 1, { meta: gl.meta, today: "2027-06-01" }).waves[0].map((n) => n.invoke), ["aaa"], "past until → P0 wins again");
+  eq(computeWaves(flatten(build(null)), 1).waves[0].map((n) => n.invoke), ["aaa"], "no command_lane → priority order, byte-identical");
+});
+
+// WHY: `next` is the single-pick entry — a live command-lane slice must surface there ahead of an
+// alphabetically-earlier ordinary slice, and fall straight back once the lane expires or is absent.
+test("pickNext floats a command-lane slice to the pick when active; falls back when inactive/absent", () => {
+  const build = (lane) => ({ meta: { ...(lane ? { command_lane: lane } : {}) }, pis: [
+    { id: "a", title: "A", status: "active", sprints: [
+      sp("s1", { invoke: "aaa" }),          // alphabetically first, no priority
+      sp("s2", { invoke: "zzz-lane" }),     // lane member
+    ]}]});
+  const lane = { objective: "ship it", until: "2026-12-31", slices: ["zzz-lane"] };
+  eq(pickNext(build(lane), null, "2026-07-13").node.invoke, "zzz-lane", "active lane wins the slice pick");
+  eq(pickNext(build(lane), null, "2027-06-01").node.invoke, "aaa", "expired lane → alpha order");
+  eq(pickNext(build(null), null).node.invoke, "aaa", "no lane / no today → alpha order, unchanged");
+});
+
+// WHY: a command_lane pointing at a PI or slice that doesn't exist looks armed but boosts nothing —
+// a dangling ref must WARN (not silently cover zero slices), and a broken shape must ERROR.
+test("validateGraph checks meta.command_lane shape and warns on dangling refs", () => {
+  const base = (lane) => ({ meta: { schema_version: 1, program: "T", command_lane: lane }, pis: [
+    { id: "a", title: "A", status: "active", sprints: [{ id: "s1", title: "S", status: "active", invoke: "real", est_sessions: 1 }] }] });
+  eq(validateGraph(base({ objective: "ship", until: "2026-12-31", pi: "a" })).errors, [], "valid lane (pi resolves) passes");
+  eq(validateGraph(base({ objective: "ship", until: "2026-12-31", slices: ["real"] })).errors, [], "valid lane (slice resolves) passes");
+  ok(validateGraph(base({ objective: "ship", until: "next-week" })).errors.some((e) => e.includes("until")), "non-date until rejected");
+  ok(validateGraph(base({ until: "2026-12-31" })).errors.some((e) => e.includes("objective")), "missing objective rejected");
+  ok(validateGraph(base({ objective: "ship", until: "2026-12-31", pi: "ghost" })).warnings.some((w) => w.includes("command_lane")), "dangling pi warns");
+  ok(validateGraph(base({ objective: "ship", until: "2026-12-31", slices: ["nope"] })).warnings.some((w) => w.includes("command_lane")), "dangling slice warns");
+});
+
+// WHY: review-debt backpressure + drift-doctor both count unresolved worktrees off this parse; a wrong
+// branch/merged mapping would hide a stuck worktree (no backpressure) or flag a clean one as debt.
+test("parseWorktrees: maps porcelain to path/branch/isMerged; empty porcelain is guarded", () => {
+  const porcelain = [
+    "worktree /repo\nbranch refs/heads/main",
+    "worktree /wt/a\nbranch refs/heads/feat-a",
+    "worktree /wt/b\nbranch refs/heads/feat-b",
+  ].join("\n\n");
+  const all = parseWorktrees(porcelain, { mergedSet: new Set(["feat-a"]) });
+  eq(all.length, 3, "all worktrees parsed when no wtRoot filter");
+  eq(all.find((w) => w.branch === "feat-a").isMerged, true, "merged branch flagged from the set");
+  eq(all.find((w) => w.branch === "feat-b").isMerged, false, "unmerged branch not flagged");
+  eq(parseWorktrees("", {}).length, 0, "empty porcelain → no worktrees (guarded)");
+});
+
 test("sprawlWarnings: ratio fires above threshold, quiet at it, quiet on an empty window", () => {
   const hot = sprawlWarnings({ completed: 2, captured: 5, addedSprints: 2 });
   eq(hot.length, 1, "one ratio warning");
@@ -2750,6 +2940,74 @@ test("validateGraph checks meta.discipline and meta.last_review shapes", () => {
   ok(validateGraph(base({ discipline: { coherence: "yes" } })).errors[0].includes("coherence"), "non-boolean coherence rejected");
   eq(validateGraph(base({ last_review: { date: "2026-07-06", commit: "abc123" } })).errors, [], "valid anchor passes");
   ok(validateGraph(base({ last_review: { date: "2026-07-06" } })).errors[0].includes("last_review"), "anchor missing commit rejected");
+});
+
+// ── finishing discipline: receipts + outcome rollups ─────────────────────────
+// WHY: receipts are optional finishing evidence surfaced in the PI table beside PRs. A slice with
+// NO receipts must render byte-identically to today or every existing SLICES.md churns under diff
+// review; a slice WITH receipts must show them, or the evidence a founder-review relies on is invisible.
+test("renderMarkdown shows receipts beside PRs only when present", () => {
+  const g = (receipts) => ({
+    meta: { schema_version: 1, program: "T" },
+    pis: [{ id: "a", title: "A", status: "active", sprints: [
+      { id: "s1", title: "Ship", status: "complete", invoke: "ship-it", what: "ship", ...(receipts ? { receipts } : {}) },
+    ] }],
+  });
+  ok(renderMarkdown(g({ build: "#12", test: "green" })).includes("📎 build,test"), "present receipts render beside the row");
+  ok(!renderMarkdown(g(null)).includes("📎"), "no receipts → no marker (row byte-identical to today)");
+});
+
+// WHY: "done" must mean PROVEN done — a complete slice missing a required receipt is a finishing
+// lie the warn must surface. But the check is opt-in: an unopted repo (no required_receipts) stays
+// silent, in-flight slices are exempt (evidence lands at completion), and a bad knob value must
+// ERROR rather than silently disable the guardrail (mirrors the milestone/composition validate tests).
+test("required_receipts warns a complete slice missing evidence; off when unset; guards its shape", () => {
+  const g = (discipline, receipts, status = "complete") => ({
+    meta: { schema_version: 1, program: "T", ...(discipline ? { discipline } : {}) },
+    pis: [{ id: "a", title: "A", status: "active", sprints: [
+      { id: "s1", title: "S", status, invoke: "x", ...(receipts ? { receipts } : {}) },
+    ] }],
+  });
+  const rw = (v) => validateGraph(v).warnings.filter((w) => w.startsWith("receipt:"));
+  const miss = rw(g({ required_receipts: ["build", "signoff"] }, { build: "#1" }));
+  eq(miss.length, 1, "one receipt warn for the slice");
+  ok(miss[0].includes("a/s1") && miss[0].includes("signoff") && !miss[0].includes("build"), "names the slice + only the ABSENT required key");
+  eq(rw(g({ required_receipts: ["build"] }, { build: "#1" })).length, 0, "complete + all required present → quiet");
+  eq(rw(g(null, null)).length, 0, "no required_receipts knob → check off (unopted repo stays silent)");
+  eq(rw(g({ required_receipts: ["build"] }, null, "active")).length, 0, "in-flight slice exempt (evidence lands at completion)");
+  ok(validateGraph(g({ required_receipts: ["nope"] }, null)).errors.some((e) => e.includes("required_receipts")), "unknown key rejected — a bad knob must not silently disable the check");
+  ok(validateGraph(g({ required_receipts: "build" }, null)).errors.some((e) => e.includes("required_receipts")), "non-array rejected");
+});
+
+// WHY: receipts + outcome are only useful if agents can WRITE them through the same allow-listed path
+// as every other field — set_fields/bulk_set for slices, backlog_set for grab-launched items — and the
+// allow-list must stay a GATE: an unknown field still throws "not settable" (no free-for-all write path).
+test("setFields/bulkSet/setItemFields accept receipts + outcome; the allow-list still gates", () => {
+  const y = `meta:\n  schema_version: 1\n  program: T\npis:\n  - id: a\n    title: A\n    status: active\n    sprints:\n      - { id: s1, title: S, status: active, invoke: x }\n      - { id: s2, title: T, status: next, invoke: y }\n`;
+  const doc = parseDocument(y);
+  eq(setFields(doc, { invoke: "x", fields: { receipts: { build: "#9" }, outcome: "launch" } }).fields, ["receipts", "outcome"], "both route through SETTABLE");
+  eq(bulkSet(parseDocument(y), { updates: [{ invoke: "x", fields: { outcome: "launch" } }, { invoke: "y", fields: { receipts: { publish: "npm" } } }] }).updated, ["x", "y"], "bulk_set routes receipts + outcome too");
+  validateDocOrThrow(doc);
+  throws(() => setFields(parseDocument(y), { invoke: "x", fields: { nope: 1 } }), "not settable", "the gate still rejects an unknown field");
+  const b = parseDocument("meta:\n  schema_version: 1\nitems:\n  - { id: b1, title: T, kind: chore, status: open }\n");
+  eq(setItemFields(b, { id: "b1", fields: { receipts: { publish: "npm" } } }).fields, ["receipts"], "grab-launched backlog items carry receipts");
+});
+
+// WHY: outcome rollups collapse many slices into ONE founder-review line (done/total) so a wave reads
+// as one shippable outcome. A slice with NO outcome must not change the render (byte-identical), and
+// siblings sharing an outcome must group into a SINGLE line — not one per slice, or the rollup is noise.
+test("renderMarkdown rolls slices up into one OUTCOME line, absent → none", () => {
+  const g = (withOutcome) => ({
+    meta: { schema_version: 1, program: "T" },
+    pis: [{ id: "a", title: "A", status: "active", sprints: [
+      { id: "s1", title: "One", status: "complete", invoke: "one", ...(withOutcome ? { outcome: "launch" } : {}) },
+      { id: "s2", title: "Two", status: "active", invoke: "two", ...(withOutcome ? { outcome: "launch" } : {}) },
+    ] }],
+  });
+  const md = renderMarkdown(g(true));
+  ok(md.includes("> OUTCOME launch: 1/2 ✅"), "two slices, one done → single 1/2 rollup line");
+  eq((md.match(/OUTCOME launch/g) || []).length, 1, "grouped into ONE line, not one per slice");
+  ok(!renderMarkdown(g(false)).includes("OUTCOME"), "no outcome → no rollup line (byte-identical)");
 });
 
 // WHY: the brief is the only channel to a worker session — if it doesn't forbid sprint/PI
@@ -2820,9 +3078,31 @@ test("buildPlan waveCloses names the PIs a wave finishes", () => {
       { id: "s2", title: "two", status: "next", invoke: "b-two", touches: ["f2"], est_sessions: 1 },  // same file → later wave
     ]},
   ]};
-  const plan = buildPlan(g, { cap: 3, disk: null });
+  const plan = buildPlan(g, { cap: 3, disk: null, reviewDebt: 0 });
   eq(plan.waveCloses[0], ["a"], "wave 1 closes PI a (b still has contended work)");
   ok(plan.waveCloses[plan.waves.length - 1].includes("b"), "the final wave closes b");
+});
+
+// WHY: the command-lane sort primitive is unit-tested in computeWaves, but `plan` only honors it if
+// buildPlan threads meta+today into computeWaves — the wiring that connects the feature to the actual
+// command. Without it an active command lane silently boosts nothing (the exact gap this closes).
+test("buildPlan honors an active command_lane: the lane slice floats above a higher-priority non-lane slice", () => {
+  const g = (command_lane) => ({
+    meta: { schema_version: 1, program: "T", ...(command_lane ? { command_lane } : {}) },
+    pis: [
+      { id: "a", title: "A", status: "active", sprints: [
+        { id: "s1", title: "hi", status: "active", invoke: "a-hi", priority: { tier: "P0" }, touches: ["f1"], est_sessions: 1 } ] },
+      { id: "b", title: "B", status: "active", sprints: [
+        { id: "s1", title: "lane", status: "active", invoke: "b-lane", priority: { tier: "P3" }, touches: ["f2"], est_sessions: 1 } ] },
+    ],
+  });
+  const lane = { objective: "ship b", until: "2026-12-31", slices: ["b-lane"] };
+  const active = buildPlan(g(lane), { cap: 3, disk: null, reviewDebt: 0, today: "2026-07-13" });
+  eq(active.waves[0][0].invoke, "b-lane", "active lane floats its slice above the P0 non-lane slice");
+  const expired = buildPlan(g(lane), { cap: 3, disk: null, reviewDebt: 0, today: "2027-01-01" });
+  eq(expired.waves[0][0].invoke, "a-hi", "past `until` → priority wins again (lane released)");
+  const none = buildPlan(g(null), { cap: 3, disk: null, reviewDebt: 0, today: "2026-07-13" });
+  eq(none.waves[0][0].invoke, "a-hi", "no command_lane → unchanged (P0 first)");
 });
 
 // ── review-core: the /debrief evidence base ───────────────────────────────────
@@ -2841,15 +3121,15 @@ const newReviewGraph = {
   meta: { schema_version: 1, program: "T", discipline: { capture_ratio: 2 } },
   pis: [
     { id: "auth", title: "Auth", status: "active", sprints: [
-      { id: "s1", title: "Login", status: "complete", invoke: "auth-login", prs: ["#12"] },   // shipped
-      { id: "s2", title: "Tokens", status: "blocked", invoke: "auth-tokens", priority: { tier: "P1" } },  // flip + priority
-      { id: "s4", title: "Stuck", status: "gated", gated_on: "Connor", invoke: "auth-stuck" },            // held in both
-      { id: "s5", title: "New A", status: "next", invoke: "auth-new-a" },                                  // added
+      { id: "s1", title: "Login", status: "complete", invoke: "auth-login", prs: ["#12"], est_sessions: 5 },   // shipped — est excluded (done)
+      { id: "s2", title: "Tokens", status: "blocked", invoke: "auth-tokens", priority: { tier: "P1" }, est_sessions: 2 },  // flip + priority
+      { id: "s4", title: "Stuck", status: "gated", gated_on: "Connor", invoke: "auth-stuck" },            // held in both — no est (null-safe 0)
+      { id: "s5", title: "New A", status: "next", invoke: "auth-new-a", est_sessions: 3 },                 // added
       { id: "s6", title: "New B", status: "next", invoke: "auth-new-b" },                                  // added
       { id: "s7", title: "New C", status: "next", invoke: "auth-new-c" },                                  // added
     ]},                                                                                                     // s3 pruned
     { id: "billing", title: "Billing", status: "scheduled", sprints: [
-      { id: "s1", title: "Seed", status: "scheduled", invoke: "billing-seed" },                            // new PI
+      { id: "s1", title: "Seed", status: "scheduled", invoke: "billing-seed", est_sessions: 1 },           // new PI
     ]},
   ],
 };
@@ -2904,6 +3184,29 @@ test("reviewDigest composes counts, reuses sprawlWarnings verbatim, and counts P
     { id: "c", sprints: [{ status: "next" }] },
     { id: "d", sprints: [{ status: "complete" }] },
   ]}), 2, "started+open counts; untouched and fully-done don't");
+});
+
+// WHY: a closure budget that only counts PI births hides consolidation — a killed or merged-away
+// PI must register as a DEATH, or the review over-reports open scope and finishing looks harder
+// than it is. removedPis must be symmetric to addedPis, not silently zero.
+test("graphDiff detects removedPis when a PI disappears (symmetric to addedPis)", () => {
+  const gd = graphDiff(newReviewGraph, oldReviewGraph);   // billing present in old-arg, gone in new-arg
+  eq(gd.removedPis, [{ id: "billing", title: "Billing" }], "billing died");
+  eq(gd.addedPis, [], "no PI born in this direction");
+  eq(graphDiff(oldReviewGraph, newReviewGraph).removedPis, [], "forward window: billing born, none died");
+});
+
+// WHY: the closure budget's "open sessions remaining" is the finish-line number — it must EXCLUDE
+// already-shipped slices and survive slices carrying no estimate. Counting a done slice inflates
+// the runway; NaN-ing on a null est_sessions poisons the whole sum. Either makes finishing look
+// unreachable when it isn't.
+test("reviewDigest.estOpenSessions sums only non-done est_sessions (null-safe); ratio unchanged", () => {
+  const gd = graphDiff(oldReviewGraph, newReviewGraph);
+  const bd = backlogDiff(null, { meta: { schema_version: 1 }, items: [{ id: "b1", title: "Cap", kind: "bug", status: "open" }] });
+  const d = reviewDigest({ gd, bd, graph: newReviewGraph });
+  eq(d.estOpenSessions, 6, "s2(2)+s5(3)+billing(1)=6; done s1(5) excluded, sprints w/o est count 0");
+  eq(d.removedPis, [], "nothing died this window");
+  eq(d.netGrowth.ratio, 5, "capture-to-ship ratio unchanged by the new rollup");
 });
 
 // WHY: the CLI is the anchor→git-show→digest wiring /debrief trusts — one real-git test
@@ -3954,6 +4257,72 @@ test("runLog surfaces a rejected log's error and never throws (the no-actuals de
   ok(r.error && r.error.includes("--actual-rounds is required"), "the rejection reason is surfaced, not thrown");
   ok(!r.logged, "nothing is recorded as logged on failure");
   rmSync(root, { recursive: true, force: true });
+});
+
+// ── doctor (drift reconciliation) ────────────────────────────────────────────
+// A structurally-clean graph so the STRUCTURAL section stays empty — every drift signal in
+// this test comes from an injected input, proving each detector maps to its own section.
+const docG = { meta: { schema_version: 1, program: "T" }, pis: [
+  { id: "a", title: "A", status: "active", sprints: [sp("s1", { invoke: "alpha", status: "next", est_sessions: 1 })] },
+]};
+
+// WHY: doctor is the finishing-discipline safety net — if a real drift signal (a merged-but-open
+// slice, stale docs, a Linear disagreement, a stuck PR, a parked worktree) fails to surface, the
+// human trusts a roadmap that has silently diverged from reality. Every class must land in the report.
+test("doctorReport surfaces each drift class as its own section and counts them", () => {
+  const branch = branchFor(flatten(docG).nodes[0], docG);   // the slice's real fanout branch
+  const report = doctorReport({
+    graph: docG,
+    mergedPrs: [{ number: 7, headRefName: "x", title: "t", body: "roadmap: slice=alpha" }],   // shipped-but-open (marker match)
+    allPrs: [{ number: 9, headRefName: branch, state: "OPEN", isDraft: true, mergeStateStatus: "CLEAN", statusCheckRollup: [] }], // stuck (draft)
+    worktrees: [
+      { branch: "a/s1", path: "/wt/x", dirty: true, isMerged: false },   // parked + dirty → flagged
+      { branch: "a/s2", path: "/wt/y", dirty: false, isMerged: true },    // merged + clean → MUST be excluded
+    ],
+    renderedVsDisk: { staleDocs: ["docs/SLICES.md"] },                            // docs behind the YAML
+    linearDeltas: [{ kind: "slice", key: "alpha", field: "status", from: "next", to: "active", note: null }],
+  });
+  const titles = report.sections.map((s) => s.title);
+  const section = (t) => report.sections.find((s) => s.title === t);
+  ok(titles.includes("Shipped but not marked complete"), "unrecorded merge surfaced");
+  ok(titles.includes("Generated docs stale"), "stale docs surfaced");
+  ok(titles.includes("Linear disagrees with the roadmap"), "linear delta surfaced");
+  ok(titles.includes("Open PRs needing attention"), "stuck PR surfaced");
+  ok(titles.includes("Stale fanout worktrees"), "dirty worktree surfaced");
+  ok(!titles.includes("Structural validation"), "clean graph → no structural noise");
+  ok(section("Shipped but not marked complete").items[0].includes("alpha"), "names the slice");
+  eq(section("Stale fanout worktrees").items.length, 1, "only the unmerged/dirty worktree — the merged+clean one is excluded");
+  eq(report.driftCount, 5, "one signal per class");
+});
+
+// WHY: prPhase keys off the NORMALIZED `checks` field, not the raw statusCheckRollup — so doctor must
+// run each PR through checksOf first, or the "checks-failing" signal can NEVER fire and a red-CI PR
+// reads as "ready" (the arch-review blocker). A failing non-draft PR must surface as checks-failing.
+test("doctorReport normalizes the rollup so a non-draft PR with FAILING checks surfaces", () => {
+  const branch = branchFor(flatten(docG).nodes[0], docG);
+  const report = doctorReport({
+    graph: docG,
+    allPrs: [{ number: 11, headRefName: branch, state: "OPEN", isDraft: false, mergeStateStatus: "CLEAN",
+      statusCheckRollup: [{ conclusion: "FAILURE" }] }],
+  });
+  const sec = report.sections.find((s) => s.title === "Open PRs needing attention");
+  ok(sec && sec.items[0].includes("checks-failing"), "red-CI non-draft PR lands as checks-failing, not silently 'ready'");
+});
+
+// WHY: a clean roadmap must read as clean — a doctor that cries drift on a reconciled repo trains
+// the human to ignore it, and the one real signal later gets ignored with the noise.
+test("doctorReport reports zero drift for a reconciled roadmap", () => {
+  const report = doctorReport({ graph: docG, mergedPrs: [], allPrs: [], worktrees: [], renderedVsDisk: { staleDocs: [] }, linearDeltas: null });
+  eq(report.driftCount, 0, "no inputs → no drift");
+  eq(report.sections.length, 0, "clean → no sections");
+});
+
+// WHY: Linear is optional; when it's unconfigured/unreachable the gatherer passes null, and doctor
+// must SKIP that section rather than emit an empty/garbage one — otherwise an off-Linear repo can
+// never reach zero drift.
+test("doctorReport skips the Linear section when deltas are null", () => {
+  const report = doctorReport({ graph: docG, linearDeltas: null });
+  ok(!report.sections.some((s) => s.title === "Linear disagrees with the roadmap"), "null linearDeltas → no section");
 });
 
 await Promise.all(pending);

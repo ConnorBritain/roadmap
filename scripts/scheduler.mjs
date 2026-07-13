@@ -11,7 +11,7 @@
 //   --use-free-ram  size RAM off currently-free memory instead of 75% of total
 //   --wave N        when printing, mark the launch detail for wave N (default 1)
 
-import { loadGraph } from "./lib/graph.mjs";
+import { loadGraph, commandLaneActive, commandLaneMembers, isDone } from "./lib/graph.mjs";
 import { buildPlan } from "./lib/plan.mjs";
 import { baseRefOf, remoteOf } from "./lib/brief.mjs";
 import { tierBadge } from "./lib/priority.mjs";
@@ -33,10 +33,11 @@ const hasCap = has("--cap");
 const capVal = hasCap ? Number(val("--cap", "")) : null;
 
 const graph = loadGraph(inPath);
+const today = new Date().toISOString().slice(0, 10);   // one clock read for the whole run (plan + banner)
 
 let plan;
 try {
-  plan = buildPlan(graph, { cap: hasCap && Number.isFinite(capVal) ? capVal : undefined, useFree, reviewCeiling });
+  plan = buildPlan(graph, { cap: hasCap && Number.isFinite(capVal) ? capVal : undefined, useFree, reviewCeiling, today });
 } catch (e) {
   console.error(`✗ ${e.message}`);
   process.exit(1);
@@ -48,6 +49,19 @@ if (asJson) {
 }
 
 // ── human plan ─────────────────────────────────────────────────────────────
+// Command-lane banner. Prints only while the lane is armed: past `until` or once every member ships,
+// commandLaneActive goes false and the banner disappears. Reuses the single `today` computed above.
+if (commandLaneActive(graph, today)) {
+  const lane = graph.meta.command_lane;
+  const members = commandLaneMembers(graph);
+  let laneOpen = 0;
+  for (const pi of graph.pis || []) for (const sp of pi.sprints || []) {
+    if (sp.invoke && members.has(sp.invoke) && !isDone(sp.status)) laneOpen++;
+  }
+  console.log(`COMMAND LANE: ${lane.objective} (until ${lane.until}) — ${laneOpen} lane slice(s) sort first`);
+  console.log("");
+}
+
 const capNote = hasCap ? `(you set --cap ${plan.cap}; recommended ${plan.recommended})` : `(recommended)`;
 console.log(`Concurrency cap: ${plan.cap} ${capNote}`);
 console.log(`  bound by: ${plan.binding.why}`);
