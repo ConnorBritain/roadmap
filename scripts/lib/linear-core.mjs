@@ -779,7 +779,13 @@ export function buildPullProposals({ cfg, inbound, graph, backlog }) {
         if (to === "canceled") {
           if (known.kind === "item") { if (known.status !== "dropped") deltas.push({ kind: known.kind, key: known.key, identifier: iss.identifier, field: "status", from: known.status, to: "dropped" }); }
           else deltas.push({ kind: known.kind, key: known.key, identifier: iss.identifier, field: "status", from: known.status, to: null, note: `canceled in Linear — no roadmap equivalent; decide by hand` });
-        } else if (to && to !== known.status && !(known.kind === "item" && to === "active" && known.status === "in_progress")) {
+        } else if (to && to !== known.status && pushedType !== "completed" && !(known.kind === "item" && to === "active" && known.status === "in_progress")) {
+          // pushedType === "completed" guard: completion is roadmap-authoritative (a slice is done when
+          // its PR merges). A stale Linear "In Progress"/"Todo" on a shipped slice must NOT propose
+          // un-completing it — that delta would hold the stateId push (buildPushPlan), and since pull is
+          // propose-only the delta never applies, so the issue is stuck non-Done in Linear forever. Let
+          // the push re-assert Done instead. (A genuine human COMPLETION in Linear — roadmap active,
+          // Linear completed — has pushedType "started" and still proposes, as before.)
           deltas.push({ kind: known.kind, key: known.key, identifier: iss.identifier, field: "status", from: known.status, to: known.kind === "item" && to === "active" ? "in_progress" : to });
         }
       }

@@ -31,7 +31,7 @@ export function renderMarkdown(graph, opts = {}) {
   ].filter(Boolean);
   w(`> **What this is:** the menu, grouped by PI (Program Increment) with sprints nested under each. Each sprint is a named **slice** you can pick up cold: spin up a session, name the slice, and it reads that slice's prescribed read-order and self-orients. Slice names are the \`/slice\` keys${introRefs.length ? ", " + introRefs.join(", ") : ""}.`);
   w("");
-  w("Use `/slice <name>` to orient on a menu entry; `/fanout` reads the same graph to launch concurrent sessions; `/sync` re-renders this file from the YAML after merges. `/pickup` resumes a specific in-progress session.");
+  w("Use `roadmap show <name>` to orient on a menu entry; `roadmap plan` computes ready waves; `roadmap fan` prepares worktrees and can launch an explicitly configured assistant; `roadmap render` refreshes this file after merges. Claude slash skills are optional conveniences where installed.");
   w("");
   // Backlog pointer — emitted only when the repo has a backlog (opts.backlog), so a
   // backlog-free repo renders byte-identically.
@@ -43,7 +43,7 @@ export function renderMarkdown(graph, opts = {}) {
   // ---- cross-PI wave map ----------------------------------------------------
   w(`## Ready now — wave map (cap ${cap})`);
   w("");
-  w("Derived from the dependency graph: which slices can run concurrently right now, what waits behind them, and what is held on a human. Change the cap with `/fanout --cap N`.");
+  w("Derived from the dependency graph: which slices can run concurrently right now, what waits behind them, and what is held on a human. Change the cap with `roadmap plan --cap N` or `roadmap fan --cap N`.");
   w("");
   let waveResult;
   try {

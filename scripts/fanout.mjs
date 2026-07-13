@@ -24,6 +24,7 @@ import { synthesizeBrief, branchFor, worktreeFor, launchPrompt, baseRefOf, remot
 import { launchDecision, bashWorktreeLines, pwshWorktreeLines, diskBlockLines } from "./lib/fanout-core.mjs";
 import { terminalChoices } from "./lib/wizard-core.mjs";
 import { filterByTrack } from "./lib/execution.mjs";
+import { readLocalConfig, resolveProfile, commandFor, launchDecisionForProfile } from "./lib/assistant-core.mjs";
 
 const args = process.argv.slice(2);
 const val = (n, d) => { const i = args.indexOf(n); return i >= 0 && args[i + 1] && !args[i + 1].startsWith("--") ? args[i + 1] : d; };
@@ -37,6 +38,8 @@ const autonomous = has("--autonomous");          // headless claude -p (else int
 const dry = has("--dry") || has("--print");      // preview only — launch is the DEFAULT
 const okAutonomous = has("--yes-spawn-autonomous");
 const leadClaude = has("--lead-claude");         // launch claude in the lead pane (else a shell)
+const requestedAssistant = val("--assistant", null);
+const requestedLaunch = has("--launch");
 const outFile = val("--out", null);
 // The lead pane's claude prompt (only with --lead-claude). It coordinates; it cannot see the
 // workers' context (separate processes) but observes their PRs/branches and merges.
@@ -51,6 +54,8 @@ const model = flatten(graph);
 const term = val("--term", (graph.meta && graph.meta.terminal) || terminalChoices(os.platform())[0]);
 // Worker permission mode: flag > meta.worker_mode > 'plan'. The lead session uses the same mode.
 const workerMode = val("--worker-mode", (graph.meta && graph.meta.worker_mode) || "plan");
+const { config: localConfig } = readLocalConfig(process.cwd());
+const profile = resolveProfile(graph, localConfig, requestedAssistant);
 
 // ── cloud fanout: dispatch the wave to CLOUD agents via Linear instead of local worktrees.
 // Placed BEFORE all worktree/disk/terminal logic on purpose — no disk ceiling, no checkout:
@@ -99,8 +104,10 @@ if (!wave.length) {
 // plan) so each plans its slice before touching anything; autonomous workers run headless.
 function claudeCmd(node) {
   const prompt = launchPrompt(node);
-  const base = autonomous
-    ? `claude -p "${prompt}" --permission-mode acceptEdits`   // ponytail: headless stays claude; meta.agent_cmd covers interactive only
+  if (profile.name === "manual") return `echo "${node.invoke}: worktree and .kickoff.md ready; start your configured assistant here."`;
+  // meta.agent_cmd remains the legacy Claude compatibility path. New local profiles win.
+  const base = profile.command
+    ? commandFor(profile, { prompt, mode: autonomous ? "acceptEdits" : workerMode })
     : agentCmdFor(graph, { prompt, mode: workerMode });
   const withLane = lane === "api"
     ? `ANTHROPIC_API_KEY="$ROADMAP_API_KEY" ${base}`     // api overflow lane (rarely used)
@@ -172,7 +179,10 @@ function basicTerminalScript(kind) {
 // Interactive workers start in PLAN MODE; autonomous run headless.
 function claudeCmdPwsh(node) {
   const prompt = launchPrompt(node);
-  return autonomous ? `claude -p '${prompt}' --permission-mode acceptEdits` : agentCmdFor(graph, { prompt, mode: workerMode, quote: "'" });
+  if (profile.name === "manual") return `Write-Host '${node.invoke}: worktree and .kickoff.md ready; start your configured assistant here.'`;
+  return profile.command
+    ? commandFor(profile, { prompt, mode: autonomous ? "acceptEdits" : workerMode })
+    : agentCmdFor(graph, { prompt, mode: workerMode, quote: "'" });
 }
 
 // Windows Terminal adapter: a self-contained PowerShell script — worktree + brief per slice,
@@ -273,8 +283,13 @@ else artifact = basicTerminalScript(term);   // background
 const psScript = term === "wt" || term === "warp";
 const withBom = (s) => (psScript ? "﻿" : "") + s;
 
-// Launch is the DEFAULT (interactive). --dry/--out preview; autonomous needs the double-ack.
-const decision = launchDecision({ dry, out: outFile, autonomous, okAutonomous });
+// Manual is the default. A locally authorized profile plus --launch is required to spawn.
+let decision;
+try {
+  decision = outFile ? { spawn: false, mode: "wrote-script" } : dry ? { spawn: false, mode: "dry" }
+    : launchDecisionForProfile(profile, { requestedLaunch, autonomous });
+  if (autonomous && decision.spawn && !okAutonomous) decision = { spawn: false, mode: "autonomous-needs-ack" };
+} catch (e) { console.error(`fanout: ${e.message}`); process.exit(2); }
 
 console.error(`fanout: wave ${waveIdx}/${waves.length} · cap ${cap} (recommended ${rec.recommended}, bound by ${rec.binding.why.split(" — ")[0]}) · term=${term} · lane=${lane}${track ? ` · track=${track}` : ""} · ${decision.mode}`);
 console.error(`slices: ${wave.map((n) => n.invoke).join(", ")}`);

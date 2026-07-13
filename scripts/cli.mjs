@@ -41,7 +41,8 @@ COMMANDS
   review          date-anchored review digest: what shipped vs what grew since meta.last_review
   linear          optional Linear sync: status [--probe] | auth | setup --team KEY | provision | sync [--dry]
                   | note <key> "<text>" [--kind progress|blocker|done] | notes <key> | post-update
-  sync | init     (plugin skills) reconcile+re-render / PM-interview bootstrap
+  init            create a minimal roadmap or configure portable assistant profiles
+  assistant       list | configure | doctor local assistant profiles
   help            this help
 
 OPTIONS (short | long)
@@ -72,6 +73,8 @@ OPTIONS (short | long)
                                 it can't see workers' context, but observes via gh/git)
        --worktree-root <dir>    fan: override the worktree parent dir
        --review-ceiling N       plan/fan: human review cap (default 5)
+       --assistant <name>       fan: manual | claude | codex | custom profile (manual is default)
+       --launch                 fan: explicitly launch a locally authorized assistant profile
 
 EXAMPLES
   roadmap                            # where am I / what's runnable
@@ -110,7 +113,7 @@ if (action.kind === "notyet") {
 if (action.kind === "unknown") { console.error(`roadmap: unknown command "${cmd}".\n\n${HELP}`); process.exit(2); }
 
 const root = findRepoRoot(process.cwd());
-if (!root) { console.error(missingRoadmapHelp(process.cwd())); process.exit(2); }
+if (!root && cmd !== "init") { console.error(missingRoadmapHelp(process.cwd())); process.exit(2); }
 
-const r = spawnSync("node", [join(SCRIPTS, action.script), ...buildArgs(cmd, expandShort(rest))], { stdio: "inherit", cwd: root });
+const r = spawnSync("node", [join(SCRIPTS, action.script), ...buildArgs(cmd, expandShort(rest))], { stdio: "inherit", cwd: root || process.cwd() });
 process.exit(r.status ?? 0);

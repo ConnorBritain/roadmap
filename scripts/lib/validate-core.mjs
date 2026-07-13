@@ -22,6 +22,13 @@ export function validateGraph(graph) {
   if (meta.terminal && !["warp", "wt", "tmux", "iterm", "background", "print"].includes(meta.terminal)) {
     err(`meta.terminal "${meta.terminal}" is not a known adapter`);
   }
+  if (meta.assistants != null) {
+    if (typeof meta.assistants !== "object" || Array.isArray(meta.assistants)) err("meta.assistants must be a mapping");
+    else {
+      if (meta.assistants.default != null && typeof meta.assistants.default !== "string") err("meta.assistants.default must be a profile name string");
+      if (meta.assistants.profiles != null && (typeof meta.assistants.profiles !== "object" || Array.isArray(meta.assistants.profiles))) err("meta.assistants.profiles must be a mapping");
+    }
+  }
 
   // Jira is the designed follow-up but NOT implemented — surface a stray block instead of
   // letting someone believe it syncs (docs/DEPLOYMENT.md documents the planned shape).

@@ -12,6 +12,7 @@ import { nodeWeight, recommendConcurrency, probeDisk } from "../lib/recommend.mj
 import { synthesizeBrief, branchFor, worktreeFor, baseRefOf, baseBranchOf, remoteOf, launchPrompt, agentCmdFor, DEFAULT_AGENT_CMD } from "../lib/brief.mjs";
 import { route, classify, buildArgs, findRepoRoot, missingRoadmapHelp, expandShort, REL } from "../lib/cli-core.mjs";
 import { launchDecision } from "../lib/fanout-core.mjs";
+import { configuredProfiles, resolveProfile, commandFor, launchDecisionForProfile, safeConfig } from "../lib/assistant-core.mjs";
 import { terminalChoices, moveSelection, parseCap, buildFanArgs, autoOutName } from "../lib/wizard-core.mjs";
 import { TOOLS, addSprint, setStatus, setFields, bulkSet, prune, validateDocOrThrow, readValidate, serialize } from "../lib/mcp-core.mjs";
 import { parseAssignments } from "../lib/cli-core.mjs";
@@ -431,6 +432,19 @@ test("launchDecision: launch by default, --dry/--out preview, autonomous double-
   eq(launchDecision({ out: "x.sh" }).spawn, false, "--out → no spawn (wrote script)");
   eq(launchDecision({ autonomous: true }), { spawn: false, mode: "autonomous-needs-ack" }, "autonomous w/o ack → held");
   eq(launchDecision({ autonomous: true, okAutonomous: true }), { spawn: true, mode: "autonomous" }, "autonomous + ack → launch");
+});
+
+// WHY: a portable install must never surprise-start an agent; local authorization is the
+// boundary between a useful fanout script and an unintended autonomous coding session.
+test("assistant profiles default to manual and require local launch authorization", () => {
+  const graph = { meta: { assistants: { default: "manual" } } };
+  eq(resolveProfile(graph, {}, null).name, "manual", "manual is the safe default");
+  eq(launchDecisionForProfile(resolveProfile(graph, {}, null), { requestedLaunch: false }), { spawn: false, mode: "manual" }, "manual only emits handoffs");
+  const codex = resolveProfile(graph, { assistants: { codex: { launch: true, command: "codex {prompt}" } } }, "codex");
+  ok(launchDecisionForProfile(codex, { requestedLaunch: true }).spawn, "explicitly authorized local profile may launch");
+  eq(commandFor(codex, { prompt: "read brief" }), 'codex "read brief"', "template expands a quoted prompt");
+  throws(() => safeConfig({ token: "not-allowed" }), "credential", "local assistant config rejects secret-like fields");
+  ok(configuredProfiles(graph, {}).profiles.claude, "built-in profiles are discoverable");
 });
 
 // ── short flags + self-contained worker prompt ──────────────────────────────
@@ -2032,6 +2046,24 @@ test("buildPullProposals suppresses round-trip status echoes, keeps genuine huma
   const statusDeltas = deltas.filter((d) => d.field === "status");
   eq(statusDeltas.length, 1, "only the genuine move proposes a status delta — the two echoes are silent");
   eq([statusDeltas[0].key, statusDeltas[0].to], ["act", "complete"], "the human completion survives");
+});
+
+// WHY: a shipped slice (roadmap `complete`) whose Linear issue is stale at In Progress must NOT get an
+// un-completion proposal. That delta holds the stateId push (buildPushPlan skips held fields), and since
+// pull is propose-only the delta never applies — so the issue is stuck non-Done in the cycle forever.
+// Real 2026-07 incident: PID-552/553/435/538 sat In Progress despite shipping; direct API was the only fix.
+test("buildPullProposals never proposes un-completing a roadmap-complete slice from a stale Linear state", () => {
+  const cfg = normalizeLinearConfig({ linear: { team: "ENG", pull: "propose" } });
+  const graph = { meta: { schema_version: 1, program: "T", linear: { team: "ENG" } },
+    pis: [{ id: "a", title: "A", status: "active", sprints: [
+      { id: "s1", title: "Shipped", status: "complete", invoke: "done-slice", linear: "ENG-1" },
+    ]}]};
+  const inbound = [
+    { identifier: "ENG-1", title: "Shipped", priority: 0, state: { type: "started" }, team: "ENG", project: null },  // stale In Progress
+  ];
+  const { deltas } = buildPullProposals({ cfg, inbound, graph, backlog: null });
+  eq(deltas.filter((d) => d.field === "status").length, 0, "no un-completion delta → the Done push is not held");
+  eq(holdsFor(deltas).has("ENG-1:stateId"), false, "stateId is free to push, breaking the deadlock");
 });
 
 // WHY: pidgeon's board was tacky ("Headline — subhead...") because the project name was the

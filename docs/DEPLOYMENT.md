@@ -9,10 +9,10 @@ One rule governs everything on this page:
 
 | Surface | What you get | Install | Credentials come from |
 |---|---|---|---|
-| **CLI** (`roadmap ...`) | Everything: plan/fan/backlog/next/set/linear | `npm install && npm link` | Your shell environment |
+| **CLI** (`roadmap ...`) | Everything: plan/fan/backlog/next/set/linear | `npm install -D @connorbritain/roadmap` | Your shell environment |
 | **Claude Code plugin** | Skills (`/slice /backlog /imagine /prioritize /sync /init /fanout`), 4 agents, SessionStart hook, PR-watch monitor, **and** the MCP server `graph` (16 tools) — one install | `claude plugin install roadmap@roadmap` | Inherited from your shell environment |
 | **Standalone MCP** (no plugin) | Just the 16 `graph` tools in any MCP client | register `scripts/mcp.mjs` (below) | Inherited env, or an `env` block in the client's MCP config |
-| **Codex / other agents** | CLI + MCP (no skills/hooks) | CLI install + `npm run mcp` | Shell environment |
+| **Codex / other agents** | CLI + MCP + optional local assistant profile | `npm install -D @connorbritain/roadmap` + `roadmap init` | Shell environment |
 | **CI / headless** | CLI (`validate`, `render`, `linear sync`) | `npm ci` in the tool checkout | CI secret store → env var |
 
 A **consuming repo** commits only its own `docs/roadmap/roadmap.yaml` + `backlog.yaml` (and the generated `SLICES.md`/`BACKLOG.md`). The tool itself is installed once per machine. The Linear sync cursor (`.roadmap-linear-state.json`) is per-machine local state — git-ignore it.
@@ -20,8 +20,8 @@ A **consuming repo** commits only its own `docs/roadmap/roadmap.yaml` + `backlog
 ## 1 · CLI
 
 ```bash
-git clone https://github.com/ConnorBritain/roadmap.git
-cd roadmap && npm install && npm link      # once per Node environment (Windows + WSL are separate)
+npm install --save-dev @connorbritain/roadmap
+npx roadmap init
 ```
 
 `roadmap` now works from anywhere inside any repo that has `docs/roadmap/roadmap.yaml`. No configuration files beyond the repo's own YAML.
