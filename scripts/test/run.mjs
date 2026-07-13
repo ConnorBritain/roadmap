@@ -10,7 +10,7 @@ import {
 } from "../lib/graph.mjs";
 import { parseWorktrees } from "../lib/external-state.mjs";
 import { buildPlan } from "../lib/plan.mjs";
-import { nodeWeight, recommendConcurrency, probeDisk } from "../lib/recommend.mjs";
+import { nodeWeight, recommendConcurrency, probeDisk, probeReviewDebt } from "../lib/recommend.mjs";
 import { synthesizeBrief, branchFor, worktreeFor, baseRefOf, baseBranchOf, remoteOf, launchPrompt, agentCmdFor, DEFAULT_AGENT_CMD } from "../lib/brief.mjs";
 import { route, classify, buildArgs, findRepoRoot, missingRoadmapHelp, expandShort, REL } from "../lib/cli-core.mjs";
 import { launchDecision } from "../lib/fanout-core.mjs";
@@ -1259,6 +1259,56 @@ test("probeDisk honors the meta.worktree_gb override and never throws", () => {
   }
   // no-git cwd → estimate path fails → null, not a throw
   eq(probeDisk({ meta: {} }, "/nonexistent-dir-for-roadmap-test"), null, "unprobeable → null");
+});
+
+// ── review-debt backpressure ────────────────────────────────────────────────
+// WHY: review-debt backpressure is the "don't over-subscribe the HUMAN" half of the recommender —
+// each stuck PR / unresolved worktree must lower the review ceiling, or a growing merge queue keeps
+// getting fed new fanout it can never drain. reviewDebt is INJECTED (the core stays pure, like disk),
+// modifies the EXISTING review candidate (adds none), and can never floor concurrency below 1.
+test("reviewDebt lowers the review ceiling and clamps recommended (injected, floors at 1)", () => {
+  const bigSys = { sys: { cores: 64, totalGb: 256, freeGb: 256, platform: "linux" } };
+  const bound = recommendConcurrency(recoReady, recoGraph, { ...bigSys, reviewCeiling: 8, reviewDebt: 5 });
+  eq(bound.recommended, 3, "8 base − 5 debt = review ceiling 3 binds (smaller than cpu/ram/work)");
+  ok(bound.binding.why.startsWith("review"), `expected review-bound, got ${bound.binding.why}`);
+  ok(/−5 review debt/.test(bound.binding.why), "why names the debt that dropped the ceiling");
+  eq(bound.candidates.length, 4, "debt modifies the review candidate, adds none — still four ceilings");
+  const floored = recommendConcurrency(recoReady, recoGraph, { ...bigSys, reviewCeiling: 2, reviewDebt: 99 });
+  eq(floored.recommended, 1, "debt floors the review ceiling at 1, never 0 (soft ceiling)");
+  const none = recommendConcurrency(recoReady, recoGraph, { ...bigSys, reviewCeiling: 8, reviewDebt: 0 });
+  eq(none.recommended, recoReady.length, "zero debt leaves the base ceiling → work (4) binds, unchanged");
+});
+
+// WHY: the command-lane cap applies "finish the committed outcome before discovering the next" to
+// CONCURRENCY — while a dated objective is active, the machine must not fan wider than the lane has
+// ready, or the wave dilutes across off-lane slices. Gated on active: released → the candidate vanishes.
+test("command-lane cap clamps concurrency to the ready lane-slice count while active; none when released", () => {
+  const g = {
+    meta: { schema_version: 1, program: "T", default_gate: "dotnet build",
+            command_lane: { objective: "ship auth", pi: "a", until: "2026-07-15" } },
+    pis: [
+      { id: "a", title: "A", status: "active", sprints: [
+        sp("s1", { status: "active", invoke: "a-1" }), sp("s2", { status: "active", invoke: "a-2" }) ] },
+      { id: "b", title: "B", status: "active", sprints: [
+        sp("s1", { status: "active", invoke: "b-1" }), sp("s2", { status: "active", invoke: "b-2" }),
+        sp("s3", { status: "active", invoke: "b-3" }) ] },
+    ],
+  };
+  const ready = readyNodes(flatten(g));   // 5 ready overall; 2 are lane members (a-1, a-2)
+  const bigSys = { sys: { cores: 64, totalGb: 256, freeGb: 256, platform: "linux" }, reviewCeiling: 50 };
+  const active = recommendConcurrency(ready, g, { ...bigSys, today: "2026-07-13" });
+  eq(active.recommended, 2, "capped to the 2 READY lane slices, not the 5 ready overall");
+  ok(active.binding.why.startsWith("command-lane"), `expected command-lane-bound, got ${active.binding.why}`);
+  ok(active.candidates.some((c) => c.why === "command-lane — cap to lane"), "lane candidate present when active");
+  const released = recommendConcurrency(ready, g, { ...bigSys, today: "2026-07-16" });
+  eq(released.recommended, ready.length, "past the until date → lane releases → work cap (5) binds again");
+  ok(!released.candidates.some((c) => c.why === "command-lane — cap to lane"), "no lane candidate once released");
+});
+
+// WHY: probeReviewDebt runs at the real IO surfaces (plan, fanout) where gh/git may be absent, slow,
+// or outside a repo; it MUST degrade to 0 (no backpressure) rather than throw and take down the plan.
+test("probeReviewDebt degrades to 0 when gh/git can't answer (guarded)", () => {
+  eq(probeReviewDebt("/nonexistent-dir-for-roadmap-test", { meta: {} }), 0, "unprobeable → 0, never throws");
 });
 
 // ── store.mjs: the file-write-ordering / rollback guarantees (fs-backed) ──────
@@ -2903,7 +2953,7 @@ test("buildPlan waveCloses names the PIs a wave finishes", () => {
       { id: "s2", title: "two", status: "next", invoke: "b-two", touches: ["f2"], est_sessions: 1 },  // same file → later wave
     ]},
   ]};
-  const plan = buildPlan(g, { cap: 3, disk: null });
+  const plan = buildPlan(g, { cap: 3, disk: null, reviewDebt: 0 });
   eq(plan.waveCloses[0], ["a"], "wave 1 closes PI a (b still has contended work)");
   ok(plan.waveCloses[plan.waves.length - 1].includes("b"), "the final wave closes b");
 });

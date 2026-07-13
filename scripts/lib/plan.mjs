@@ -5,20 +5,22 @@
 // dependency cycle; callers catch.
 
 import { flatten, computeWaves, readyNodes, coherenceEnabled, isDone } from "./graph.mjs";
-import { recommendConcurrency, nodeWeight, probeDisk } from "./recommend.mjs";
+import { recommendConcurrency, nodeWeight, probeDisk, probeReviewDebt } from "./recommend.mjs";
 import { branchFor, worktreeFor, launchPrompt } from "./brief.mjs";
 import { normalizeExecution, suggestedConcurrency } from "./execution.mjs";
 
 const round = (x) => Math.round(x * 10) / 10;
 
-// buildPlan(graph, { cap, useFree, reviewCeiling, disk }). cap omitted -> the recommended cap.
-// disk: undefined -> probe the machine (the real surfaces); null/object -> injected (tests).
+// buildPlan(graph, { cap, useFree, reviewCeiling, reviewDebt, today, disk }). cap omitted -> the
+// recommended cap. disk/reviewDebt: undefined -> probe the real surfaces; value -> injected (tests).
 export function buildPlan(graph, opts = {}) {
   const model = flatten(graph);
   const ready = readyNodes(model);
   const rec = recommendConcurrency(ready, graph, {
     useFree: opts.useFree,
     reviewCeiling: opts.reviewCeiling ?? 5,
+    reviewDebt: opts.reviewDebt !== undefined ? opts.reviewDebt : probeReviewDebt(process.cwd(), graph),
+    today: opts.today ?? new Date().toISOString().slice(0, 10),
     disk: opts.disk !== undefined ? opts.disk : probeDisk(graph),
   });
   const cap = opts.cap != null ? Number(opts.cap) : rec.recommended;
