@@ -22,7 +22,7 @@ const SETTABLE = new Set([
   "title", "what", "status", "status_label", "est_sessions", "weight",
   "deps", "touches", "owns", "gate", "gated_on", "read_order", "resume_action",
   "prs", "completed_on", "optional", "execution", "track", "priority", "prompt", "kickoff_brief", "linear", "milestone", "dispatch_tier",
-  "shape", "risks", "estimate",
+  "shape", "risks", "estimate", "receipts", "outcome",
 ]);
 
 // ── tool registry ─────────────────────────────────────────────────────────────
@@ -54,7 +54,7 @@ export const TOOLS = [
       owns: { type: "array", items: { type: "string" } }, gate: { type: "string" },
       weight: { enum: ["heavy", "medium", "light"] }, gated_on: { type: "string" },
       read_order: { type: "array", items: { type: "string" } }, resume_action: { type: "string" },
-      prompt: { type: "string" }, milestone: { type: "string" }, status_label: { type: "string" },
+      prompt: { type: "string" }, milestone: { type: "string" }, outcome: { type: "string" }, status_label: { type: "string" },
       dispatch_tier: { type: "string" }, kickoff_brief: { type: "string" }, optional: { type: "boolean" },
       track: { type: "string" }, risks: { type: "array", items: { type: "string" } },
       priority: { type: "object", properties: { tier: { enum: ["P0", "P1", "P2", "P3"] }, weight: { type: "number", minimum: 0, maximum: 100 }, reason: { type: "string" } } } } } },
@@ -174,7 +174,7 @@ export function addSprint(doc, args) {
   if (pi < 0) throw new Error(`no PI "${args.pi}"`);
   const node = { id: args.id, title: args.title, status: args.status || "scheduled", invoke: args.invoke };
   // Same silent-drop hazard as addPi: keep in step with the sprint schema.
-  for (const k of ["what", "est_sessions", "gate", "weight", "gated_on", "resume_action", "prompt", "priority", "linear", "milestone",
+  for (const k of ["what", "est_sessions", "gate", "weight", "gated_on", "resume_action", "prompt", "priority", "linear", "milestone", "outcome",
     "shape", "estimate", "optional", "kickoff_brief", "track", "execution", "status_label", "dispatch_tier"]) if (args[k] != null) node[k] = args[k];
   for (const k of ["deps", "touches", "owns", "read_order", "risks"]) if (Array.isArray(args[k])) node[k] = args[k];
   const piMap = pisSeq(doc).items[pi];

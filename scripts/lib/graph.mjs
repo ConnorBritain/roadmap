@@ -84,6 +84,8 @@ export function flatten(graph) {
         resumeAction: sp.resume_action || "",
         kickoffBrief: sp.kickoff_brief || "brief",
         prs: sp.prs || [],
+        receipts: sp.receipts || null,   // optional per-slice completion evidence (see validate-core required_receipts)
+        outcome: sp.outcome || null,     // optional founder-review rollup group (render groups siblings by this)
         completedOn: sp.completed_on || null,
         pi,
         sprint: sp,

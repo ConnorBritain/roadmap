@@ -15,7 +15,7 @@ const SLUG = /^[a-z0-9][a-z0-9-]*$/;
 // Fields a caller may set on an item via backlog_set (id is structural, set only at add).
 const ITEM_SETTABLE = new Set([
   "title", "kind", "status", "priority", "source", "refs", "touches",
-  "est_sessions", "gate", "prompt", "prs", "completed_on", "promoted_to", "linear", "dispatch_tier",
+  "est_sessions", "gate", "prompt", "prs", "completed_on", "promoted_to", "linear", "dispatch_tier", "receipts",
 ]);
 
 // ── validation (plain object) ───────────────────────────────────────────────

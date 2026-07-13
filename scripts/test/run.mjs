@@ -2752,6 +2752,74 @@ test("validateGraph checks meta.discipline and meta.last_review shapes", () => {
   ok(validateGraph(base({ last_review: { date: "2026-07-06" } })).errors[0].includes("last_review"), "anchor missing commit rejected");
 });
 
+// ── finishing discipline: receipts + outcome rollups ─────────────────────────
+// WHY: receipts are optional finishing evidence surfaced in the PI table beside PRs. A slice with
+// NO receipts must render byte-identically to today or every existing SLICES.md churns under diff
+// review; a slice WITH receipts must show them, or the evidence a founder-review relies on is invisible.
+test("renderMarkdown shows receipts beside PRs only when present", () => {
+  const g = (receipts) => ({
+    meta: { schema_version: 1, program: "T" },
+    pis: [{ id: "a", title: "A", status: "active", sprints: [
+      { id: "s1", title: "Ship", status: "complete", invoke: "ship-it", what: "ship", ...(receipts ? { receipts } : {}) },
+    ] }],
+  });
+  ok(renderMarkdown(g({ build: "#12", test: "green" })).includes("📎 build,test"), "present receipts render beside the row");
+  ok(!renderMarkdown(g(null)).includes("📎"), "no receipts → no marker (row byte-identical to today)");
+});
+
+// WHY: "done" must mean PROVEN done — a complete slice missing a required receipt is a finishing
+// lie the warn must surface. But the check is opt-in: an unopted repo (no required_receipts) stays
+// silent, in-flight slices are exempt (evidence lands at completion), and a bad knob value must
+// ERROR rather than silently disable the guardrail (mirrors the milestone/composition validate tests).
+test("required_receipts warns a complete slice missing evidence; off when unset; guards its shape", () => {
+  const g = (discipline, receipts, status = "complete") => ({
+    meta: { schema_version: 1, program: "T", ...(discipline ? { discipline } : {}) },
+    pis: [{ id: "a", title: "A", status: "active", sprints: [
+      { id: "s1", title: "S", status, invoke: "x", ...(receipts ? { receipts } : {}) },
+    ] }],
+  });
+  const rw = (v) => validateGraph(v).warnings.filter((w) => w.startsWith("receipt:"));
+  const miss = rw(g({ required_receipts: ["build", "signoff"] }, { build: "#1" }));
+  eq(miss.length, 1, "one receipt warn for the slice");
+  ok(miss[0].includes("a/s1") && miss[0].includes("signoff") && !miss[0].includes("build"), "names the slice + only the ABSENT required key");
+  eq(rw(g({ required_receipts: ["build"] }, { build: "#1" })).length, 0, "complete + all required present → quiet");
+  eq(rw(g(null, null)).length, 0, "no required_receipts knob → check off (unopted repo stays silent)");
+  eq(rw(g({ required_receipts: ["build"] }, null, "active")).length, 0, "in-flight slice exempt (evidence lands at completion)");
+  ok(validateGraph(g({ required_receipts: ["nope"] }, null)).errors.some((e) => e.includes("required_receipts")), "unknown key rejected — a bad knob must not silently disable the check");
+  ok(validateGraph(g({ required_receipts: "build" }, null)).errors.some((e) => e.includes("required_receipts")), "non-array rejected");
+});
+
+// WHY: receipts + outcome are only useful if agents can WRITE them through the same allow-listed path
+// as every other field — set_fields/bulk_set for slices, backlog_set for grab-launched items — and the
+// allow-list must stay a GATE: an unknown field still throws "not settable" (no free-for-all write path).
+test("setFields/bulkSet/setItemFields accept receipts + outcome; the allow-list still gates", () => {
+  const y = `meta:\n  schema_version: 1\n  program: T\npis:\n  - id: a\n    title: A\n    status: active\n    sprints:\n      - { id: s1, title: S, status: active, invoke: x }\n      - { id: s2, title: T, status: next, invoke: y }\n`;
+  const doc = parseDocument(y);
+  eq(setFields(doc, { invoke: "x", fields: { receipts: { build: "#9" }, outcome: "launch" } }).fields, ["receipts", "outcome"], "both route through SETTABLE");
+  eq(bulkSet(parseDocument(y), { updates: [{ invoke: "x", fields: { outcome: "launch" } }, { invoke: "y", fields: { receipts: { publish: "npm" } } }] }).updated, ["x", "y"], "bulk_set routes receipts + outcome too");
+  validateDocOrThrow(doc);
+  throws(() => setFields(parseDocument(y), { invoke: "x", fields: { nope: 1 } }), "not settable", "the gate still rejects an unknown field");
+  const b = parseDocument("meta:\n  schema_version: 1\nitems:\n  - { id: b1, title: T, kind: chore, status: open }\n");
+  eq(setItemFields(b, { id: "b1", fields: { receipts: { publish: "npm" } } }).fields, ["receipts"], "grab-launched backlog items carry receipts");
+});
+
+// WHY: outcome rollups collapse many slices into ONE founder-review line (done/total) so a wave reads
+// as one shippable outcome. A slice with NO outcome must not change the render (byte-identical), and
+// siblings sharing an outcome must group into a SINGLE line — not one per slice, or the rollup is noise.
+test("renderMarkdown rolls slices up into one OUTCOME line, absent → none", () => {
+  const g = (withOutcome) => ({
+    meta: { schema_version: 1, program: "T" },
+    pis: [{ id: "a", title: "A", status: "active", sprints: [
+      { id: "s1", title: "One", status: "complete", invoke: "one", ...(withOutcome ? { outcome: "launch" } : {}) },
+      { id: "s2", title: "Two", status: "active", invoke: "two", ...(withOutcome ? { outcome: "launch" } : {}) },
+    ] }],
+  });
+  const md = renderMarkdown(g(true));
+  ok(md.includes("> OUTCOME launch: 1/2 ✅"), "two slices, one done → single 1/2 rollup line");
+  eq((md.match(/OUTCOME launch/g) || []).length, 1, "grouped into ONE line, not one per slice");
+  ok(!renderMarkdown(g(false)).includes("OUTCOME"), "no outcome → no rollup line (byte-identical)");
+});
+
 // WHY: the brief is the only channel to a worker session — if it doesn't forbid sprint/PI
 // creation, every helpful agent files follow-up scope and the roadmap doubles.
 test("synthesizeBrief carries the temperance contract", () => {
