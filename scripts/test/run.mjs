@@ -4056,18 +4056,23 @@ test("doctorReport surfaces each drift class as its own section and counts them"
     graph: docG,
     mergedPrs: [{ number: 7, headRefName: "x", title: "t", body: "roadmap: slice=alpha" }],   // shipped-but-open (marker match)
     allPrs: [{ number: 9, headRefName: branch, state: "OPEN", isDraft: true, mergeStateStatus: "CLEAN", statusCheckRollup: [] }], // stuck (draft)
-    worktrees: [{ branch: "a/s1", path: "/wt/x", dirty: true, merged: false }],   // parked, dirty
+    worktrees: [
+      { branch: "a/s1", path: "/wt/x", dirty: true, isMerged: false },   // parked + dirty → flagged
+      { branch: "a/s2", path: "/wt/y", dirty: false, isMerged: true },    // merged + clean → MUST be excluded
+    ],
     renderedVsDisk: { staleDocs: ["docs/SLICES.md"] },                            // docs behind the YAML
     linearDeltas: [{ kind: "slice", key: "alpha", field: "status", from: "next", to: "active", note: null }],
   });
   const titles = report.sections.map((s) => s.title);
+  const section = (t) => report.sections.find((s) => s.title === t);
   ok(titles.includes("Shipped but not marked complete"), "unrecorded merge surfaced");
   ok(titles.includes("Generated docs stale"), "stale docs surfaced");
   ok(titles.includes("Linear disagrees with the roadmap"), "linear delta surfaced");
   ok(titles.includes("Open PRs needing attention"), "stuck PR surfaced");
   ok(titles.includes("Stale fanout worktrees"), "dirty worktree surfaced");
   ok(!titles.includes("Structural validation"), "clean graph → no structural noise");
-  ok(report.sections.find((s) => s.title === "Shipped but not marked complete").items[0].includes("alpha"), "names the slice");
+  ok(section("Shipped but not marked complete").items[0].includes("alpha"), "names the slice");
+  eq(section("Stale fanout worktrees").items.length, 1, "only the unmerged/dirty worktree — the merged+clean one is excluded");
   eq(report.driftCount, 5, "one signal per class");
 });
 

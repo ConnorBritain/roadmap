@@ -18,8 +18,8 @@ const OPEN_PR_DRIFT = new Set(["draft", "conflicts", "checks-failing"]);
 // { sections: [], driftCount: 0 }. Inputs are already-gathered (see doctor.mjs):
 //   graph           parsed roadmap YAML
 //   mergedPrs       [{ number, headRefName, title, body }]        (state=merged)
-//   allPrs          [{ number, headRefName, state, isDraft, mergeStateStatus, statusCheckRollup }] (open)
-//   worktrees       fanout worktrees [{ branch, path, dirty, merged }]
+//   allPrs          [{ number, headRefName, state, isDraft, mergeStateStatus, statusCheckRollup }]
+//   worktrees       fanout worktrees [{ branch, path, dirty, isMerged }]
 //   renderedVsDisk  { staleDocs: [path, ...] } — generated docs whose on-disk bytes != a fresh render
 //   linearDeltas    result.proposals.deltas, or null when Linear is unconfigured/unreachable
 export function doctorReport({ graph, mergedPrs = [], allPrs = [], worktrees = [], renderedVsDisk = {}, linearDeltas = null } = {}) {
@@ -43,16 +43,17 @@ export function doctorReport({ graph, mergedPrs = [], allPrs = [], worktrees = [
   }
 
   // 4. OPEN-PR REALITY — roadmap-branch PRs stuck in a drift phase (draft/conflicts/failing).
+  //    allPrs may be null (gh absent) — external-state signals "unknown" that way; treat as none.
   add("Open PRs needing attention",
-    allPrs
+    (allPrs || [])
       .filter((pr) => matchesRoadmapBranches(pr.headRefName, graph) && OPEN_PR_DRIFT.has(prPhase(pr)))
       .map((pr) => `PR #${pr.number} (${pr.headRefName}) — ${prPhase(pr)}.`));
 
   // 5. STALE WORKTREES — fanout worktrees left unmerged or dirty (work parked mid-air).
   add("Stale fanout worktrees",
     worktrees
-      .filter((w) => !w.merged || w.dirty)
-      .map((w) => `${w.branch || "(detached)"} — ${w.merged ? "merged" : "UNMERGED"}, ${w.dirty ? "dirty" : "clean"} (${w.path}).`));
+      .filter((w) => !w.isMerged || w.dirty)
+      .map((w) => `${w.branch || "(detached)"} — ${w.isMerged ? "merged" : "UNMERGED"}, ${w.dirty ? "dirty" : "clean"} (${w.path}).`));
 
   // 6. STRUCTURAL — validate the graph; surface its own error/warning findings.
   const { errors, warnings } = validateGraph(graph);

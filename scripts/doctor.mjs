@@ -7,53 +7,19 @@
 // Usage: roadmap doctor [--json]   (--json like review.mjs; exits 1 when drift is found.)
 
 import { readFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
-import { join, resolve, sep } from "node:path";
+import { join } from "node:path";
 import { loadGraph } from "./lib/graph.mjs";
 import { loadBacklog, roadmapPaths, slicesRenderOpts } from "./lib/store.mjs";
 import { renderMarkdown } from "./lib/render-core.mjs";
 import { renderBacklogMarkdown } from "./lib/backlog-core.mjs";
+import { mergedPrs, allPrs, worktrees } from "./lib/external-state.mjs";
 import { doctorReport } from "./lib/doctor-core.mjs";
 
 const root = process.cwd();
 const args = process.argv.slice(2);
 
-// ── gatherers (all guarded → [] / null on any failure) ──────────────────────────
-function ghJson(state, fields) {
-  try {
-    const r = spawnSync("gh", ["pr", "list", "--state", state, "--limit", "100", "--json", fields],
-      { cwd: root, encoding: "utf8", timeout: 8000 });
-    if (r.status !== 0 || !r.stdout) return [];
-    return JSON.parse(r.stdout);
-  } catch { return []; }
-}
-const mergedPrs = () => ghJson("merged", "number,headRefName,title,body");
-const openPrs = () => ghJson("open", "number,headRefName,state,isDraft,mergeStateStatus,statusCheckRollup");
-
-// Fanout worktrees under the configured worktree_root, each tagged dirty/merged. Mirrors
-// cleanup.mjs's porcelain parse, minus the fetch — doctor is read-only, so it reads the
-// last-known remote-tracking state instead of touching the network.
-function fanoutWorktrees(meta) {
-  try {
-    const git = (...a) => spawnSync("git", a, { cwd: root, encoding: "utf8" });
-    const remote = meta.remote || "origin";
-    const base = meta.base_branch || "main";
-    const wtRoot = resolve(meta.worktree_root || resolve(root, "..", "_worktrees"));
-    const porcelain = (git("worktree", "list", "--porcelain").stdout || "").trim();
-    const all = (porcelain ? porcelain.split(/\n\n+/) : []).map((b) => ({
-      path: (b.match(/^worktree (.+)$/m) || [])[1],
-      branch: (b.match(/^branch refs\/heads\/(.+)$/m) || [])[1] || null,
-    })).filter((w) => w.path);
-    const mergedOut = git("branch", "--merged", `${remote}/${base}`, "--format=%(refname:short)").stdout || "";
-    const merged = new Set(mergedOut.split("\n").map((s) => s.trim()).filter(Boolean));
-    const underRoot = (p) => { const rp = resolve(p); return rp === wtRoot || rp.startsWith(wtRoot + sep); };
-    return all.filter((w) => underRoot(w.path)).map((w) => ({
-      ...w,
-      dirty: ((git("-C", w.path, "status", "--porcelain").stdout) || "").trim().length > 0,
-      merged: w.branch ? merged.has(w.branch) : false,
-    }));
-  } catch { return []; }
-}
+// The merged-PR / open-PR / fanout-worktree probes are the shared, guarded gatherers in
+// external-state.mjs (imported above). Only the two doctor-specific reads live here:
 
 // Generated docs whose on-disk bytes differ from a fresh render. Line endings are normalized
 // (renderMarkdown emits LF; a Windows checkout may hold CRLF) so a checkout-style newline
@@ -95,9 +61,9 @@ const backlog = loadBacklog(root);
 const report = doctorReport({
   graph,
   backlog,
-  mergedPrs: mergedPrs(),
-  allPrs: openPrs(),
-  worktrees: fanoutWorktrees(graph.meta || {}),
+  mergedPrs: mergedPrs(root),
+  allPrs: allPrs(root) || [],
+  worktrees: worktrees(root, graph.meta || {}),
   renderedVsDisk: staleDocs(graph, backlog),
   linearDeltas: await linearDeltas(),
 });
