@@ -25,7 +25,7 @@ import {
   teamSize, filterByTrack, dirClusters, EXEC_MODES, EXEC_ROLES,
 } from "../lib/execution.mjs";
 import { renderMarkdown } from "../lib/render-core.mjs";
-import { comparePriority, validatePriority, tierBadge, TIERS } from "../lib/priority.mjs";
+import { comparePriority, laneComparator, validatePriority, tierBadge, TIERS } from "../lib/priority.mjs";
 import {
   validateBacklog, addItem, setItemFields, validateBacklogDocOrThrow, sortByPriority,
   openCount, renderBacklogMarkdown, backlogItemToNode, pickNext, BACKLOG_TOOLS, readBacklogList,
@@ -2786,6 +2786,62 @@ test("commandLaneMembers + commandLaneActive: membership by pi/slices; releases 
   const doneP = [{ id: "P", title: "P", status: "active", sprints: [{ id: "s1", title: "a", status: "complete", invoke: "p-a" }] }];
   eq(commandLaneActive(g({ objective: "x", pi: "P", until: "2026-12-31" }, doneP), "2026-07-13"), false, "all members complete → released");
   eq(commandLaneActive(g(null, pis), "2026-07-13"), false, "no command_lane → never active");
+});
+
+// WHY: laneComparator is the boost primitive both sort sites share — if it ranks members first while
+// INACTIVE it would silently override priority on every graph; if it stays neutral while ACTIVE the
+// command lane never fires. The active/inactive split IS the feature and the backward-compat guarantee.
+test("laneComparator ranks in-lane slices first only when active", () => {
+  const members = new Set(["in"]);
+  const inNode = { invoke: "in" }, outNode = { invoke: "out" };
+  const active = laneComparator(members, true);
+  ok(active(inNode, outNode) < 0, "active → member sorts before non-member");
+  ok(active(outNode, inNode) > 0, "active → non-member sorts after member");
+  eq(active({ invoke: "out1" }, { invoke: "out2" }), 0, "active → two non-members tie (fall through to next key)");
+  const inactive = laneComparator(members, false);
+  eq(inactive(inNode, outNode), 0, "inactive → always 0, ordering untouched");
+});
+
+// WHY: an active command lane must float its member slices ahead of even a declared P0 — that IS the
+// finishing override. And an absent/expired lane must reorder nothing, or every existing plan reshuffles.
+test("computeWaves floats command-lane members to the top when active; untouched when inactive/absent", () => {
+  const build = (lane) => ({ meta: { schema_version: 1, program: "T", ...(lane ? { command_lane: lane } : {}) }, pis: [
+    { id: "a", title: "A", status: "active", sprints: [
+      sp("s1", { invoke: "aaa", touches: ["f1"], priority: { tier: "P0" } }),   // highest declared priority
+      sp("s2", { invoke: "zzz-lane", touches: ["f2"] }),                          // lane member, no priority
+    ]}]});
+  const lane = { objective: "ship it", until: "2026-12-31", slices: ["zzz-lane"] };
+  const gl = build(lane);
+  eq(computeWaves(flatten(gl), 1, { meta: gl.meta, today: "2026-07-13" }).waves[0].map((n) => n.invoke), ["zzz-lane"], "active lane beats the P0");
+  eq(computeWaves(flatten(gl), 1, { meta: gl.meta, today: "2027-06-01" }).waves[0].map((n) => n.invoke), ["aaa"], "past until → P0 wins again");
+  eq(computeWaves(flatten(build(null)), 1).waves[0].map((n) => n.invoke), ["aaa"], "no command_lane → priority order, byte-identical");
+});
+
+// WHY: `next` is the single-pick entry — a live command-lane slice must surface there ahead of an
+// alphabetically-earlier ordinary slice, and fall straight back once the lane expires or is absent.
+test("pickNext floats a command-lane slice to the pick when active; falls back when inactive/absent", () => {
+  const build = (lane) => ({ meta: { ...(lane ? { command_lane: lane } : {}) }, pis: [
+    { id: "a", title: "A", status: "active", sprints: [
+      sp("s1", { invoke: "aaa" }),          // alphabetically first, no priority
+      sp("s2", { invoke: "zzz-lane" }),     // lane member
+    ]}]});
+  const lane = { objective: "ship it", until: "2026-12-31", slices: ["zzz-lane"] };
+  eq(pickNext(build(lane), null, "2026-07-13").node.invoke, "zzz-lane", "active lane wins the slice pick");
+  eq(pickNext(build(lane), null, "2027-06-01").node.invoke, "aaa", "expired lane → alpha order");
+  eq(pickNext(build(null), null).node.invoke, "aaa", "no lane / no today → alpha order, unchanged");
+});
+
+// WHY: a command_lane pointing at a PI or slice that doesn't exist looks armed but boosts nothing —
+// a dangling ref must WARN (not silently cover zero slices), and a broken shape must ERROR.
+test("validateGraph checks meta.command_lane shape and warns on dangling refs", () => {
+  const base = (lane) => ({ meta: { schema_version: 1, program: "T", command_lane: lane }, pis: [
+    { id: "a", title: "A", status: "active", sprints: [{ id: "s1", title: "S", status: "active", invoke: "real", est_sessions: 1 }] }] });
+  eq(validateGraph(base({ objective: "ship", until: "2026-12-31", pi: "a" })).errors, [], "valid lane (pi resolves) passes");
+  eq(validateGraph(base({ objective: "ship", until: "2026-12-31", slices: ["real"] })).errors, [], "valid lane (slice resolves) passes");
+  ok(validateGraph(base({ objective: "ship", until: "next-week" })).errors.some((e) => e.includes("until")), "non-date until rejected");
+  ok(validateGraph(base({ until: "2026-12-31" })).errors.some((e) => e.includes("objective")), "missing objective rejected");
+  ok(validateGraph(base({ objective: "ship", until: "2026-12-31", pi: "ghost" })).warnings.some((w) => w.includes("command_lane")), "dangling pi warns");
+  ok(validateGraph(base({ objective: "ship", until: "2026-12-31", slices: ["nope"] })).warnings.some((w) => w.includes("command_lane")), "dangling slice warns");
 });
 
 // WHY: review-debt backpressure + drift-doctor both count unresolved worktrees off this parse; a wrong

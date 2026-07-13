@@ -41,3 +41,11 @@ export function comparePriority(a, b) {
 export function tierBadge(p) {
   return p && TIER_RANK.has(p.tier) ? p.tier : null;
 }
+
+// Command-lane sort boost (see graph.mjs commandLaneMembers/Active). When a dated command lane is
+// active, its member slices sort FIRST — ahead of even declared priority — so finishing the committed
+// objective beats discovering the next slice. Inactive (or no lane) → always 0, so the caller's
+// existing ordering is byte-for-byte untouched: the backward-compat guarantee.
+export function laneComparator(members, active) {
+  return (a, b) => active ? ((members.has(a.invoke) ? 0 : 1) - (members.has(b.invoke) ? 0 : 1)) : 0;
+}
