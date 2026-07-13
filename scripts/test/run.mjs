@@ -2048,6 +2048,24 @@ test("buildPullProposals suppresses round-trip status echoes, keeps genuine huma
   eq([statusDeltas[0].key, statusDeltas[0].to], ["act", "complete"], "the human completion survives");
 });
 
+// WHY: a shipped slice (roadmap `complete`) whose Linear issue is stale at In Progress must NOT get an
+// un-completion proposal. That delta holds the stateId push (buildPushPlan skips held fields), and since
+// pull is propose-only the delta never applies — so the issue is stuck non-Done in the cycle forever.
+// Real 2026-07 incident: PID-552/553/435/538 sat In Progress despite shipping; direct API was the only fix.
+test("buildPullProposals never proposes un-completing a roadmap-complete slice from a stale Linear state", () => {
+  const cfg = normalizeLinearConfig({ linear: { team: "ENG", pull: "propose" } });
+  const graph = { meta: { schema_version: 1, program: "T", linear: { team: "ENG" } },
+    pis: [{ id: "a", title: "A", status: "active", sprints: [
+      { id: "s1", title: "Shipped", status: "complete", invoke: "done-slice", linear: "ENG-1" },
+    ]}]};
+  const inbound = [
+    { identifier: "ENG-1", title: "Shipped", priority: 0, state: { type: "started" }, team: "ENG", project: null },  // stale In Progress
+  ];
+  const { deltas } = buildPullProposals({ cfg, inbound, graph, backlog: null });
+  eq(deltas.filter((d) => d.field === "status").length, 0, "no un-completion delta → the Done push is not held");
+  eq(holdsFor(deltas).has("ENG-1:stateId"), false, "stateId is free to push, breaking the deadlock");
+});
+
 // WHY: pidgeon's board was tacky ("Headline — subhead...") because the project name was the
 // PI title verbatim. The name must be the headline (pre-dash), with the dropped subhead
 // preserved in the description so no context is lost.
