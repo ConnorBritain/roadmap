@@ -1,10 +1,23 @@
 #!/usr/bin/env node
-// roadmap — validate a roadmap.yaml.
-// Thin wrapper around lib/validate-core.mjs. Exits non-zero on any error.
+// roadmap — validate a roadmap.yaml AND its sibling backlog.yaml.
+//
+// Thin wrapper around lib/validate-core.mjs (roadmap graph) + lib/backlog-core.mjs
+// (parsed-object schema) + lib/backlog-audit.mjs (raw-text damage). Exits
+// non-zero on any error surfaced by any layer.
+//
 // Usage: node validate.mjs [path-to-roadmap.yaml]   (default: docs/roadmap/roadmap.yaml)
+//
+// Backlog checks are OPT-IN by convention: if a `backlog.yaml` sibling exists
+// next to the roadmap.yaml, it is validated too. Absent → validation stays
+// roadmap-only, preserving backward compatibility for repos that don't use it.
 
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { parse as parseYaml } from "yaml";
 import { loadGraph } from "./lib/graph.mjs";
 import { validateGraph } from "./lib/validate-core.mjs";
+import { validateBacklog } from "./lib/backlog-core.mjs";
+import { auditBacklog, AUDIT_CODES } from "./lib/backlog-audit.mjs";
 
 const path = process.argv[2] || "docs/roadmap/roadmap.yaml";
 
@@ -16,13 +29,67 @@ try {
   process.exit(2);
 }
 
-const { errors, warnings, nodeCount } = validateGraph(graph);
+const graphResult = validateGraph(graph);
+for (const w of graphResult.warnings) console.warn(`⚠ ${w}`);
+const graphErrors = graphResult.errors;
 
-for (const w of warnings) console.warn(`⚠ ${w}`);
-if (errors.length) {
-  for (const e of errors) console.error(`✗ ${e}`);
-  console.error(`\n${errors.length} error(s) in ${path}`);
+// Backlog sibling — opt-in by presence. A repo without one skips this half.
+const backlogPath = join(dirname(path), "backlog.yaml");
+const backlogErrors = [];
+const backlogWarnings = [];
+let backlogItemCount = null;
+
+if (existsSync(backlogPath)) {
+  let text;
+  try {
+    text = readFileSync(backlogPath, "utf8");
+  } catch (e) {
+    console.error(`✗ could not read ${backlogPath}: ${e.message}`);
+    process.exit(2);
+  }
+
+  // Raw-text audit FIRST — the parsed object may look clean while the text is
+  // quietly damaged (duplicate title keys, orphan reasons, bare stub id-lines).
+  // This is the check that catches what `yaml.parse` silently normalizes away
+  // AND the check that names the line to fix when yaml.parse throws.
+  const audit = auditBacklog(text);
+  for (const f of audit.findings) {
+    // The four collision shapes gate; MALFORMED_ID is INFO, surfaced as a warning.
+    if (f.code === AUDIT_CODES.MALFORMED_ID) {
+      backlogWarnings.push(`${backlogPath}: ${f.message}`);
+    } else {
+      backlogErrors.push(`${backlogPath}: [${f.code}] ${f.message}`);
+    }
+  }
+
+  // Then the parsed-object schema check, but only if the text was parseable.
+  // A yaml.parse throw here is captured, reported, and does not mask the
+  // audit findings above (which are usually the reason the parse failed).
+  let parsed;
+  try {
+    parsed = parseYaml(text);
+  } catch (e) {
+    backlogErrors.push(`${backlogPath}: yaml.parse failed — ${e.message}`);
+  }
+  if (parsed) {
+    const bResult = validateBacklog(parsed);
+    for (const w of bResult.warnings) backlogWarnings.push(`${backlogPath}: ${w}`);
+    for (const err of bResult.errors) backlogErrors.push(`${backlogPath}: ${err}`);
+    backlogItemCount = bResult.itemCount;
+  }
+
+  for (const w of backlogWarnings) console.warn(`⚠ ${w}`);
+}
+
+const allErrors = [...graphErrors, ...backlogErrors];
+if (allErrors.length) {
+  for (const e of allErrors) console.error(`✗ ${e}`);
+  const parts = [`${allErrors.length} error(s) in ${path}`];
+  if (backlogErrors.length) parts.push(`(${backlogErrors.length} in the sibling backlog.yaml)`);
+  console.error(`\n${parts.join(" ")}`);
   process.exit(1);
 }
-console.log(`✓ ${path} valid — ${(graph.pis || []).length} PIs, ${nodeCount} sprints, ${warnings.length} warning(s)`);
+const totalWarnings = graphResult.warnings.length + backlogWarnings.length;
+const backlogSummary = backlogItemCount !== null ? `, ${backlogItemCount} backlog items` : "";
+console.log(`✓ ${path} valid — ${(graph.pis || []).length} PIs, ${graphResult.nodeCount} sprints${backlogSummary}, ${totalWarnings} warning(s)`);
 process.exit(0);
