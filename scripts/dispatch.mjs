@@ -92,6 +92,92 @@ export function repoSlugOf(root) {
   } catch { return null; }
 }
 
+// ── in-flight dispatch check (cross-engine race prevention) ───────────────────
+//
+// The problem: two engines can fire the same slice within a blind window and
+// neither knows about the other. Observed: Claude.ai Routines (portal) and
+// `roadmap dispatch --to claude-cloud` (this CLI) both accept a fire against
+// the same slice key. Each opens its own PR, each burns plan usage on
+// otherwise-identical work; arbitration falls on a human reviewer.
+//
+// The lock: before firing, scan open PRs on the origin remote for the
+// canonical marker line `roadmap: <type>=<key>` (the same line the fired
+// session's PR is instructed to include). If found and it opened within the
+// last `windowMs`, refuse with the existing PR's number + URL.
+//
+// The window bounds the recency call: an old completed PR with the marker
+// (subject shipped, PR merged) should not block a legitimate re-dispatch.
+// The default (24h) is roughly the time it takes for a slice to land start
+// → merge, and is deliberately generous — a false-positive refusal (told to
+// wait when you shouldn't) is repairable in seconds; a false-negative (two
+// PRs opened) wastes plan usage and requires arbitration.
+//
+// PURE: exec is injected so tests never touch the real gh. The real caller
+// runs `gh pr list --state open --search "in:body <marker>" --json ...`.
+export const DEFAULT_IN_FLIGHT_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+export function markerFor({ type, key }) {
+  return `roadmap: ${type}=${key}`;
+}
+
+export function checkInFlightDispatch({ type, key, listOpenPrs, now = Date.now, windowMs = DEFAULT_IN_FLIGHT_WINDOW_MS } = {}) {
+  if (!type || !key) throw new Error("checkInFlightDispatch requires { type, key }");
+  const marker = markerFor({ type, key });
+  let prs;
+  try {
+    prs = listOpenPrs(marker);
+  } catch {
+    // Any error asking gh (offline, not authed, rate limit) degrades to
+    // "unable to check" — do NOT refuse the dispatch on a lookup failure,
+    // because a lookup that always throws would deadlock every dispatch on
+    // a machine without gh. The race prevention is best-effort by design.
+    return null;
+  }
+  if (!Array.isArray(prs) || prs.length === 0) return null;
+
+  const cutoff = now() - windowMs;
+  // The marker is a whole line in the fired session's PR body — require an
+  // end boundary so a substring-adjacent key ('auth-login' vs 'auth-login-x')
+  // does not false-positive. The end anchor is any non-alphanumeric character
+  // OR end-of-string; the identifier grammar is [a-zA-Z0-9_-] so a `-` in the
+  // real marker suffix is treated as identifier continuation, which is right.
+  // A trailing dash is legal in slice keys, so tie the boundary to the
+  // char AFTER the marker: word-char (alphanumeric/underscore) OR a bare `-`
+  // between two word-chars extends the match. Simpler: escape the marker
+  // and check with a per-body regex that pins the tail to a non-identifier.
+  const escaped = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const markerRe = new RegExp(`${escaped}(?![A-Za-z0-9_-])`);
+  const recent = prs
+    .filter((pr) => pr && pr.body && markerRe.test(pr.body))
+    .filter((pr) => {
+      const ts = Date.parse(pr.createdAt || pr.created_at || "");
+      return Number.isFinite(ts) && ts >= cutoff;
+    })
+    .sort((a, b) => Date.parse(b.createdAt || b.created_at) - Date.parse(a.createdAt || a.created_at));
+
+  if (recent.length === 0) return null;
+  const winner = recent[0];
+  const ageMs = now() - Date.parse(winner.createdAt || winner.created_at);
+  return {
+    prNumber: winner.number,
+    url: winner.url,
+    ageMinutes: Math.round(ageMs / 60000),
+    marker,
+  };
+}
+
+// Concrete listOpenPrs — spawns `gh` and returns the parsed JSON. Kept small
+// and separate so tests inject their own listOpenPrs, never this.
+export function ghListOpenPrs(marker, { root = process.cwd() } = {}) {
+  const r = spawnSync(
+    "gh",
+    ["pr", "list", "--state", "open", "--search", `in:body ${marker}`, "--json", "number,url,body,createdAt", "--limit", "50"],
+    { cwd: root, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
+  );
+  if (r.status !== 0) throw new Error(`gh pr list failed: ${(r.stderr || "").trim() || `exit ${r.status}`}`);
+  return JSON.parse(r.stdout || "[]");
+}
+
 // Fire the routine (BETA endpoint — experimental header, shapes may change).
 // `trigger` accepts either the bare trig_… id OR the full endpoint URL exactly as
 // claude.ai's API-trigger modal shows it (the modal displays a URL, never a labeled id).
@@ -144,6 +230,29 @@ export async function runDispatch(root, key, opts = {}) {
   // launch surfaces as scope change on Linear's cycle graph either way.
   if (found.type === "slice" && !opts.force && outOfCycle(normalizeLinearConfig(found.graph.meta || {}), found.status)) {
     throw new Error(`'${key}' is out of the current cycle (status ${found.status}) — elect it first ('roadmap cycle plan', then 'roadmap cycle lock --promote ${key}'), or re-run with --force to override the cycle lock.`);
+  }
+
+  // In-flight cross-engine lock: refuse a re-dispatch if an open PR on origin
+  // already carries this dispatch marker within the recency window. Prevents
+  // the race where the Claude.ai Routines portal fires the same key seconds
+  // apart from `roadmap dispatch`. --force is the logged escape hatch; use
+  // opts.skipInFlightCheck internally to disable in tests. See
+  // DEFAULT_IN_FLIGHT_WINDOW_MS for the recency call.
+  if (!opts.force && !opts.skipInFlightCheck) {
+    const inFlight = checkInFlightDispatch({
+      type: found.type,
+      key,
+      listOpenPrs: opts.listOpenPrs || ((marker) => ghListOpenPrs(marker, { root })),
+      now: opts.now || Date.now,
+      windowMs: opts.inFlightWindowMs,
+    });
+    if (inFlight) {
+      throw new Error(
+        `'${key}' looks in-flight already: open PR #${inFlight.prNumber} carries '${inFlight.marker}' ` +
+        `(opened ~${inFlight.ageMinutes}m ago, ${inFlight.url}). Refusing to fire a duplicate — ` +
+        `close/merge that PR first, or re-run with --force to override the in-flight lock.`,
+      );
+    }
   }
 
   // ── claude-cloud: fire a Claude Code cloud session directly (NO Linear required) ──

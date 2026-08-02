@@ -48,7 +48,7 @@ import { platedKeys, plateDrainKeys, setPlateDoc, validatePlate } from "../lib/p
 import { addPi, setPlate, addPlate, removePlate } from "../lib/mcp-core.mjs";
 import { runSync, runProvision, syncInitiatives, syncMilestones, readCursor, runNote, runNotes, runProjectUpdate } from "../linear.mjs";
 import { noteBody, sliceForBranch, gitSnapshot, autoPostPlan } from "../lib/journal-core.mjs";
-import { runDispatch, runFanCloud, resolveRoutine, fireRoutine, routineEndpoint } from "../dispatch.mjs";
+import { runDispatch, runFanCloud, resolveRoutine, fireRoutine, routineEndpoint, checkInFlightDispatch, markerFor, DEFAULT_IN_FLIGHT_WINDOW_MS } from "../dispatch.mjs";
 import { electionPlan, outOfCycle } from "../lib/cycle-core.mjs";
 import { runCyclePlan, runCycleLock } from "../cycle.mjs";
 import { readReadyWave } from "../lib/mcp-core.mjs";
@@ -3941,6 +3941,154 @@ test("resolveRoutine tier: repo#tier > default#tier; a missing tier throws inste
 
 // WHY: claude-cloud is the Linear-FREE transport — it must dispatch from a repo with no
 // meta.linear at all, hit the beta endpoint with the exact headers, and carry the capsule.
+// ── in-flight cross-engine dispatch lock ──────────────────────────────────
+// WHY: two engines can fire the same slice within a blind window and neither
+// knows about the other (Claude.ai Routines portal + `roadmap dispatch --to
+// claude-cloud` both accept a fire against the same key). Both duplicate the
+// work, both burn plan usage, and arbitration falls on a human. The lock
+// scans open PRs for the canonical marker line and refuses on a recent hit.
+
+test("checkInFlightDispatch returns null when no open PR carries the marker", () => {
+  const result = checkInFlightDispatch({
+    type: "slice", key: "auth-login",
+    listOpenPrs: () => [],
+    now: () => 1000000,
+  });
+  eq(result, null, "empty PR list → proceed");
+});
+
+test("checkInFlightDispatch flags a recent open PR that carries the exact marker", () => {
+  const marker = markerFor({ type: "slice", key: "auth-login" });
+  const now = Date.parse("2026-08-02T12:00:00Z");
+  const created = new Date(now - 5 * 60 * 1000).toISOString(); // 5 min ago
+  const result = checkInFlightDispatch({
+    type: "slice", key: "auth-login",
+    listOpenPrs: () => [{ number: 42, url: "https://github.com/x/y/pull/42", body: `## Summary\n\n${marker}\n\nMore text`, createdAt: created }],
+    now: () => now,
+  });
+  ok(result, "the marker was found");
+  eq(result.prNumber, 42, "the winning PR is named");
+  eq(result.url, "https://github.com/x/y/pull/42", "the URL is passed through");
+  eq(result.ageMinutes, 5, "the age is reported to the caller so 'wait, or investigate' has evidence");
+  eq(result.marker, marker, "the marker searched for is echoed back");
+});
+
+test("checkInFlightDispatch ignores PRs whose marker does NOT match the key exactly", () => {
+  const now = Date.parse("2026-08-02T12:00:00Z");
+  const created = new Date(now - 60 * 1000).toISOString();
+  // A PR for a sibling slice must not block THIS dispatch — substring matches
+  // would false-positive on every dispatch whose key prefixes another key.
+  const result = checkInFlightDispatch({
+    type: "slice", key: "auth-login",
+    listOpenPrs: () => [{ number: 99, url: "u", body: `roadmap: slice=auth-login-followup\n`, createdAt: created }],
+    now: () => now,
+  });
+  eq(result, null, "the substring-adjacent key is not this key");
+});
+
+test("checkInFlightDispatch ignores PRs older than the recency window (a stale marker does not block re-dispatch)", () => {
+  const marker = markerFor({ type: "slice", key: "auth-login" });
+  const now = Date.parse("2026-08-02T12:00:00Z");
+  const created = new Date(now - 48 * 60 * 60 * 1000).toISOString(); // 48h ago > 24h default
+  const result = checkInFlightDispatch({
+    type: "slice", key: "auth-login",
+    listOpenPrs: () => [{ number: 7, url: "u", body: marker, createdAt: created }],
+    now: () => now,
+  });
+  eq(result, null, "48h-old PR outside the 24h window → proceed");
+});
+
+test("checkInFlightDispatch degrades to null when the listOpenPrs lookup itself throws (offline / unauthed / rate-limited)", () => {
+  // The race-prevention gate is best-effort by design: a lookup that always
+  // throws would deadlock every dispatch on a machine without gh, so a lookup
+  // failure MUST NOT refuse the dispatch. The alternative (silent lockout)
+  // is a strictly worse failure mode than a duplicate PR.
+  const result = checkInFlightDispatch({
+    type: "slice", key: "auth-login",
+    listOpenPrs: () => { throw new Error("gh: not authed"); },
+    now: () => Date.parse("2026-08-02T12:00:00Z"),
+  });
+  eq(result, null, "lookup failure → proceed (best-effort)");
+});
+
+test("checkInFlightDispatch picks the MOST RECENT match when multiple PRs carry the marker", () => {
+  // Rare but observed: an earlier PR was left open and abandoned; a second
+  // fire opened a new PR whose marker also matches. Naming the most recent
+  // one is what the user needs (the older one is a stale link they should
+  // close, but the recent one is what "already in flight" actually means).
+  const marker = markerFor({ type: "backlog", key: "b311" });
+  const now = Date.parse("2026-08-02T12:00:00Z");
+  const olderCreated = new Date(now - 4 * 60 * 60 * 1000).toISOString();
+  const newerCreated = new Date(now - 10 * 60 * 1000).toISOString();
+  const result = checkInFlightDispatch({
+    type: "backlog", key: "b311",
+    listOpenPrs: () => [
+      { number: 100, url: "u-old", body: marker, createdAt: olderCreated },
+      { number: 200, url: "u-new", body: marker, createdAt: newerCreated },
+    ],
+    now: () => now,
+  });
+  eq(result.prNumber, 200, "the newer PR wins (the older one is a stale link)");
+  eq(result.ageMinutes, 10, "the age reflects the newer PR");
+});
+
+test("checkInFlightDispatch throws on missing type/key (caller bug, not a data condition)", () => {
+  throws(() => checkInFlightDispatch({ key: "x", listOpenPrs: () => [] }), "requires { type, key }");
+  throws(() => checkInFlightDispatch({ type: "slice", listOpenPrs: () => [] }), "requires { type, key }");
+});
+
+test("markerFor produces the canonical dispatch marker line the fired session includes in its PR", () => {
+  eq(markerFor({ type: "slice", key: "auth-login" }), "roadmap: slice=auth-login");
+  eq(markerFor({ type: "backlog", key: "b42" }), "roadmap: backlog=b42");
+});
+
+test("runDispatch --to claude-cloud REFUSES when an open PR already carries the marker (recent, in-window)", async () => {
+  const root = tempRepo();
+  const fires = [];
+  const fakeFetch = async (url, init) => {
+    fires.push({ url, init });
+    return { ok: true, json: async () => ({ claude_code_session_id: "sess_1", claude_code_session_url: "u" }) };
+  };
+  const marker = markerFor({ type: "slice", key: "taken" });
+  const now = Date.parse("2026-08-02T12:00:00Z");
+  await runDispatch(root, "taken", {
+    to: "claude-cloud", fetchImpl: fakeFetch, env: {},
+    profiles: PROFILES, accountEmail: "connor@x.com", repoSlug: "other/repo",
+    listOpenPrs: () => [{ number: 77, url: "https://github.com/x/y/pull/77", body: marker, createdAt: new Date(now - 60000).toISOString() }],
+    now: () => now,
+  }).then(
+    () => { throw new Error("should have refused"); },
+    (e) => {
+      ok(e.message.includes("in-flight"), "refusal names 'in-flight'");
+      ok(e.message.includes("#77"), "refusal names the specific existing PR");
+      ok(e.message.includes("--force"), "refusal names the escape hatch");
+    },
+  );
+  eq(fires.length, 0, "no routine fired — the lock refused BEFORE spending plan usage");
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("runDispatch --force overrides the in-flight lock (the logged escape hatch)", async () => {
+  const root = tempRepo();
+  const fires = [];
+  const fakeFetch = async (url, init) => {
+    fires.push({ url, init });
+    return { ok: true, json: async () => ({ claude_code_session_id: "sess_2", claude_code_session_url: "u" }) };
+  };
+  const marker = markerFor({ type: "slice", key: "taken" });
+  const now = Date.parse("2026-08-02T12:00:00Z");
+  const r = await runDispatch(root, "taken", {
+    to: "claude-cloud", fetchImpl: fakeFetch, env: {},
+    profiles: PROFILES, accountEmail: "connor@x.com", repoSlug: "other/repo",
+    force: true,   // <-- the override
+    listOpenPrs: () => [{ number: 77, url: "u", body: marker, createdAt: new Date(now - 60000).toISOString() }],
+    now: () => now,
+  });
+  eq(r.transport, "claude-cloud", "the fire proceeded past the in-flight lock");
+  eq(fires.length, 1, "the routine did fire");
+  rmSync(root, { recursive: true, force: true });
+});
+
 test("runDispatch --to claude-cloud fires the routine without any Linear config", async () => {
   const root = tempRepo();   // fixture has NO meta.linear
   const fires = [];
