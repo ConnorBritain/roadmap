@@ -14,6 +14,7 @@ import { loadGraph } from "./graph.mjs";
 import { renderMarkdown } from "./render-core.mjs";
 import { validateDocOrThrow, serialize } from "./mcp-core.mjs";
 import { validateBacklogDocOrThrow, renderBacklogMarkdown, openCount } from "./backlog-core.mjs";
+import { auditBacklog } from "./backlog-audit.mjs";
 
 export const BACKLOG_REL = ["docs", "roadmap", "backlog.yaml"];
 const EMPTY_BACKLOG = "meta:\n  schema_version: 1\nitems: []\n";
@@ -84,15 +85,51 @@ export function mutateBoth(root, fn) {
   return { ...summary, rerendered: "docs/SLICES.md + docs/BACKLOG.md" };
 }
 
+/**
+ * Refusal thrown by mutateBacklog when the source backlog carries collision
+ * damage the audit gates on. Carries the findings so a caller can render them
+ * or decide to acknowledge them (the escape hatch below).
+ */
+export class DamagedBacklogError extends Error {
+  constructor(findings) {
+    const msg =
+      "docs/roadmap/backlog.yaml carries collision damage — refusing to mutate. " +
+      "Repair the file first (or set ROADMAP_ACKNOWLEDGE_DAMAGE=1 / pass " +
+      "acknowledgeDamage: true if you are capturing the damage itself):\n" +
+      findings.map((f) => `  [${f.code}] ${f.message}`).join("\n");
+    super(msg);
+    this.name = "DamagedBacklogError";
+    this.findings = findings;
+    this.code = "DAMAGED_BACKLOG";
+  }
+}
+
 // Same sequence for backlog.yaml → BACKLOG.md, plus a SLICES.md refresh (open-count pointer).
 // createIfMissing: backlog_add bootstraps the file on first capture.
-export function mutateBacklog(root, fn, { createIfMissing = false } = {}) {
+//
+// Pre-mutation damage gate: auditBacklog runs BEFORE YAML.parseDocument.
+// The four collision shapes (DUPLICATE_ID / STUB_ENTRY / REPEATED_KEY /
+// SEQUENCE_KEY_INTRUSION) refuse the mutation — appending onto a damaged
+// file compounds the damage and buries the evidence one entry deeper. The
+// escape hatch is `acknowledgeDamage: true` (or ROADMAP_ACKNOWLEDGE_DAMAGE=1
+// in the environment) for the case where the capture IS about the damage.
+export function mutateBacklog(root, fn, { createIfMissing = false, acknowledgeDamage = false } = {}) {
   const p = backlogPaths(root);
   let src;
   let created = false;
   if (existsSync(p.yaml)) src = readFileSync(p.yaml, "utf8");
   else if (createIfMissing) { src = EMPTY_BACKLOG; created = true; }
   else throw new Error(`no ${BACKLOG_REL.join("/")} — capture something first ('roadmap backlog add' or the backlog_add tool creates it)`);
+
+  // Only audit existing files — a bootstrapped EMPTY_BACKLOG is by construction clean.
+  if (!created) {
+    const audit = auditBacklog(src);
+    const ackEnv = process.env.ROADMAP_ACKNOWLEDGE_DAMAGE === "1";
+    if (audit.damaged && !acknowledgeDamage && !ackEnv) {
+      throw new DamagedBacklogError(audit.findings.filter((f) => f.code !== "MALFORMED_ID"));
+    }
+  }
+
   const doc = YAML.parseDocument(src);
   if (created) {
     // Block style from birth — the template's `items: []` is a flow seq, and items added to a

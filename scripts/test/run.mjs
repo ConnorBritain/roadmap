@@ -1375,6 +1375,110 @@ test("mutateBacklog createIfMissing bootstraps a block-style backlog.yaml and th
   rmSync(root, { recursive: true, force: true });
 });
 
+// WHY: appending onto a damaged backlog compounds the damage — the new entry
+// lands after a stub that will absorb IT on the next merge. The gate must
+// refuse the mutation with the specific findings so the caller can fix or
+// acknowledge.
+test("mutateBacklog refuses to append onto a backlog carrying collision damage", () => {
+  const root = tempRepo();
+  const bPath = join(root, "docs", "roadmap", "backlog.yaml");
+  const damaged = `meta:\n  schema_version: 1\nitems:\n  - id: b1\n    title: real\n    kind: bug\n    status: open\n  - id: b2\n  - id: b3\n    title: neighbour\n    kind: bug\n    status: open\n`;
+  writeFileSync(bPath, damaged, "utf8");
+  const originalSrc = readFileSync(bPath, "utf8");
+  let caught = null;
+  try {
+    mutateBacklog(root, (doc) => addItem(doc, { title: "new" }));
+  } catch (e) {
+    caught = e;
+  }
+  ok(caught, "the mutation threw");
+  eq(caught.code, "DAMAGED_BACKLOG", "the refusal carries a stable code");
+  ok(caught.findings.some((f) => f.code === "STUB_ENTRY" && f.id === "b2"),
+    "the finding attributes the damage to the specific stub id");
+  eq(readFileSync(bPath, "utf8"), originalSrc,
+    "a refused mutation leaves the file byte-identical (no partial write)");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: the ONE legitimate case for bypassing the audit is a REPAIR mutation
+// — the caller wants to read the damaged file so they can fix it. The audit
+// gate must let them through; the parsed-object validator downstream still
+// catches whatever the mutation didn't repair, so the escape doesn't lower
+// the overall correctness bar.
+test("mutateBacklog appends anyway when acknowledgeDamage:true (used for repair mutations)", () => {
+  const root = tempRepo();
+  const bPath = join(root, "docs", "roadmap", "backlog.yaml");
+  // A MALFORMED_ID sits at the audit gate — INFO for the audit, but the
+  // gating check is disabled by acknowledgeDamage. In practice the caller
+  // uses this to append onto a file that also carries harder damage the
+  // mutation itself is repairing; that case belongs to the repair-tool tests
+  // (not here), because at THIS layer the parsed-object validator would
+  // rightly refuse an unfixed structural break.
+  const withInfoOnly = `meta:\n  schema_version: 1\nitems:\n  - id: fix-x\n    title: legal custom slug\n    kind: bug\n    status: open\n`;
+  writeFileSync(bPath, withInfoOnly, "utf8");
+  const r = mutateBacklog(root, (doc) => addItem(doc, { title: "under acknowledge", kind: "bug" }), { acknowledgeDamage: true });
+  ok(r.added, "the mutation succeeded past the audit — parsed-object validator then runs as usual");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: environment override is the CI-safe escape hatch — a repair script or
+// data migration should not have to thread `acknowledgeDamage: true` through
+// every downstream helper.
+test("mutateBacklog honors ROADMAP_ACKNOWLEDGE_DAMAGE=1 in the environment", () => {
+  const root = tempRepo();
+  const bPath = join(root, "docs", "roadmap", "backlog.yaml");
+  // Real gating shape: a duplicate id. Without the env override the audit
+  // refuses; with it, the mutation proceeds and the parsed-object validator
+  // catches the same duplicate downstream (which is the correct final gate).
+  const damaged = `meta:\n  schema_version: 1\nitems:\n  - id: b1\n    title: one\n    kind: bug\n    status: open\n  - id: b1\n    title: two\n    kind: bug\n    status: open\n`;
+  writeFileSync(bPath, damaged, "utf8");
+  const prev = process.env.ROADMAP_ACKNOWLEDGE_DAMAGE;
+  process.env.ROADMAP_ACKNOWLEDGE_DAMAGE = "1";
+  try {
+    throws(
+      () => mutateBacklog(root, (doc) => addItem(doc, { title: "via env", kind: "bug" })),
+      "duplicate backlog id",
+      "the env override bypasses the audit but the parsed-object validator still refuses (correctness gate is not lowered)",
+    );
+  } finally {
+    if (prev == null) delete process.env.ROADMAP_ACKNOWLEDGE_DAMAGE;
+    else process.env.ROADMAP_ACKNOWLEDGE_DAMAGE = prev;
+  }
+  // Same fixture WITHOUT the env override: refuses at the audit with a much
+  // better line-attributed message, before ever reaching yaml.parseDocument.
+  let refusal = null;
+  try {
+    mutateBacklog(root, (doc) => addItem(doc, { title: "no env", kind: "bug" }));
+  } catch (e) {
+    refusal = e;
+  }
+  eq(refusal && refusal.code, "DAMAGED_BACKLOG", "without the env override, the audit gate names the shape");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: createIfMissing bootstraps an EMPTY_BACKLOG that is by construction
+// clean — it must not trip the gate (which would make the very first capture
+// impossible on a repo that adopts the backlog).
+test("mutateBacklog createIfMissing skips the damage gate on the empty bootstrap", () => {
+  const root = tempRepo();
+  // No backlog.yaml exists yet.
+  const r = mutateBacklog(root, (doc) => addItem(doc, { title: "first ever", kind: "bug" }), { createIfMissing: true });
+  eq(r.added, "b1", "clean bootstrap");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: MALFORMED_ID is INFO (custom slugs are legal); the gate must not
+// refuse a mutation onto a backlog that carries them, or every repo using
+// non-bNNN ids would be dead-locked.
+test("mutateBacklog does NOT gate on MALFORMED_ID findings alone (custom slugs are legal)", () => {
+  const root = tempRepo();
+  const bPath = join(root, "docs", "roadmap", "backlog.yaml");
+  writeFileSync(bPath, `meta:\n  schema_version: 1\nitems:\n  - id: fix-x\n    title: a custom slug\n    kind: bug\n    status: open\n`, "utf8");
+  const r = mutateBacklog(root, (doc) => addItem(doc, { title: "add on top", kind: "bug" }));
+  ok(r.added, "the mutation succeeded despite a MALFORMED_ID finding");
+  rmSync(root, { recursive: true, force: true });
+});
+
 // ── meta.agent_cmd launch template ────────────────────────────────────────────
 // WHY: the default template MUST reproduce today's claude command byte-for-byte, or every
 // existing roadmap's fanout launches change under people's feet; and a custom template must
