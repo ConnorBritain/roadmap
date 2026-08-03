@@ -88,6 +88,22 @@ export function validateGraph(graph) {
     }
   }
 
+  // Optional meta.dispatch — tunables for the cloud-dispatch machinery. Absent
+  // → all defaults apply (24h in-flight window, GitHub provider auto-detect).
+  if (meta.dispatch != null) {
+    if (typeof meta.dispatch !== "object" || Array.isArray(meta.dispatch)) {
+      err("meta.dispatch must be a mapping");
+    } else {
+      const w = meta.dispatch.in_flight_window_hours;
+      if (w != null && !(Number.isFinite(w) && w > 0)) {
+        err("meta.dispatch.in_flight_window_hours must be a number > 0 (a bad value would silently disable the cross-engine dispatch lock)");
+      }
+      if (meta.dispatch.provider != null && typeof meta.dispatch.provider !== "string") {
+        err("meta.dispatch.provider must be a string (e.g. 'github', 'gitlab', 'git-native', 'none')");
+      }
+    }
+  }
+
   // Optional meta.command_lane: a dated finishing override, SHAPE-validated in graph.mjs beside the
   // lane helpers (expiry vs `until` is a PLAN-time concern — the pure validator has no clock).
   const cl = validateCommandLane(graph);

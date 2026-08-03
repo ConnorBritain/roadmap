@@ -48,13 +48,15 @@ import { platedKeys, plateDrainKeys, setPlateDoc, validatePlate } from "../lib/p
 import { addPi, setPlate, addPlate, removePlate } from "../lib/mcp-core.mjs";
 import { runSync, runProvision, syncInitiatives, syncMilestones, readCursor, runNote, runNotes, runProjectUpdate } from "../linear.mjs";
 import { noteBody, sliceForBranch, gitSnapshot, autoPostPlan } from "../lib/journal-core.mjs";
-import { runDispatch, runFanCloud, resolveRoutine, fireRoutine, routineEndpoint } from "../dispatch.mjs";
+import { runDispatch, runFanCloud, resolveRoutine, fireRoutine, routineEndpoint, checkInFlightDispatch, markerFor, DEFAULT_IN_FLIGHT_WINDOW_MS, resolveInFlightWindowMs, dispatchStatus } from "../dispatch.mjs";
+import { githubAdapter, gitlabAdapter, gitNativeAdapter, resolveProvider, BUILTIN_PROVIDERS } from "../lib/dispatch-providers.mjs";
 import { electionPlan, outOfCycle } from "../lib/cycle-core.mjs";
 import { runCyclePlan, runCycleLock } from "../cycle.mjs";
 import { readReadyWave } from "../lib/mcp-core.mjs";
 import { loadGraph } from "../lib/graph.mjs";
 import { graphDiff, backlogDiff, reviewDigest, pisInFlight } from "../lib/review-core.mjs";
 import { doctorReport } from "../lib/doctor-core.mjs";
+import { auditBacklog, collectEntries, AUDIT_CODES, signatureOf, knownDamageOf } from "../lib/backlog-audit.mjs";
 import { parseDocument } from "yaml";
 import { join, resolve } from "node:path";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
@@ -1371,6 +1373,165 @@ test("mutateBacklog createIfMissing bootstraps a block-style backlog.yaml and th
   ok(/items:\n  - id: b1/.test(src), "block style from birth (not flow)");
   ok(readFileSync(join(root, "docs", "SLICES.md"), "utf8").includes("**Backlog:** 1 open item(s)"),
     "backlog mutation refreshes the SLICES.md open-count pointer");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: appending onto a damaged backlog compounds the damage — the new entry
+// lands after a stub that will absorb IT on the next merge. The gate must
+// refuse the mutation with the specific findings so the caller can fix or
+// acknowledge.
+test("mutateBacklog refuses to append onto a backlog carrying collision damage", () => {
+  const root = tempRepo();
+  const bPath = join(root, "docs", "roadmap", "backlog.yaml");
+  const damaged = `meta:\n  schema_version: 1\nitems:\n  - id: b1\n    title: real\n    kind: bug\n    status: open\n  - id: b2\n  - id: b3\n    title: neighbour\n    kind: bug\n    status: open\n`;
+  writeFileSync(bPath, damaged, "utf8");
+  const originalSrc = readFileSync(bPath, "utf8");
+  let caught = null;
+  try {
+    mutateBacklog(root, (doc) => addItem(doc, { title: "new" }));
+  } catch (e) {
+    caught = e;
+  }
+  ok(caught, "the mutation threw");
+  eq(caught.code, "DAMAGED_BACKLOG", "the refusal carries a stable code");
+  ok(caught.findings.some((f) => f.code === "STUB_ENTRY" && f.id === "b2"),
+    "the finding attributes the damage to the specific stub id");
+  eq(readFileSync(bPath, "utf8"), originalSrc,
+    "a refused mutation leaves the file byte-identical (no partial write)");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: the ONE legitimate case for bypassing the audit is a REPAIR mutation
+// — the caller wants to read the damaged file so they can fix it. The audit
+// gate must let them through; the parsed-object validator downstream still
+// catches whatever the mutation didn't repair, so the escape doesn't lower
+// the overall correctness bar.
+test("mutateBacklog appends anyway when acknowledgeDamage:true (used for repair mutations)", () => {
+  const root = tempRepo();
+  const bPath = join(root, "docs", "roadmap", "backlog.yaml");
+  // A MALFORMED_ID sits at the audit gate — INFO for the audit, but the
+  // gating check is disabled by acknowledgeDamage. In practice the caller
+  // uses this to append onto a file that also carries harder damage the
+  // mutation itself is repairing; that case belongs to the repair-tool tests
+  // (not here), because at THIS layer the parsed-object validator would
+  // rightly refuse an unfixed structural break.
+  const withInfoOnly = `meta:\n  schema_version: 1\nitems:\n  - id: fix-x\n    title: legal custom slug\n    kind: bug\n    status: open\n`;
+  writeFileSync(bPath, withInfoOnly, "utf8");
+  const r = mutateBacklog(root, (doc) => addItem(doc, { title: "under acknowledge", kind: "bug" }), { acknowledgeDamage: true });
+  ok(r.added, "the mutation succeeded past the audit — parsed-object validator then runs as usual");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: environment override is the CI-safe escape hatch — a repair script or
+// data migration should not have to thread `acknowledgeDamage: true` through
+// every downstream helper.
+test("mutateBacklog honors ROADMAP_ACKNOWLEDGE_DAMAGE=1 in the environment", () => {
+  const root = tempRepo();
+  const bPath = join(root, "docs", "roadmap", "backlog.yaml");
+  // Real gating shape: a duplicate id. Without the env override the audit
+  // refuses; with it, the mutation proceeds and the parsed-object validator
+  // catches the same duplicate downstream (which is the correct final gate).
+  const damaged = `meta:\n  schema_version: 1\nitems:\n  - id: b1\n    title: one\n    kind: bug\n    status: open\n  - id: b1\n    title: two\n    kind: bug\n    status: open\n`;
+  writeFileSync(bPath, damaged, "utf8");
+  const prev = process.env.ROADMAP_ACKNOWLEDGE_DAMAGE;
+  process.env.ROADMAP_ACKNOWLEDGE_DAMAGE = "1";
+  try {
+    throws(
+      () => mutateBacklog(root, (doc) => addItem(doc, { title: "via env", kind: "bug" })),
+      "duplicate backlog id",
+      "the env override bypasses the audit but the parsed-object validator still refuses (correctness gate is not lowered)",
+    );
+  } finally {
+    if (prev == null) delete process.env.ROADMAP_ACKNOWLEDGE_DAMAGE;
+    else process.env.ROADMAP_ACKNOWLEDGE_DAMAGE = prev;
+  }
+  // Same fixture WITHOUT the env override: refuses at the audit with a much
+  // better line-attributed message, before ever reaching yaml.parseDocument.
+  let refusal = null;
+  try {
+    mutateBacklog(root, (doc) => addItem(doc, { title: "no env", kind: "bug" }));
+  } catch (e) {
+    refusal = e;
+  }
+  eq(refusal && refusal.code, "DAMAGED_BACKLOG", "without the env override, the audit gate names the shape");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: createIfMissing bootstraps an EMPTY_BACKLOG that is by construction
+// clean — it must not trip the gate (which would make the very first capture
+// impossible on a repo that adopts the backlog).
+test("mutateBacklog createIfMissing skips the damage gate on the empty bootstrap", () => {
+  const root = tempRepo();
+  // No backlog.yaml exists yet.
+  const r = mutateBacklog(root, (doc) => addItem(doc, { title: "first ever", kind: "bug" }), { createIfMissing: true });
+  eq(r.added, "b1", "clean bootstrap");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: MALFORMED_ID is INFO (custom slugs are legal); the gate must not
+// refuse a mutation onto a backlog that carries them, or every repo using
+// non-bNNN ids would be dead-locked.
+test("mutateBacklog does NOT gate on MALFORMED_ID findings alone (custom slugs are legal)", () => {
+  const root = tempRepo();
+  const bPath = join(root, "docs", "roadmap", "backlog.yaml");
+  writeFileSync(bPath, `meta:\n  schema_version: 1\nitems:\n  - id: fix-x\n    title: a custom slug\n    kind: bug\n    status: open\n`, "utf8");
+  const r = mutateBacklog(root, (doc) => addItem(doc, { title: "add on top", kind: "bug" }));
+  ok(r.added, "the mutation succeeded despite a MALFORMED_ID finding");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: adopting the audit shouldn't lock a repo out of its own backlog. If
+// a repo pins its pre-existing damage in meta.audit.known_damage, the gate
+// respects that pin and lets `roadmap backlog add` work. New damage
+// (signatures not in the baseline) still refuses — the tolerance is
+// specific, not blanket.
+test("mutateBacklog respects meta.audit.known_damage — a pinned finding lets the audit gate pass (object validator remains final)", () => {
+  const root = tempRepo();
+  const bPath = join(root, "docs", "roadmap", "backlog.yaml");
+  // The pin authorizes the AUDIT layer to skip STUB_ENTRY:b2. Without the
+  // pin, the audit refuses first with a DamagedBacklogError. With it, the
+  // audit passes and the parsed-object validator runs — which then throws
+  // its own specific error (b2 missing title). That is BY DESIGN: the pin
+  // grandfathers the audit's tolerance, NOT the object validator's; the
+  // final correctness gate is not lowered.
+  writeFileSync(bPath,
+    `meta:\n  schema_version: 1\n  audit:\n    known_damage:\n      - STUB_ENTRY:b2\nitems:\n  - id: b1\n    title: real\n    kind: bug\n    status: open\n  - id: b2\n`,
+    "utf8");
+  let caught = null;
+  try {
+    mutateBacklog(root, (doc) => addItem(doc, { title: "captured", kind: "bug" }));
+  } catch (e) { caught = e; }
+  ok(caught, "the mutation refused — but at the object validator, not the audit");
+  ok(!(caught.code === "DAMAGED_BACKLOG"),
+    "specifically NOT a DamagedBacklogError — the audit passed thanks to the pin");
+  ok(caught.message.includes("title required") || caught.message.includes("b2"),
+    "the refusal now comes from validateBacklogDocOrThrow, which sees the same b2 missing its title");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: the pin is SPECIFIC — pinning STUB_ENTRY:b2 must not implicitly
+// tolerate STUB_ENTRY:b9 or DUPLICATE_ID:b2. A repo adopts the audit for
+// the SPECIFIC damage it's grandfathering; new damage of ANY shape still
+// refuses.
+test("mutateBacklog still refuses on NEW damage even when other damage is pinned", () => {
+  const root = tempRepo();
+  const bPath = join(root, "docs", "roadmap", "backlog.yaml");
+  // Pin a specific DUPLICATE_ID:b1, but the file ALSO carries a fresh
+  // DUPLICATE_ID:b9 the pin doesn't cover. The refusal must name the
+  // unpinned signature specifically — pinning one shape must not silently
+  // tolerate every shape.
+  writeFileSync(bPath,
+    `meta:\n  schema_version: 1\n  audit:\n    known_damage:\n      - DUPLICATE_ID:b1\nitems:\n  - id: b1\n    title: first\n    kind: bug\n    status: open\n  - id: b1\n    title: duped-known\n    kind: chore\n    status: open\n  - id: b9\n    title: nine\n    kind: bug\n    status: open\n  - id: b9\n    title: duped-unknown\n    kind: chore\n    status: open\n`,
+    "utf8");
+  let caught = null;
+  try {
+    mutateBacklog(root, (doc) => addItem(doc, { title: "should refuse", kind: "bug" }));
+  } catch (e) { caught = e; }
+  ok(caught, "the mutation was refused");
+  ok(caught.findings.some((f) => f.id === "b9" && f.code === "DUPLICATE_ID"),
+    "the refusal names the UNPINNED duplicate (b9), not the pinned one (b1)");
+  ok(!caught.findings.some((f) => f.id === "b1"),
+    "the pinned duplicate is NOT in the active findings — the pin worked for that specific signature");
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -3836,6 +3997,409 @@ test("resolveRoutine tier: repo#tier > default#tier; a missing tier throws inste
 
 // WHY: claude-cloud is the Linear-FREE transport — it must dispatch from a repo with no
 // meta.linear at all, hit the beta endpoint with the exact headers, and carry the capsule.
+// ── in-flight cross-engine dispatch lock ──────────────────────────────────
+// WHY: two engines can fire the same slice within a blind window and neither
+// knows about the other (Claude.ai Routines portal + `roadmap dispatch --to
+// claude-cloud` both accept a fire against the same key). Both duplicate the
+// work, both burn plan usage, and arbitration falls on a human. The lock
+// scans open PRs for the canonical marker line and refuses on a recent hit.
+
+test("checkInFlightDispatch returns null when no open PR carries the marker", () => {
+  const result = checkInFlightDispatch({
+    type: "slice", key: "auth-login",
+    listOpenPrs: () => [],
+    now: () => 1000000,
+  });
+  eq(result, null, "empty PR list → proceed");
+});
+
+test("checkInFlightDispatch flags a recent open PR that carries the exact marker", () => {
+  const marker = markerFor({ type: "slice", key: "auth-login" });
+  const now = Date.parse("2026-08-02T12:00:00Z");
+  const created = new Date(now - 5 * 60 * 1000).toISOString(); // 5 min ago
+  const result = checkInFlightDispatch({
+    type: "slice", key: "auth-login",
+    listOpenPrs: () => [{ number: 42, url: "https://github.com/x/y/pull/42", body: `## Summary\n\n${marker}\n\nMore text`, createdAt: created }],
+    now: () => now,
+  });
+  ok(result, "the marker was found");
+  eq(result.prNumber, 42, "the winning PR is named");
+  eq(result.url, "https://github.com/x/y/pull/42", "the URL is passed through");
+  eq(result.ageMinutes, 5, "the age is reported to the caller so 'wait, or investigate' has evidence");
+  eq(result.marker, marker, "the marker searched for is echoed back");
+});
+
+test("checkInFlightDispatch ignores PRs whose marker does NOT match the key exactly", () => {
+  const now = Date.parse("2026-08-02T12:00:00Z");
+  const created = new Date(now - 60 * 1000).toISOString();
+  // A PR for a sibling slice must not block THIS dispatch — substring matches
+  // would false-positive on every dispatch whose key prefixes another key.
+  const result = checkInFlightDispatch({
+    type: "slice", key: "auth-login",
+    listOpenPrs: () => [{ number: 99, url: "u", body: `roadmap: slice=auth-login-followup\n`, createdAt: created }],
+    now: () => now,
+  });
+  eq(result, null, "the substring-adjacent key is not this key");
+});
+
+test("checkInFlightDispatch ignores PRs older than the recency window (a stale marker does not block re-dispatch)", () => {
+  const marker = markerFor({ type: "slice", key: "auth-login" });
+  const now = Date.parse("2026-08-02T12:00:00Z");
+  const created = new Date(now - 48 * 60 * 60 * 1000).toISOString(); // 48h ago > 24h default
+  const result = checkInFlightDispatch({
+    type: "slice", key: "auth-login",
+    listOpenPrs: () => [{ number: 7, url: "u", body: marker, createdAt: created }],
+    now: () => now,
+  });
+  eq(result, null, "48h-old PR outside the 24h window → proceed");
+});
+
+test("checkInFlightDispatch degrades to null when the listOpenPrs lookup itself throws (offline / unauthed / rate-limited)", () => {
+  // The race-prevention gate is best-effort by design: a lookup that always
+  // throws would deadlock every dispatch on a machine without gh, so a lookup
+  // failure MUST NOT refuse the dispatch. The alternative (silent lockout)
+  // is a strictly worse failure mode than a duplicate PR.
+  const result = checkInFlightDispatch({
+    type: "slice", key: "auth-login",
+    listOpenPrs: () => { throw new Error("gh: not authed"); },
+    now: () => Date.parse("2026-08-02T12:00:00Z"),
+  });
+  eq(result, null, "lookup failure → proceed (best-effort)");
+});
+
+test("checkInFlightDispatch picks the MOST RECENT match when multiple PRs carry the marker", () => {
+  // Rare but observed: an earlier PR was left open and abandoned; a second
+  // fire opened a new PR whose marker also matches. Naming the most recent
+  // one is what the user needs (the older one is a stale link they should
+  // close, but the recent one is what "already in flight" actually means).
+  const marker = markerFor({ type: "backlog", key: "b311" });
+  const now = Date.parse("2026-08-02T12:00:00Z");
+  const olderCreated = new Date(now - 4 * 60 * 60 * 1000).toISOString();
+  const newerCreated = new Date(now - 10 * 60 * 1000).toISOString();
+  const result = checkInFlightDispatch({
+    type: "backlog", key: "b311",
+    listOpenPrs: () => [
+      { number: 100, url: "u-old", body: marker, createdAt: olderCreated },
+      { number: 200, url: "u-new", body: marker, createdAt: newerCreated },
+    ],
+    now: () => now,
+  });
+  eq(result.prNumber, 200, "the newer PR wins (the older one is a stale link)");
+  eq(result.ageMinutes, 10, "the age reflects the newer PR");
+});
+
+test("checkInFlightDispatch throws on missing type/key (caller bug, not a data condition)", () => {
+  throws(() => checkInFlightDispatch({ key: "x", listOpenPrs: () => [] }), "requires { type, key }");
+  throws(() => checkInFlightDispatch({ type: "slice", listOpenPrs: () => [] }), "requires { type, key }");
+});
+
+test("markerFor produces the canonical dispatch marker line the fired session includes in its PR", () => {
+  eq(markerFor({ type: "slice", key: "auth-login" }), "roadmap: slice=auth-login");
+  eq(markerFor({ type: "backlog", key: "b42" }), "roadmap: backlog=b42");
+});
+
+// WHY: the 24h default is our shop's judgment call, not a physical constant.
+// A slower shop with week-long open PRs would deadlock under the default;
+// a fast shop would want a tighter window to catch a genuine same-hour
+// re-dispatch. `meta.dispatch.in_flight_window_hours` exposes the knob.
+test("resolveInFlightWindowMs reads meta.dispatch.in_flight_window_hours, respects the override, defaults on absence", () => {
+  eq(resolveInFlightWindowMs(), DEFAULT_IN_FLIGHT_WINDOW_MS, "no inputs → default 24h");
+  eq(resolveInFlightWindowMs({ meta: { dispatch: { in_flight_window_hours: 72 } } }),
+    72 * 60 * 60 * 1000, "the configured value is used");
+  eq(resolveInFlightWindowMs({ meta: { dispatch: { in_flight_window_hours: 4 } } }),
+    4 * 60 * 60 * 1000, "a tighter window is honored");
+  eq(resolveInFlightWindowMs({ override: 5 * 60 * 1000, meta: { dispatch: { in_flight_window_hours: 72 } } }),
+    5 * 60 * 1000, "an explicit override beats the meta value (per-call knob for tests)");
+});
+
+// WHY: a bad configured value (typo, zero, negative, non-number) that
+// silently deadlocked every dispatch would be a worse failure than the
+// config typo itself — the default takes over on any invalid shape.
+test("resolveInFlightWindowMs falls back to the default on any malformed meta value", () => {
+  eq(resolveInFlightWindowMs({ meta: { dispatch: { in_flight_window_hours: 0 } } }),
+    DEFAULT_IN_FLIGHT_WINDOW_MS, "0 → default (a zero window would deadlock everything)");
+  eq(resolveInFlightWindowMs({ meta: { dispatch: { in_flight_window_hours: -1 } } }),
+    DEFAULT_IN_FLIGHT_WINDOW_MS, "negative → default");
+  eq(resolveInFlightWindowMs({ meta: { dispatch: { in_flight_window_hours: "twenty-four" } } }),
+    DEFAULT_IN_FLIGHT_WINDOW_MS, "string → default");
+  eq(resolveInFlightWindowMs({ meta: { dispatch: { in_flight_window_hours: NaN } } }),
+    DEFAULT_IN_FLIGHT_WINDOW_MS, "NaN → default");
+});
+
+// WHY: the graph validator must FAIL red on a bad in_flight_window_hours
+// rather than let it silently disable the lock — a config typo that reads
+// as "off" for months is exactly the kind of erosion this whole feature is
+// meant to prevent.
+test("validateGraph rejects a malformed meta.dispatch.in_flight_window_hours", () => {
+  const good = validateGraph({ meta: { schema_version: 1, program: "T", dispatch: { in_flight_window_hours: 12 } }, pis: [] });
+  eq(good.errors.filter((e) => e.includes("dispatch")), [], "a positive number validates clean");
+  const bad = validateGraph({ meta: { schema_version: 1, program: "T", dispatch: { in_flight_window_hours: 0 } }, pis: [] });
+  ok(bad.errors.some((e) => e.includes("in_flight_window_hours")), "0 is rejected");
+  const badType = validateGraph({ meta: { schema_version: 1, program: "T", dispatch: { in_flight_window_hours: "x" } }, pis: [] });
+  ok(badType.errors.some((e) => e.includes("in_flight_window_hours")), "non-number is rejected");
+  const notMap = validateGraph({ meta: { schema_version: 1, program: "T", dispatch: "github" }, pis: [] });
+  ok(notMap.errors.some((e) => e.includes("meta.dispatch must be a mapping")), "scalar meta.dispatch is rejected");
+});
+
+test("runDispatch --to claude-cloud REFUSES when an open PR already carries the marker (recent, in-window)", async () => {
+  const root = tempRepo();
+  const fires = [];
+  const fakeFetch = async (url, init) => {
+    fires.push({ url, init });
+    return { ok: true, json: async () => ({ claude_code_session_id: "sess_1", claude_code_session_url: "u" }) };
+  };
+  const marker = markerFor({ type: "slice", key: "taken" });
+  const now = Date.parse("2026-08-02T12:00:00Z");
+  await runDispatch(root, "taken", {
+    to: "claude-cloud", fetchImpl: fakeFetch, env: {},
+    profiles: PROFILES, accountEmail: "connor@x.com", repoSlug: "other/repo",
+    listOpenPrs: () => [{ number: 77, url: "https://github.com/x/y/pull/77", body: marker, createdAt: new Date(now - 60000).toISOString() }],
+    now: () => now,
+  }).then(
+    () => { throw new Error("should have refused"); },
+    (e) => {
+      ok(e.message.includes("in-flight"), "refusal names 'in-flight'");
+      ok(e.message.includes("#77"), "refusal names the specific existing PR");
+      ok(e.message.includes("--force"), "refusal names the escape hatch");
+    },
+  );
+  eq(fires.length, 0, "no routine fired — the lock refused BEFORE spending plan usage");
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("runDispatch --force overrides the in-flight lock (the logged escape hatch)", async () => {
+  const root = tempRepo();
+  const fires = [];
+  const fakeFetch = async (url, init) => {
+    fires.push({ url, init });
+    return { ok: true, json: async () => ({ claude_code_session_id: "sess_2", claude_code_session_url: "u" }) };
+  };
+  const marker = markerFor({ type: "slice", key: "taken" });
+  const now = Date.parse("2026-08-02T12:00:00Z");
+  const r = await runDispatch(root, "taken", {
+    to: "claude-cloud", fetchImpl: fakeFetch, env: {},
+    profiles: PROFILES, accountEmail: "connor@x.com", repoSlug: "other/repo",
+    force: true,   // <-- the override
+    listOpenPrs: () => [{ number: 77, url: "u", body: marker, createdAt: new Date(now - 60000).toISOString() }],
+    now: () => now,
+  });
+  eq(r.transport, "claude-cloud", "the fire proceeded past the in-flight lock");
+  eq(fires.length, 1, "the routine did fire");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// ── provider registry ────────────────────────────────────────────────────
+// WHY: hard-coding gh silently returns "no protection" for every non-GitHub
+// repo. The provider registry lets each git host claim its own remotes AND
+// declares its availability (CLI installed, authed), so `roadmap doctor`
+// can surface WHY the lock is or isn't running.
+
+test("githubAdapter.detect matches github.com and gh.* hosts (ssh + https)", () => {
+  eq(githubAdapter.detect("git@github.com:x/y.git"), true, "ssh github.com");
+  eq(githubAdapter.detect("https://github.com/x/y.git"), true, "https github.com");
+  eq(githubAdapter.detect("git@gh.enterprise.example:x/y.git"), true, "gh.<host> enterprise");
+  eq(githubAdapter.detect("git@gitlab.com:x/y.git"), false, "gitlab is not github");
+  eq(githubAdapter.detect(""), false, "empty is not github");
+});
+
+test("gitlabAdapter.detect matches gitlab.com and gitlab.<host> (self-hosted)", () => {
+  eq(gitlabAdapter.detect("git@gitlab.com:x/y.git"), true, "ssh gitlab.com");
+  eq(gitlabAdapter.detect("https://gitlab.example.com/x/y.git"), true, "self-hosted gitlab");
+  eq(gitlabAdapter.detect("git@github.com:x/y.git"), false, "github is not gitlab");
+});
+
+test("gitNativeAdapter.detect always matches — it is the portable last resort", () => {
+  eq(gitNativeAdapter.detect(), true, "no URL → still matches");
+  eq(gitNativeAdapter.detect("git@bitbucket.org:x/y.git"), true, "bitbucket → falls to git-native");
+  eq(gitNativeAdapter.detect("https://codeberg.org/x/y.git"), true, "codeberg → falls to git-native");
+});
+
+test("resolveProvider picks the first matching adapter, falls to git-native when none claims", () => {
+  const gh = resolveProvider({ remoteUrl: "git@github.com:x/y.git" });
+  eq(gh.adapter.name, "github");
+  eq(gh.source, "detected");
+
+  const gl = resolveProvider({ remoteUrl: "git@gitlab.com:x/y.git" });
+  eq(gl.adapter.name, "gitlab");
+  eq(gl.source, "detected");
+
+  const unknown = resolveProvider({ remoteUrl: "git@codeberg.org:x/y.git" });
+  eq(unknown.adapter.name, "git-native");
+  eq(unknown.source, "fallback");
+});
+
+// WHY: a user with self-hosted GitHub at a non-github.com URL wants to force
+// the github adapter; someone who wants the lock off entirely uses 'none'.
+// An unknown override must fail LOUD — silently falling through is exactly
+// the kind of "why isn't my lock running" the config exists to fix.
+test("resolveProvider honors an explicit override, and 'none' disables the check", () => {
+  const forced = resolveProvider({ remoteUrl: "git@bitbucket.org:x/y.git", override: "github" });
+  eq(forced.adapter.name, "github");
+  eq(forced.source, "override:github");
+
+  const off = resolveProvider({ remoteUrl: "git@github.com:x/y.git", override: "none" });
+  eq(off.adapter, null);
+  eq(off.source, "override:none");
+
+  throws(() => resolveProvider({ remoteUrl: "", override: "notarealthing" }),
+    "unknown dispatch provider", "an unknown adapter name fails loud with the available list");
+});
+
+// WHY: users must be able to add their own adapter (private Gitea, Codeberg)
+// without touching the built-ins. The providers list is injectable.
+test("resolveProvider accepts a custom providers list (user-supplied adapter)", () => {
+  const customAdapter = {
+    name: "gitea",
+    detect: (url) => /gitea\./.test(url || ""),
+    available: () => ({ ok: true }),
+    listOpenPrs: () => [],
+  };
+  const picked = resolveProvider({
+    remoteUrl: "git@gitea.example.com:x/y.git",
+    providers: [customAdapter, githubAdapter, gitlabAdapter],
+  });
+  eq(picked.adapter.name, "gitea", "the custom adapter is picked when its detector matches");
+});
+
+// WHY: dispatchStatus is the single source of truth for "is the lock
+// running and if not, why". Doctor uses it; --dry-run should use it; tests
+// use it. It must not fire any real gh/glab call — availability probing
+// is exec-injected, so tests never touch the host.
+test("dispatchStatus reports enabled/adapter/source when the CLI is available", () => {
+  const execImpl = (cmd, args) => {
+    if (cmd === "git" && args[0] === "remote") return { status: 0, stdout: "git@github.com:x/y.git\n" };
+    if (cmd === "gh" && args[0] === "auth") return { status: 0, stdout: "" };
+    return { status: 0, stdout: "" };
+  };
+  const status = dispatchStatus({ root: "/x", execImpl });
+  eq(status.enabled, true);
+  eq(status.adapter.name, "github");
+  eq(status.source, "detected");
+  eq(status.reason, null);
+});
+
+test("dispatchStatus reports enabled:false with a specific reason when the adapter's CLI is missing", () => {
+  const execImpl = (cmd, args) => {
+    if (cmd === "git" && args[0] === "remote") return { status: 0, stdout: "git@github.com:x/y.git\n" };
+    if (cmd === "gh") return { error: new Error("ENOENT") };
+    return { status: 0, stdout: "" };
+  };
+  const status = dispatchStatus({ root: "/x", execImpl });
+  eq(status.enabled, false);
+  ok(status.reason.includes("gh CLI is not installed"), "the reason names the missing tool + the fix");
+  eq(status.adapter.name, "github", "the adapter is still reported (this is a diagnostic, not a routing failure)");
+});
+
+test("dispatchStatus reports enabled:false when the adapter is authed-missing", () => {
+  const execImpl = (cmd, args) => {
+    if (cmd === "git" && args[0] === "remote") return { status: 0, stdout: "git@github.com:x/y.git\n" };
+    if (cmd === "gh") return { status: 1, stdout: "", stderr: "not authed" };
+    return { status: 0, stdout: "" };
+  };
+  const status = dispatchStatus({ root: "/x", execImpl });
+  eq(status.enabled, false);
+  ok(status.reason.includes("not authed"), "the reason names the auth failure + the fix");
+});
+
+test("dispatchStatus reports enabled:false with source:'override:none' when meta.dispatch.provider is 'none'", () => {
+  const execImpl = (cmd, args) => {
+    if (cmd === "git" && args[0] === "remote") return { status: 0, stdout: "git@github.com:x/y.git\n" };
+    return { status: 0, stdout: "" };
+  };
+  const status = dispatchStatus({ root: "/x", meta: { dispatch: { provider: "none" } }, execImpl });
+  eq(status.enabled, false);
+  eq(status.source, "override:none");
+  ok(status.reason.includes("disabled"), "the reason names the deliberate opt-out");
+});
+
+test("dispatchStatus reports enabled:false with source:'override-error' when the provider name is unknown", () => {
+  const execImpl = (cmd, args) => {
+    if (cmd === "git" && args[0] === "remote") return { status: 0, stdout: "git@github.com:x/y.git\n" };
+    return { status: 0, stdout: "" };
+  };
+  const status = dispatchStatus({ root: "/x", meta: { dispatch: { provider: "totally-made-up" } }, execImpl });
+  eq(status.enabled, false);
+  eq(status.source, "override-error");
+  ok(status.reason.includes("unknown dispatch provider"), "the reason names the typo");
+});
+
+// WHY: gitlab's `glab mr list` returns a different JSON shape than gh's
+// `gh pr list` (iid vs number, web_url vs url, description vs body,
+// created_at vs createdAt). The adapter must normalize so the caller works
+// against ONE shape.
+test("gitlabAdapter.listOpenPrs normalizes glab's MR shape to the common PR shape", () => {
+  const execImpl = (cmd, args) => {
+    if (cmd === "glab" && args[0] === "mr") {
+      return {
+        status: 0,
+        stdout: JSON.stringify([
+          { iid: 42, web_url: "https://gitlab.example.com/x/y/-/merge_requests/42",
+            description: "## Summary\n\nroadmap: slice=auth-login\n", created_at: "2026-08-02T10:00:00Z" },
+          { iid: 43, web_url: "https://gitlab.example.com/x/y/-/merge_requests/43",
+            description: "unrelated MR", created_at: "2026-08-02T11:00:00Z" },
+        ]),
+      };
+    }
+    return { status: 0, stdout: "" };
+  };
+  const results = gitlabAdapter.listOpenPrs("roadmap: slice=auth-login", { execImpl });
+  eq(results.length, 1, "only the marker-carrying MR is returned");
+  eq(results[0].number, 42, "iid → number");
+  eq(results[0].url, "https://gitlab.example.com/x/y/-/merge_requests/42", "web_url → url");
+  ok(results[0].body.includes("roadmap: slice=auth-login"), "description → body, with the marker preserved");
+  eq(results[0].createdAt, "2026-08-02T10:00:00Z", "created_at → createdAt");
+});
+
+// WHY: the git-native fallback exists for hosts nothing else claims (Bitbucket,
+// self-hosted Gitea, private forges). It cannot see draft/merged/closed
+// state, but it CAN see whether a branch pushed to origin carries the marker
+// in its head commit body — often enough to prevent the same-hour race.
+test("gitNativeAdapter.listOpenPrs finds marker-carrying head commits on remote branches", () => {
+  const commitByBranch = {
+    "abc123": "feat: something\n\nroadmap: slice=auth-login\n\nMore text",
+    "def456": "unrelated commit",
+    "ghi789": "chore: bump deps",
+  };
+  const execImpl = (cmd, args) => {
+    if (cmd === "git" && args[0] === "for-each-ref") {
+      return {
+        status: 0,
+        stdout: [
+          "origin/main|000000|2026-08-01T00:00:00Z",
+          "origin/HEAD|000000|2026-08-01T00:00:00Z",
+          "origin/claude/foo|abc123|2026-08-02T10:00:00Z",
+          "origin/claude/bar|def456|2026-08-02T11:00:00Z",
+          "origin/claude/baz|ghi789|2026-08-02T12:00:00Z",
+        ].join("\n"),
+      };
+    }
+    if (cmd === "git" && args[0] === "log") {
+      const sha = args[args.length - 1];
+      return { status: 0, stdout: commitByBranch[sha] || "" };
+    }
+    return { status: 0, stdout: "" };
+  };
+  const results = gitNativeAdapter.listOpenPrs("roadmap: slice=auth-login", { execImpl });
+  eq(results.length, 1, "only the marker-carrying branch is returned");
+  eq(results[0].number, "claude/foo", "no PR number in git-native — the branch name stands in");
+  eq(results[0].createdAt, "2026-08-02T10:00:00Z", "the head commit's committerdate is the recency proxy");
+  ok(results[0].body.includes("roadmap: slice=auth-login"), "the commit body carries the marker");
+});
+
+test("gitNativeAdapter skips origin/HEAD (a symbolic ref, not a real branch)", () => {
+  const execImpl = (cmd, args) => {
+    if (cmd === "git" && args[0] === "for-each-ref") {
+      return { status: 0, stdout: "origin/HEAD|abc|2026-01-01T00:00:00Z\n" };
+    }
+    if (cmd === "git" && args[0] === "log") {
+      return { status: 0, stdout: "some commit with roadmap: slice=auth-login in it" };
+    }
+    return { status: 0, stdout: "" };
+  };
+  const results = gitNativeAdapter.listOpenPrs("roadmap: slice=auth-login", { execImpl });
+  eq(results, [], "origin/HEAD is skipped — it would double-count whatever main points at");
+});
+
 test("runDispatch --to claude-cloud fires the routine without any Linear config", async () => {
   const root = tempRepo();   // fixture has NO meta.linear
   const fires = [];
@@ -4388,6 +4952,266 @@ test("doctorReport reports zero drift for a reconciled roadmap", () => {
 test("doctorReport skips the Linear section when deltas are null", () => {
   const report = doctorReport({ graph: docG, linearDeltas: null });
   ok(!report.sections.some((s) => s.title === "Linear disagrees with the roadmap"), "null linearDeltas → no section");
+});
+
+// WHY: a repo whose backlog carries structural damage the parsed view hides
+// must surface it in doctor — otherwise the ONLY way a maintainer finds
+// out is when `roadmap validate` fails, and by then a wave of appends may
+// have already compounded the damage. Doctor reports it as its own section
+// so a stranger doing `roadmap doctor` sees the exact repair queue.
+test("doctorReport reports backlog collision damage from the raw text", () => {
+  const damaged = `meta:\n  schema_version: 1\nitems:\n  - id: b1\n    title: real\n    kind: bug\n    status: open\n  - id: b2\n`;
+  const report = doctorReport({ graph: docG, backlogText: damaged, backlog: { meta: {}, items: [] } });
+  const section = report.sections.find((s) => s.title === "Backlog collision damage");
+  ok(section, "the section is present");
+  ok(section.items.some((i) => i.includes("STUB_ENTRY") && i.includes("b2")),
+    "the specific damaged entry is named");
+  ok(report.driftCount >= 1, "damage counts toward drift");
+});
+
+// WHY: grandfathered damage is intentional tolerance; it must NOT count as
+// drift. But a stale pin (the underlying damage is repaired) IS drift the
+// other way — the baseline outliving what it describes silently disables
+// the guard for that specific signature.
+test("doctorReport hides grandfathered findings but surfaces stale known_damage pins as drift", () => {
+  // File is clean but a pin still lists a signature that no longer occurs.
+  const clean = `meta:\n  schema_version: 1\nitems:\n  - id: b1\n    title: fine\n    kind: bug\n    status: open\n`;
+  const backlogWithStalePin = { meta: { audit: { known_damage: ["STUB_ENTRY:b99"] } }, items: [] };
+  const report = doctorReport({ graph: docG, backlogText: clean, backlog: backlogWithStalePin });
+
+  ok(!report.sections.some((s) => s.title === "Backlog collision damage"),
+    "no damage section — the file is clean");
+  const stale = report.sections.find((s) => s.title === "Stale meta.audit.known_damage entries");
+  ok(stale, "the stale-pin section is present");
+  ok(stale.items[0].includes("STUB_ENTRY:b99"), "the exact stale pin is named");
+});
+
+// WHY: doctor must be silent when the backlog is clean AND the baseline is
+// current — otherwise noise trains the user to ignore the tool.
+test("doctorReport emits neither backlog section on a clean file with a current baseline", () => {
+  const clean = `meta:\n  schema_version: 1\nitems:\n  - id: b1\n    title: fine\n    kind: bug\n    status: open\n`;
+  const report = doctorReport({ graph: docG, backlogText: clean, backlog: { meta: {}, items: [] } });
+  ok(!report.sections.some((s) => s.title === "Backlog collision damage"), "no damage section");
+  ok(!report.sections.some((s) => s.title.startsWith("Stale meta.audit.known_damage")), "no stale-pin section");
+});
+
+// WHY: a repo without a backlog at all (backlogText null) must not add
+// spurious sections. Same graceful-guard shape as linearDeltas: null →
+// section absent.
+test("doctorReport skips the backlog sections entirely when backlogText is null", () => {
+  const report = doctorReport({ graph: docG, backlogText: null });
+  ok(!report.sections.some((s) => s.title.startsWith("Backlog") || s.title.startsWith("Stale meta.audit")),
+    "null backlogText → no backlog-related sections");
+});
+
+// WHY: the whole point of the provider-registry design is that a user CAN
+// see why the in-flight lock isn't running. Doctor surfaces the reason
+// when dispatchStatus reports enabled:false.
+test("doctorReport reports 'Cross-engine dispatch lock disabled' with the specific reason", () => {
+  const report = doctorReport({
+    graph: docG,
+    dispatchStatus: { enabled: false, reason: "github: gh CLI is not installed (https://cli.github.com)", adapter: null, source: "detected" },
+  });
+  const section = report.sections.find((s) => s.title === "Cross-engine dispatch lock disabled");
+  ok(section, "the section is present");
+  ok(section.items[0].includes("gh CLI is not installed"), "the exact reason is surfaced");
+});
+
+// WHY: an enabled lock is silence. If doctor emitted a "lock is on" note on
+// every run, the diagnostic noise would erode attention for real drift.
+test("doctorReport emits NO dispatch-lock section when the lock is enabled", () => {
+  const report = doctorReport({ graph: docG, dispatchStatus: { enabled: true, reason: null, adapter: { name: "github" }, source: "detected" } });
+  ok(!report.sections.some((s) => s.title === "Cross-engine dispatch lock disabled"), "enabled → silent");
+});
+
+// WHY: same graceful-guard shape as everywhere else — a null dispatchStatus
+// (doctor.mjs's status probe threw, or the caller didn't provide one) must
+// not add a section.
+test("doctorReport skips the dispatch-lock section when dispatchStatus is null", () => {
+  const report = doctorReport({ graph: docG, dispatchStatus: null });
+  ok(!report.sections.some((s) => s.title === "Cross-engine dispatch lock disabled"), "null → no section");
+});
+
+// ── backlog-audit ───────────────────────────────────────────────────────────
+// Every fixture below is the reduced shape of a real corruption observed on
+// docs/roadmap/backlog.yaml in a downstream repo — a union-merge of two
+// concurrent captures leaves the file parseable-but-damaged (the parsed
+// object looks fine while the text carries the wrong shape). The audit is
+// what still answers when yaml.parse either throws OR silently normalizes
+// the damage away.
+
+// WHY: a duplicate id makes the second entry unreachable by id from every
+// consumer that keys on it, and yaml.parse throws "Map keys must be unique",
+// so validate would refuse the whole file with no line-level attribution
+// without the audit — the audit is what names WHICH ids collided.
+test("auditBacklog names duplicate ids by line", () => {
+  const text = `meta:\n  schema_version: 1\nitems:\n  - id: b1\n    title: first\n    kind: bug\n    status: open\n  - id: b1\n    title: second\n    kind: bug\n    status: open\n`;
+  const result = auditBacklog(text);
+  eq(result.ok, false, "duplicate is not ok");
+  eq(result.damaged, true, "duplicate is a gating failure");
+  const dup = result.findings.find((f) => f.code === AUDIT_CODES.DUPLICATE_ID);
+  ok(dup, "DUPLICATE_ID reported");
+  eq(dup.id, "b1", "the colliding id is named");
+  eq(dup.lines, [4, 8], "both lines are named so the resolver can see which body to keep");
+});
+
+// WHY: a bare `- id:` line dropped in front of another entry is the shape a
+// bad merge most often produces — the id-line's own entry has no body, and
+// yaml.parse accepts the shape as an item with only an id, so the parsed-
+// object validator passes it. This is the failure the audit exists for.
+test("auditBacklog flags stub entries with no kind/status", () => {
+  const text = `meta:\n  schema_version: 1\nitems:\n  - id: b1\n  - id: b2\n    title: real\n    kind: bug\n    status: open\n`;
+  const result = auditBacklog(text);
+  const stub = result.findings.find((f) => f.code === AUDIT_CODES.STUB_ENTRY);
+  ok(stub, "STUB_ENTRY reported");
+  eq(stub.id, "b1", "the empty stub is named");
+  ok(stub.message.includes("no kind/status"), "the message names what is missing");
+});
+
+// WHY: a title-only entry (id + title, no body) is the SAME class of merge
+// damage — the body was destroyed while the title survived, and the audit
+// must not confuse "has a title" with "has a body".
+test("auditBacklog flags a title-only entry as a stub", () => {
+  const text = `meta:\n  schema_version: 1\nitems:\n  - id: b1\n    title: only a title\n  - id: b2\n    title: real\n    kind: bug\n    status: open\n`;
+  const result = auditBacklog(text);
+  const stub = result.findings.find((f) => f.code === AUDIT_CODES.STUB_ENTRY);
+  ok(stub && stub.id === "b1", "title-only entry is still a stub");
+  ok(stub.message.includes("[title]"), "the message names what the entry actually carried");
+});
+
+// WHY: a repeated body key inside one entry — two `title:` or two `source:` —
+// is a neighbouring entry absorbed after losing its own `- id:` line. This
+// is the shape that most often makes yaml.parse throw, so it must be named
+// separately from DUPLICATE_ID (two entries) — they have different fixes.
+test("auditBacklog flags repeated body keys inside a single entry", () => {
+  const text = `meta:\n  schema_version: 1\nitems:\n  - id: b1\n    title: first\n    kind: bug\n    status: open\n    title: absorbed\n    kind: chore\n`;
+  const result = auditBacklog(text);
+  const rep = result.findings.find((f) => f.code === AUDIT_CODES.REPEATED_KEY);
+  ok(rep, "REPEATED_KEY reported");
+  eq(rep.id, "b1", "the swallowing entry is named");
+  ok(rep.keys.includes("title") && rep.keys.includes("kind"), "the repeated keys are enumerated");
+});
+
+// WHY: a bare `key:` at the same indent as a sequence's `- ` items is the
+// residue of a merge that spliced one entry's `priority.reason` into another
+// entry's `refs:` list. yaml.parse throws "expected <block end>, found ?" on
+// the whole file, so the audit is the only path to a line-level fix.
+test("auditBacklog detects a mapping key inside a sequence (SEQUENCE_KEY_INTRUSION)", () => {
+  const text = `meta:\n  schema_version: 1\nitems:\n  - id: b1\n    title: first\n    kind: bug\n    status: open\n    refs:\n      - docs/one.md\n      - docs/two.md\n      reason: spliced from a neighbour by a merge\n`;
+  const result = auditBacklog(text);
+  const intrusion = result.findings.find((f) => f.code === AUDIT_CODES.SEQUENCE_KEY_INTRUSION);
+  ok(intrusion, "SEQUENCE_KEY_INTRUSION reported");
+  eq(intrusion.id, "b1", "the owning entry is named");
+  ok(intrusion.message.includes("refs"), "the owning sequence is named");
+});
+
+// WHY: a non-bNNN id is INFO, not a hazard — custom slugs are legal per the
+// schema. Surfacing them helps a reader who is reasoning about the next-free
+// id space, but they must not gate a write (would break `roadmap validate`
+// on any repo that uses custom slugs at all).
+test("auditBacklog reports MALFORMED_ID as INFO, not as a gating failure", () => {
+  const text = `meta:\n  schema_version: 1\nitems:\n  - id: fix-x\n    title: a custom slug\n    kind: bug\n    status: open\n`;
+  const result = auditBacklog(text);
+  eq(result.ok, false, "the finding is still surfaced");
+  eq(result.damaged, false, "but it does not gate — custom slugs are legal");
+  const mal = result.findings.find((f) => f.code === AUDIT_CODES.MALFORMED_ID);
+  ok(mal, "MALFORMED_ID reported");
+});
+
+// WHY: a well-formed backlog must audit clean — the whole point of a gating
+// check is that healthy files pass silently, so a false-positive would train
+// callers to ignore it.
+test("auditBacklog passes clean on a well-formed backlog", () => {
+  const text = `meta:\n  schema_version: 1\nitems:\n  - id: b1\n    title: one\n    kind: bug\n    status: open\n  - id: b2\n    title: two\n    kind: chore\n    status: open\n`;
+  const result = auditBacklog(text);
+  eq(result.ok, true, "clean file → ok:true");
+  eq(result.damaged, false, "clean file → damaged:false");
+  eq(result.findings, [], "clean file → no findings");
+  eq(result.entryCount, 2, "entry count matches");
+});
+
+// WHY: collectEntries is the base primitive; a caller that wants only the id
+// list (id allocation) reaches this one, not the whole audit. It must count
+// entries in the raw text (not in a parsed object that could have dropped a
+// duplicate), and it must return each entry's line number for attribution.
+test("collectEntries returns each id-line with its line number in the raw text", () => {
+  const text = `meta:\n  schema_version: 1\nitems:\n  - id: b1\n    title: one\n    kind: bug\n    status: open\n  - id: b2\n    title: two\n    kind: bug\n    status: open\n`;
+  const entries = collectEntries(text);
+  eq(entries.length, 2, "both entries collected");
+  eq(entries[0].id, "b1");
+  eq(entries[0].line, 4, "first id on line 4");
+  eq(entries[1].id, "b2");
+  eq(entries[1].line, 8, "second id on line 8");
+});
+
+// WHY: the audit is a pure text function — passing a non-string is a caller
+// bug that should throw immediately, not silently return ok:true.
+test("auditBacklog throws on a non-string input", () => {
+  throws(() => auditBacklog(null), "text must be a string", "null throws");
+  throws(() => auditBacklog(undefined), "text must be a string", "undefined throws");
+  throws(() => auditBacklog({ items: [] }), "text must be a string", "parsed object throws");
+});
+
+// WHY: a repo that adopts the audit while carrying pre-existing damage needs
+// a way to grandfather that damage in — otherwise they can't use `roadmap
+// backlog add` at all until every stub is repaired. The baseline pins by
+// STABLE signature (CODE:id), not line number, so ordinary appends don't
+// invalidate it.
+test("auditBacklog grandfathers findings whose signature appears in knownDamage", () => {
+  const text = `meta:\n  schema_version: 1\nitems:\n  - id: b1\n    title: real\n    kind: bug\n    status: open\n  - id: b2\n`;
+  const strict = auditBacklog(text);
+  eq(strict.damaged, true, "without a baseline, the stub is a gating hazard");
+
+  const gentle = auditBacklog(text, { knownDamage: ["STUB_ENTRY:b2"] });
+  eq(gentle.damaged, false, "with the signature grandfathered, the file audits clean-enough to mutate");
+  eq(gentle.findings.length, 0, "the grandfathered finding is removed from active findings");
+  eq(gentle.grandfathered.length, 1, "but it is still surfaced for visibility (grandfathered, not silenced)");
+  eq(gentle.grandfathered[0].id, "b2", "the specific entry is reported");
+});
+
+// WHY: a baseline that outlives the damage it describes silently loses the
+// ability to catch a NEW instance of that signature — the guard's whole
+// point is repair, not perpetual tolerance. `staleKnown` names the pins to
+// prune the moment the underlying damage is fixed.
+test("auditBacklog reports stale known_damage entries so the baseline can be pruned", () => {
+  const text = `meta:\n  schema_version: 1\nitems:\n  - id: b1\n    title: real\n    kind: bug\n    status: open\n`;
+  const result = auditBacklog(text, { knownDamage: ["STUB_ENTRY:b99", "DUPLICATE_ID:b7"] });
+  eq(result.staleKnown, ["STUB_ENTRY:b99", "DUPLICATE_ID:b7"], "both pins are stale — the file carries neither");
+  eq(result.damaged, false, "the file itself is clean");
+});
+
+// WHY: knownDamage that isn't an array (malformed config) must not crash the
+// audit — a caller who wrote `known_damage: STUB_ENTRY:b2` (a scalar) or
+// left the key null gets treated as "no baseline" and the audit runs strict.
+test("auditBacklog treats a non-array knownDamage as an empty baseline (safe strict)", () => {
+  const text = `meta:\n  schema_version: 1\nitems:\n  - id: b1\n    title: real\n    kind: bug\n    status: open\n  - id: b2\n`;
+  const nullish = auditBacklog(text, { knownDamage: null });
+  eq(nullish.damaged, true, "null baseline → strict");
+  const scalar = auditBacklog(text, { knownDamage: "STUB_ENTRY:b2" });
+  eq(scalar.damaged, true, "scalar baseline → strict (not a substring match)");
+});
+
+// WHY: `signatureOf` is the primitive a repo uses to bootstrap its baseline
+// (`roadmap audit --learn` will collect these). It must match the pattern
+// stored in meta.audit.known_damage byte-for-byte, or the pin is a lie.
+test("signatureOf produces the CODE:id signature used by knownDamage pins", () => {
+  eq(signatureOf({ code: "STUB_ENTRY", id: "b2" }), "STUB_ENTRY:b2");
+  eq(signatureOf({ code: "DUPLICATE_ID", id: "b1" }), "DUPLICATE_ID:b1");
+});
+
+// WHY: knownDamageOf is the tiny adapter validate.mjs / store.mjs use to
+// pull the pin list from a parsed backlog. It must degrade to [] on any
+// unusual shape rather than reaching into null/undefined and throwing.
+test("knownDamageOf reads meta.audit.known_damage and degrades safely on any missing/mistyped shape", () => {
+  eq(knownDamageOf({ meta: { audit: { known_damage: ["STUB_ENTRY:b2", "DUPLICATE_ID:b1"] } }, items: [] }),
+    ["STUB_ENTRY:b2", "DUPLICATE_ID:b1"], "the standard shape returns the list");
+  eq(knownDamageOf({ meta: { audit: {} }, items: [] }), [], "missing known_damage → []");
+  eq(knownDamageOf({ meta: {}, items: [] }), [], "missing audit → []");
+  eq(knownDamageOf({ items: [] }), [], "missing meta → []");
+  eq(knownDamageOf(null), [], "null backlog → []");
+  eq(knownDamageOf({ meta: { audit: { known_damage: "not an array" } } }), [], "wrong type → []");
+  eq(knownDamageOf({ meta: { audit: { known_damage: ["ok", 42, null, "also-ok"] } } }),
+    ["ok", "also-ok"], "non-string entries are filtered out (config typos don't get pinned)");
 });
 
 await Promise.all(pending);

@@ -6,14 +6,15 @@
 // empty (like the SessionStart hook), so doctor stays fast and never throws on a bare checkout.
 // Usage: roadmap doctor [--json]   (--json like review.mjs; exits 1 when drift is found.)
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadGraph } from "./lib/graph.mjs";
-import { loadBacklog, roadmapPaths, slicesRenderOpts } from "./lib/store.mjs";
+import { loadBacklog, roadmapPaths, backlogPaths, slicesRenderOpts } from "./lib/store.mjs";
 import { renderMarkdown } from "./lib/render-core.mjs";
 import { renderBacklogMarkdown } from "./lib/backlog-core.mjs";
 import { mergedPrs, allPrs, worktrees } from "./lib/external-state.mjs";
 import { doctorReport } from "./lib/doctor-core.mjs";
+import { dispatchStatus } from "./dispatch.mjs";
 
 const root = process.cwd();
 const args = process.argv.slice(2);
@@ -57,10 +58,21 @@ try {
   process.exit(2);
 }
 const backlog = loadBacklog(root);
+const backlogYamlPath = backlogPaths(root).yaml;
+const backlogText = existsSync(backlogYamlPath) ? readFileSync(backlogYamlPath, "utf8") : null;
+
+// Dispatch status: which provider adapter this repo resolves to, and whether
+// the CLI is usable. A failure here is a diagnostic, never fatal — doctor
+// stays fast on a bare checkout that has no gh/glab installed.
+let dispatchStatusReport = null;
+try { dispatchStatusReport = dispatchStatus({ root, meta: graph.meta || {} }); }
+catch { /* leave null; doctor won't emit the section */ }
 
 const report = doctorReport({
   graph,
   backlog,
+  backlogText,
+  dispatchStatus: dispatchStatusReport,
   mergedPrs: mergedPrs(root),
   allPrs: allPrs(root) || [],
   worktrees: worktrees(root, graph.meta || {}),

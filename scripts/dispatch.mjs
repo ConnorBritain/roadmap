@@ -23,6 +23,7 @@ import { loadBacklog, roadmapPaths } from "./lib/store.mjs";
 import { runSync, postDispatchComment } from "./linear.mjs";
 import { linearState, linearStatusLine, machineFooter, normalizeLinearConfig } from "./lib/linear-core.mjs";
 import { outOfCycle } from "./lib/cycle-core.mjs";
+import { resolveProvider } from "./lib/dispatch-providers.mjs";
 
 export const DISPATCH_AGENTS = { claude: "@Claude", codex: "@Codex", oz: "@Oz" };
 
@@ -92,6 +93,148 @@ export function repoSlugOf(root) {
   } catch { return null; }
 }
 
+// ── in-flight dispatch check (cross-engine race prevention) ───────────────────
+//
+// The problem: two engines can fire the same slice within a blind window and
+// neither knows about the other. Observed: Claude.ai Routines (portal) and
+// `roadmap dispatch --to claude-cloud` (this CLI) both accept a fire against
+// the same slice key. Each opens its own PR, each burns plan usage on
+// otherwise-identical work; arbitration falls on a human reviewer.
+//
+// The lock: before firing, scan open PRs on the origin remote for the
+// canonical marker line `roadmap: <type>=<key>` (the same line the fired
+// session's PR is instructed to include). If found and it opened within the
+// last `windowMs`, refuse with the existing PR's number + URL.
+//
+// The window bounds the recency call: an old completed PR with the marker
+// (subject shipped, PR merged) should not block a legitimate re-dispatch.
+// The default (24h) is roughly the time it takes for a slice to land start
+// → merge, and is deliberately generous — a false-positive refusal (told to
+// wait when you shouldn't) is repairable in seconds; a false-negative (two
+// PRs opened) wastes plan usage and requires arbitration. The window is
+// configurable via `meta.dispatch.in_flight_window_hours` — a slower shop
+// with week-long open PRs will want a wider window; a fast shop with hourly
+// re-dispatches will want a tighter one.
+//
+// PURE: exec is injected so tests never touch the real gh. The real caller
+// runs `gh pr list --state open --search "in:body <marker>" --json ...`.
+export const DEFAULT_IN_FLIGHT_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Resolve the in-flight recency window in milliseconds. Precedence:
+ *   1. explicit override (opts.inFlightWindowMs) — for tests + callers that
+ *      genuinely want a per-call knob
+ *   2. meta.dispatch.in_flight_window_hours in the roadmap graph — the
+ *      repo-local durable config
+ *   3. DEFAULT_IN_FLIGHT_WINDOW_MS (24h)
+ *
+ * A malformed configured value (not a positive number) is ignored and the
+ * default takes over — silently swapping in "0" or NaN would deadlock every
+ * dispatch, and that's a worse failure than the config typo.
+ */
+export function resolveInFlightWindowMs({ override = null, meta = null } = {}) {
+  if (override != null && Number.isFinite(override) && override > 0) return override;
+  const configured = meta && meta.dispatch && meta.dispatch.in_flight_window_hours;
+  if (Number.isFinite(configured) && configured > 0) return configured * 60 * 60 * 1000;
+  return DEFAULT_IN_FLIGHT_WINDOW_MS;
+}
+
+export function markerFor({ type, key }) {
+  return `roadmap: ${type}=${key}`;
+}
+
+export function checkInFlightDispatch({ type, key, listOpenPrs, now = Date.now, windowMs = DEFAULT_IN_FLIGHT_WINDOW_MS } = {}) {
+  if (!type || !key) throw new Error("checkInFlightDispatch requires { type, key }");
+  const marker = markerFor({ type, key });
+  let prs;
+  try {
+    prs = listOpenPrs(marker);
+  } catch {
+    // Any error asking gh (offline, not authed, rate limit) degrades to
+    // "unable to check" — do NOT refuse the dispatch on a lookup failure,
+    // because a lookup that always throws would deadlock every dispatch on
+    // a machine without gh. The race prevention is best-effort by design.
+    return null;
+  }
+  if (!Array.isArray(prs) || prs.length === 0) return null;
+
+  const cutoff = now() - windowMs;
+  // The marker is a whole line in the fired session's PR body — require an
+  // end boundary so a substring-adjacent key ('auth-login' vs 'auth-login-x')
+  // does not false-positive. The end anchor is any non-alphanumeric character
+  // OR end-of-string; the identifier grammar is [a-zA-Z0-9_-] so a `-` in the
+  // real marker suffix is treated as identifier continuation, which is right.
+  // A trailing dash is legal in slice keys, so tie the boundary to the
+  // char AFTER the marker: word-char (alphanumeric/underscore) OR a bare `-`
+  // between two word-chars extends the match. Simpler: escape the marker
+  // and check with a per-body regex that pins the tail to a non-identifier.
+  const escaped = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const markerRe = new RegExp(`${escaped}(?![A-Za-z0-9_-])`);
+  const recent = prs
+    .filter((pr) => pr && pr.body && markerRe.test(pr.body))
+    .filter((pr) => {
+      const ts = Date.parse(pr.createdAt || pr.created_at || "");
+      return Number.isFinite(ts) && ts >= cutoff;
+    })
+    .sort((a, b) => Date.parse(b.createdAt || b.created_at) - Date.parse(a.createdAt || a.created_at));
+
+  if (recent.length === 0) return null;
+  const winner = recent[0];
+  const ageMs = now() - Date.parse(winner.createdAt || winner.created_at);
+  return {
+    prNumber: winner.number,
+    url: winner.url,
+    ageMinutes: Math.round(ageMs / 60000),
+    marker,
+  };
+}
+
+// Provider-driven listOpenPrs. Reads the remote URL from git, picks the
+// adapter that claims it, and delegates. Returns `null` for an unusable
+// provider (no CLI, not authed, host disabled with `meta.dispatch.provider:
+// none`) — the check degrades to "no protection" rather than deadlocking.
+// The dispatchStatus surface below reports WHY when this happens.
+export function providerListOpenPrs({ root = process.cwd(), meta = null, provider = null } = {}) {
+  const status = dispatchStatus({ root, meta, provider });
+  if (!status.enabled) return null;
+  return (marker) => status.adapter.listOpenPrs(marker, { root });
+}
+
+/**
+ * WHY the in-flight check is or isn't running, and under which adapter. Used
+ * by `roadmap doctor`, `roadmap dispatch --dry-run`, and internal callers
+ * (validate, tests) that want to surface the resolved config without paying
+ * a fire. `provider` is the override precedence (meta or CLI flag).
+ */
+export function dispatchStatus({ root = process.cwd(), meta = null, provider = null, execImpl = spawnSync } = {}) {
+  const providerOverride = provider || (meta && meta.dispatch && meta.dispatch.provider) || null;
+  const remoteUrl = remoteUrlOf(root, execImpl);
+
+  let resolved;
+  try {
+    resolved = resolveProvider({ remoteUrl, override: providerOverride });
+  } catch (e) {
+    // A bad override name — user asked for an adapter that doesn't exist.
+    // Surface the error rather than falling through silently.
+    return { enabled: false, reason: e.message, adapter: null, source: "override-error" };
+  }
+  if (!resolved.adapter) {
+    return { enabled: false, reason: "in-flight lock disabled by meta.dispatch.provider: none", adapter: null, source: resolved.source };
+  }
+  const avail = resolved.adapter.available({ execImpl });
+  if (!avail.ok) {
+    return { enabled: false, reason: `${resolved.adapter.name}: ${avail.reason}`, adapter: resolved.adapter, source: resolved.source };
+  }
+  return { enabled: true, reason: null, adapter: resolved.adapter, source: resolved.source };
+}
+
+function remoteUrlOf(root, execImpl) {
+  try {
+    const r = execImpl("git", ["remote", "get-url", "origin"], { cwd: root, encoding: "utf8" });
+    return r.status === 0 ? (r.stdout || "").trim() : "";
+  } catch { return ""; }
+}
+
 // Fire the routine (BETA endpoint — experimental header, shapes may change).
 // `trigger` accepts either the bare trig_… id OR the full endpoint URL exactly as
 // claude.ai's API-trigger modal shows it (the modal displays a URL, never a labeled id).
@@ -144,6 +287,37 @@ export async function runDispatch(root, key, opts = {}) {
   // launch surfaces as scope change on Linear's cycle graph either way.
   if (found.type === "slice" && !opts.force && outOfCycle(normalizeLinearConfig(found.graph.meta || {}), found.status)) {
     throw new Error(`'${key}' is out of the current cycle (status ${found.status}) — elect it first ('roadmap cycle plan', then 'roadmap cycle lock --promote ${key}'), or re-run with --force to override the cycle lock.`);
+  }
+
+  // In-flight cross-engine lock: refuse a re-dispatch if an open PR on origin
+  // already carries this dispatch marker within the recency window. Prevents
+  // the race where the Claude.ai Routines portal fires the same key seconds
+  // apart from `roadmap dispatch`. --force is the logged escape hatch; use
+  // opts.skipInFlightCheck internally to disable in tests. See
+  // DEFAULT_IN_FLIGHT_WINDOW_MS for the recency call.
+  if (!opts.force && !opts.skipInFlightCheck) {
+    // Resolve the provider (github/gitlab/git-native/none) and only run the
+    // check if the adapter is actually usable. On unusable providers, degrade
+    // to "no protection" silently at the dispatch layer — `roadmap doctor`
+    // reports the reason, so a user who wants the check knows why they're
+    // not getting it without every dispatch paying a stderr line.
+    const listOpenPrs = opts.listOpenPrs || providerListOpenPrs({ root, meta: found.graph.meta, provider: opts.provider });
+    if (listOpenPrs) {
+      const inFlight = checkInFlightDispatch({
+        type: found.type,
+        key,
+        listOpenPrs,
+        now: opts.now || Date.now,
+        windowMs: resolveInFlightWindowMs({ override: opts.inFlightWindowMs, meta: found.graph.meta }),
+      });
+      if (inFlight) {
+        throw new Error(
+          `'${key}' looks in-flight already: open PR #${inFlight.prNumber} carries '${inFlight.marker}' ` +
+          `(opened ~${inFlight.ageMinutes}m ago, ${inFlight.url}). Refusing to fire a duplicate — ` +
+          `close/merge that PR first, or re-run with --force to override the in-flight lock.`,
+        );
+      }
+    }
   }
 
   // ── claude-cloud: fire a Claude Code cloud session directly (NO Linear required) ──
