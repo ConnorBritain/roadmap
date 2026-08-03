@@ -1,6 +1,6 @@
 {
   "name": "@connorbritain/roadmap",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Roadmap + backlog graph with prioritized, deterministic multi-session fanout. YAML canonical, SLICES.md/BACKLOG.md generated.",
   "type": "module",
   "private": false,
