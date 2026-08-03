@@ -14,7 +14,7 @@ import { loadGraph } from "./graph.mjs";
 import { renderMarkdown } from "./render-core.mjs";
 import { validateDocOrThrow, serialize } from "./mcp-core.mjs";
 import { validateBacklogDocOrThrow, renderBacklogMarkdown, openCount } from "./backlog-core.mjs";
-import { auditBacklog } from "./backlog-audit.mjs";
+import { auditBacklog, knownDamageOf } from "./backlog-audit.mjs";
 
 export const BACKLOG_REL = ["docs", "roadmap", "backlog.yaml"];
 const EMPTY_BACKLOG = "meta:\n  schema_version: 1\nitems: []\n";
@@ -123,7 +123,15 @@ export function mutateBacklog(root, fn, { createIfMissing = false, acknowledgeDa
 
   // Only audit existing files — a bootstrapped EMPTY_BACKLOG is by construction clean.
   if (!created) {
-    const audit = auditBacklog(src);
+    // Best-effort parse to read the known_damage baseline; a parse failure
+    // means the audit runs strict (which is correct — a file that yaml.parse
+    // rejects certainly is damaged, and refusing to grandfather anything is
+    // the safe behavior when the config can't be read).
+    let parsed = null;
+    try { parsed = YAML.parse(src); } catch { /* leave parsed null */ }
+    const knownDamage = parsed ? knownDamageOf(parsed) : [];
+
+    const audit = auditBacklog(src, { knownDamage });
     const ackEnv = process.env.ROADMAP_ACKNOWLEDGE_DAMAGE === "1";
     if (audit.damaged && !acknowledgeDamage && !ackEnv) {
       throw new DamagedBacklogError(audit.findings.filter((f) => f.code !== "MALFORMED_ID"));

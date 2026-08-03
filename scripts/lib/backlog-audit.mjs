@@ -200,6 +200,15 @@ function auditMalformedIds(entries) {
 }
 
 /**
+ * The stable signature for a finding — `CODE:id`. This is what a repo pins
+ * in `meta.audit.known_damage` to grandfather in existing damage while it
+ * repairs, so line numbers don't churn the baseline on ordinary appends.
+ */
+export function signatureOf(finding) {
+  return `${finding.code}:${finding.id}`;
+}
+
+/**
  * Every structural finding, ordered by first affected line. `ok: true` means
  * the file is free of the four collision-damage shapes — not that it is valid
  * YAML in every other respect, which only a strict load can say.
@@ -208,17 +217,34 @@ function auditMalformedIds(entries) {
  * on the four collision shapes (DUPLICATE_ID / STUB_ENTRY / REPEATED_KEY /
  * SEQUENCE_KEY_INTRUSION). `damaged: true` reflects that filter — `ok` alone
  * mixes info in with the real hazards, so both signals are exposed.
+ *
+ * `options.knownDamage` is a list of `CODE:id` signatures to grandfather in.
+ * Findings that match a known signature move to `grandfathered` and do NOT
+ * count toward `damaged`. Signatures that no longer match any finding land
+ * in `staleKnown` so the caller can prune the baseline (the guard exists to
+ * repair damage, not to accrete tolerance forever).
  */
-export function auditBacklog(text) {
+export function auditBacklog(text, options = {}) {
   if (typeof text !== "string") throw new TypeError("auditBacklog(text): text must be a string");
   const entries = collectEntries(text);
-  const findings = [
+  const rawFindings = [
     ...auditDuplicateIds(entries),
     ...auditStubs(entries),
     ...auditRepeatedKeys(entries),
     ...auditSequenceIntrusions(text),
     ...auditMalformedIds(entries),
   ].sort((a, b) => a.lines[0] - b.lines[0]);
+
+  const knownDamage = Array.isArray(options.knownDamage) ? options.knownDamage : [];
+  const knownSet = new Set(knownDamage);
+  const findings = [];
+  const grandfathered = [];
+  for (const f of rawFindings) {
+    if (knownSet.has(signatureOf(f))) grandfathered.push(f);
+    else findings.push(f);
+  }
+  const activeSigs = new Set(rawFindings.map(signatureOf));
+  const staleKnown = knownDamage.filter((s) => !activeSigs.has(s));
 
   const gatingCodes = new Set([
     AUDIT_CODES.DUPLICATE_ID,
@@ -228,5 +254,22 @@ export function auditBacklog(text) {
   ]);
   const damaged = findings.some((f) => gatingCodes.has(f.code));
 
-  return { ok: findings.length === 0, damaged, findings, entryCount: entries.length };
+  return {
+    ok: findings.length === 0,
+    damaged,
+    findings,
+    grandfathered,
+    staleKnown,
+    entryCount: entries.length,
+  };
+}
+
+/**
+ * Read the known_damage baseline from a parsed backlog object. The list lives
+ * at `meta.audit.known_damage` — a repo-local pin of signatures the audit
+ * should tolerate while it repairs. Absent → [] (default strict).
+ */
+export function knownDamageOf(backlog) {
+  const list = backlog && backlog.meta && backlog.meta.audit && backlog.meta.audit.known_damage;
+  return Array.isArray(list) ? list.filter((s) => typeof s === "string") : [];
 }

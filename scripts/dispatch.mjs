@@ -23,6 +23,7 @@ import { loadBacklog, roadmapPaths } from "./lib/store.mjs";
 import { runSync, postDispatchComment } from "./linear.mjs";
 import { linearState, linearStatusLine, machineFooter, normalizeLinearConfig } from "./lib/linear-core.mjs";
 import { outOfCycle } from "./lib/cycle-core.mjs";
+import { resolveProvider } from "./lib/dispatch-providers.mjs";
 
 export const DISPATCH_AGENTS = { claude: "@Claude", codex: "@Codex", oz: "@Oz" };
 
@@ -110,11 +111,33 @@ export function repoSlugOf(root) {
 // The default (24h) is roughly the time it takes for a slice to land start
 // → merge, and is deliberately generous — a false-positive refusal (told to
 // wait when you shouldn't) is repairable in seconds; a false-negative (two
-// PRs opened) wastes plan usage and requires arbitration.
+// PRs opened) wastes plan usage and requires arbitration. The window is
+// configurable via `meta.dispatch.in_flight_window_hours` — a slower shop
+// with week-long open PRs will want a wider window; a fast shop with hourly
+// re-dispatches will want a tighter one.
 //
 // PURE: exec is injected so tests never touch the real gh. The real caller
 // runs `gh pr list --state open --search "in:body <marker>" --json ...`.
 export const DEFAULT_IN_FLIGHT_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Resolve the in-flight recency window in milliseconds. Precedence:
+ *   1. explicit override (opts.inFlightWindowMs) — for tests + callers that
+ *      genuinely want a per-call knob
+ *   2. meta.dispatch.in_flight_window_hours in the roadmap graph — the
+ *      repo-local durable config
+ *   3. DEFAULT_IN_FLIGHT_WINDOW_MS (24h)
+ *
+ * A malformed configured value (not a positive number) is ignored and the
+ * default takes over — silently swapping in "0" or NaN would deadlock every
+ * dispatch, and that's a worse failure than the config typo.
+ */
+export function resolveInFlightWindowMs({ override = null, meta = null } = {}) {
+  if (override != null && Number.isFinite(override) && override > 0) return override;
+  const configured = meta && meta.dispatch && meta.dispatch.in_flight_window_hours;
+  if (Number.isFinite(configured) && configured > 0) return configured * 60 * 60 * 1000;
+  return DEFAULT_IN_FLIGHT_WINDOW_MS;
+}
 
 export function markerFor({ type, key }) {
   return `roadmap: ${type}=${key}`;
@@ -166,16 +189,50 @@ export function checkInFlightDispatch({ type, key, listOpenPrs, now = Date.now, 
   };
 }
 
-// Concrete listOpenPrs — spawns `gh` and returns the parsed JSON. Kept small
-// and separate so tests inject their own listOpenPrs, never this.
-export function ghListOpenPrs(marker, { root = process.cwd() } = {}) {
-  const r = spawnSync(
-    "gh",
-    ["pr", "list", "--state", "open", "--search", `in:body ${marker}`, "--json", "number,url,body,createdAt", "--limit", "50"],
-    { cwd: root, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
-  );
-  if (r.status !== 0) throw new Error(`gh pr list failed: ${(r.stderr || "").trim() || `exit ${r.status}`}`);
-  return JSON.parse(r.stdout || "[]");
+// Provider-driven listOpenPrs. Reads the remote URL from git, picks the
+// adapter that claims it, and delegates. Returns `null` for an unusable
+// provider (no CLI, not authed, host disabled with `meta.dispatch.provider:
+// none`) — the check degrades to "no protection" rather than deadlocking.
+// The dispatchStatus surface below reports WHY when this happens.
+export function providerListOpenPrs({ root = process.cwd(), meta = null, provider = null } = {}) {
+  const status = dispatchStatus({ root, meta, provider });
+  if (!status.enabled) return null;
+  return (marker) => status.adapter.listOpenPrs(marker, { root });
+}
+
+/**
+ * WHY the in-flight check is or isn't running, and under which adapter. Used
+ * by `roadmap doctor`, `roadmap dispatch --dry-run`, and internal callers
+ * (validate, tests) that want to surface the resolved config without paying
+ * a fire. `provider` is the override precedence (meta or CLI flag).
+ */
+export function dispatchStatus({ root = process.cwd(), meta = null, provider = null, execImpl = spawnSync } = {}) {
+  const providerOverride = provider || (meta && meta.dispatch && meta.dispatch.provider) || null;
+  const remoteUrl = remoteUrlOf(root, execImpl);
+
+  let resolved;
+  try {
+    resolved = resolveProvider({ remoteUrl, override: providerOverride });
+  } catch (e) {
+    // A bad override name — user asked for an adapter that doesn't exist.
+    // Surface the error rather than falling through silently.
+    return { enabled: false, reason: e.message, adapter: null, source: "override-error" };
+  }
+  if (!resolved.adapter) {
+    return { enabled: false, reason: "in-flight lock disabled by meta.dispatch.provider: none", adapter: null, source: resolved.source };
+  }
+  const avail = resolved.adapter.available({ execImpl });
+  if (!avail.ok) {
+    return { enabled: false, reason: `${resolved.adapter.name}: ${avail.reason}`, adapter: resolved.adapter, source: resolved.source };
+  }
+  return { enabled: true, reason: null, adapter: resolved.adapter, source: resolved.source };
+}
+
+function remoteUrlOf(root, execImpl) {
+  try {
+    const r = execImpl("git", ["remote", "get-url", "origin"], { cwd: root, encoding: "utf8" });
+    return r.status === 0 ? (r.stdout || "").trim() : "";
+  } catch { return ""; }
 }
 
 // Fire the routine (BETA endpoint — experimental header, shapes may change).
@@ -239,19 +296,27 @@ export async function runDispatch(root, key, opts = {}) {
   // opts.skipInFlightCheck internally to disable in tests. See
   // DEFAULT_IN_FLIGHT_WINDOW_MS for the recency call.
   if (!opts.force && !opts.skipInFlightCheck) {
-    const inFlight = checkInFlightDispatch({
-      type: found.type,
-      key,
-      listOpenPrs: opts.listOpenPrs || ((marker) => ghListOpenPrs(marker, { root })),
-      now: opts.now || Date.now,
-      windowMs: opts.inFlightWindowMs,
-    });
-    if (inFlight) {
-      throw new Error(
-        `'${key}' looks in-flight already: open PR #${inFlight.prNumber} carries '${inFlight.marker}' ` +
-        `(opened ~${inFlight.ageMinutes}m ago, ${inFlight.url}). Refusing to fire a duplicate — ` +
-        `close/merge that PR first, or re-run with --force to override the in-flight lock.`,
-      );
+    // Resolve the provider (github/gitlab/git-native/none) and only run the
+    // check if the adapter is actually usable. On unusable providers, degrade
+    // to "no protection" silently at the dispatch layer — `roadmap doctor`
+    // reports the reason, so a user who wants the check knows why they're
+    // not getting it without every dispatch paying a stderr line.
+    const listOpenPrs = opts.listOpenPrs || providerListOpenPrs({ root, meta: found.graph.meta, provider: opts.provider });
+    if (listOpenPrs) {
+      const inFlight = checkInFlightDispatch({
+        type: found.type,
+        key,
+        listOpenPrs,
+        now: opts.now || Date.now,
+        windowMs: resolveInFlightWindowMs({ override: opts.inFlightWindowMs, meta: found.graph.meta }),
+      });
+      if (inFlight) {
+        throw new Error(
+          `'${key}' looks in-flight already: open PR #${inFlight.prNumber} carries '${inFlight.marker}' ` +
+          `(opened ~${inFlight.ageMinutes}m ago, ${inFlight.url}). Refusing to fire a duplicate — ` +
+          `close/merge that PR first, or re-run with --force to override the in-flight lock.`,
+        );
+      }
     }
   }
 
