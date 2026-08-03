@@ -57,6 +57,11 @@ import { loadGraph } from "../lib/graph.mjs";
 import { graphDiff, backlogDiff, reviewDigest, pisInFlight } from "../lib/review-core.mjs";
 import { doctorReport } from "../lib/doctor-core.mjs";
 import { auditBacklog, collectEntries, AUDIT_CODES, signatureOf, knownDamageOf } from "../lib/backlog-audit.mjs";
+import {
+  SLUG_RE, validators, suggestProgramName, planInit,
+  renderRoadmapYaml, renderBacklogYaml, renderLocalConfig,
+  planGitignore, appendToGitignore,
+} from "../lib/init-core.mjs";
 import { parseDocument } from "yaml";
 import { join, resolve } from "node:path";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
@@ -5030,6 +5035,122 @@ test("doctorReport emits NO dispatch-lock section when the lock is enabled", () 
 test("doctorReport skips the dispatch-lock section when dispatchStatus is null", () => {
   const report = doctorReport({ graph: docG, dispatchStatus: null });
   ok(!report.sections.some((s) => s.title === "Cross-engine dispatch lock disabled"), "null → no section");
+});
+
+// ── init-core ───────────────────────────────────────────────────────────
+// WHY: the init walkthrough runs against real user input in a TTY, so the
+// pure logic (defaults, validators, blueprint rendering) has to be right
+// BEFORE the interactive shell wires it. Every prompt in interactive
+// init.mjs delegates its answer to a validator + a renderer here.
+
+test("suggestProgramName derives a valid slug from a repo name, cleaning uppercase and punctuation", () => {
+  eq(suggestProgramName({ repoName: "My-Project" }), "my-project", "case-folded");
+  eq(suggestProgramName({ repoName: "some_repo.git" }), "some-repo", "underscores → dashes, .git stripped");
+  eq(suggestProgramName({ repoName: "Foo Bar!" }), "foo-bar", "spaces and punctuation collapsed to dashes");
+  eq(suggestProgramName({ cwdBasename: "eatery-quake" }), "eatery-quake", "falls back to cwd basename when no repo");
+  eq(suggestProgramName({}), "myproj", "no input → generic default (never throws or empty)");
+  eq(suggestProgramName({ repoName: "---" }), "myproj", "input reducing to empty after cleaning → generic default");
+});
+
+test("validators.slug rejects uppercase, empty, and leading punctuation with actionable messages", () => {
+  eq(validators.slug("ok-name"), null, "clean slug passes");
+  eq(validators.slug(""), "cannot be empty", "empty is a common accident");
+  ok(validators.slug("MyProject").includes("lowercase"), "uppercase is rejected with a hint");
+  ok(validators.slug("-leading").includes("lowercase"), "leading dash rejected");
+  ok(validators.slug("has space").includes("lowercase"), "space rejected");
+});
+
+test("validators.title accepts arbitrary printable text but rejects empty", () => {
+  eq(validators.title("Bootstrap the roadmap"), null);
+  eq(validators.title("A title with: colons, quotes 'and\" more"), null, "punctuation is fine in titles");
+  eq(validators.title(""), "cannot be empty");
+  eq(validators.title("   "), "cannot be empty", "whitespace-only is empty for our purposes");
+});
+
+// WHY: the renderers write hand-formed YAML (kept dep-free so the tests
+// stay zero-dep). Every string that could contain YAML-special characters
+// must be quoted safely — a title with a colon or quote can otherwise break
+// the file the moment a user types one.
+test("renderRoadmapYaml quotes titles safely and emits a validate-clean starter", () => {
+  const out = renderRoadmapYaml({ program: "myproj", piTitle: "First initiative", sprintTitle: "First slice" });
+  ok(out.includes("program: myproj"), "safe bareword stays unquoted");
+  ok(out.includes("title: First initiative"), "safe title stays unquoted");
+  const withColon = renderRoadmapYaml({ program: "p", piTitle: "Foo: with colon", sprintTitle: "S" });
+  ok(withColon.includes('title: "Foo: with colon"'), "colon in title triggers quoting");
+  const withQuote = renderRoadmapYaml({ program: "p", piTitle: 'Has "quote"', sprintTitle: "S" });
+  ok(withQuote.includes('title: "Has \\"quote\\""'), "double-quote escaped");
+});
+
+test("renderBacklogYaml emits an empty items scaffold the audit + validator both accept", () => {
+  const out = renderBacklogYaml();
+  ok(out.includes("schema_version: 1"), "carries the required meta field");
+  ok(out.includes("items: []"), "empty items list");
+});
+
+test("renderLocalConfig writes the assistant profile with launch:false as the safe default", () => {
+  const out = renderLocalConfig({ assistant: "claude" });
+  ok(out.includes("claude:"), "the assistant is named");
+  ok(out.includes("launch: false"), "launch stays disabled — init must never enable launch without a subsequent human action");
+  const manual = renderLocalConfig({ assistant: "manual" });
+  ok(!manual.includes("command:"), "manual has no command, so none is written (would confuse a reader)");
+});
+
+test("planInit derives the file-write plan; existing files are marked 'preserve', not overwritten", () => {
+  const files = planInit({ program: "p", piTitle: "PI", sprintTitle: "S", assistant: "manual" }, { existingFiles: new Set() });
+  eq(files.length, 3, "default plan: roadmap.yaml + backlog.yaml + local config");
+  eq(files.map((f) => f.action), ["create", "create", "create"]);
+  eq(files.map((f) => f.path), ["docs/roadmap/roadmap.yaml", "docs/roadmap/backlog.yaml", ".roadmap/config.local.yaml"]);
+
+  const withExisting = planInit(
+    { program: "p", piTitle: "PI", sprintTitle: "S", assistant: "manual" },
+    { existingFiles: new Set(["docs/roadmap/roadmap.yaml"]) },
+  );
+  eq(withExisting[0].action, "preserve", "existing roadmap.yaml is preserved, never overwritten");
+  eq(withExisting[1].action, "create", "sibling files still land");
+});
+
+test("planInit respects withBacklog and withLocal false so a user can opt out of scaffolding", () => {
+  const roadmapOnly = planInit(
+    { program: "p", piTitle: "PI", sprintTitle: "S", assistant: "manual", withBacklog: false, withLocal: false },
+    { existingFiles: new Set() },
+  );
+  eq(roadmapOnly.length, 1, "only roadmap.yaml when both extras are declined");
+  eq(roadmapOnly[0].path, "docs/roadmap/roadmap.yaml");
+});
+
+test("planGitignore only proposes to add the config.local.yaml line when it's not already present", () => {
+  const empty = planGitignore({ currentText: "" });
+  eq(empty.need, true, "empty .gitignore needs the line");
+  eq(empty.line, ".roadmap/config.local.yaml");
+  const alreadyThere = planGitignore({ currentText: "node_modules\n.roadmap/config.local.yaml\ndist\n" });
+  eq(alreadyThere.need, false, "already present → no add");
+});
+
+test("appendToGitignore preserves prior content and adds the line at the end (POSIX final-newline safe)", () => {
+  eq(appendToGitignore("", ".roadmap/config.local.yaml"), "\n.roadmap/config.local.yaml\n");
+  eq(appendToGitignore("node_modules\n", ".roadmap/config.local.yaml"), "node_modules\n\n.roadmap/config.local.yaml\n");
+  eq(appendToGitignore("node_modules\ndist", ".roadmap/config.local.yaml"),
+    "node_modules\ndist\n\n.roadmap/config.local.yaml\n", "trailing-newline-less input still gets clean formatting");
+});
+
+// WHY: the whole point of the interactive walkthrough is that a first-run
+// user gets a working roadmap they can validate + render immediately. If
+// the blueprint's output failed either check, every new user's first
+// experience would be a red gate. Locking that end-to-end here.
+test("planInit's rendered blueprint is validate-clean AND renders under the standard tool chain", () => {
+  const files = planInit({ program: "myproj", piTitle: "PI", sprintTitle: "S", assistant: "manual" }, { existingFiles: new Set() });
+  const roadmap = files.find((f) => f.path === "docs/roadmap/roadmap.yaml").contents;
+  // The parsed graph must satisfy validateGraph (structural + dep + cycle).
+  const g = parseDocument(roadmap).toJSON();
+  const v = validateGraph(g);
+  eq(v.errors, [], "the rendered roadmap.yaml validates clean");
+  // A single active PI with a `next` sprint is what makes 'roadmap plan'
+  // immediately show something runnable — the demo the interactive path is
+  // selling.
+  eq(g.pis.length, 1);
+  eq(g.pis[0].status, "active");
+  eq(g.pis[0].sprints.length, 1);
+  eq(g.pis[0].sprints[0].status, "next");
 });
 
 // ── backlog-audit ───────────────────────────────────────────────────────────

@@ -5,11 +5,22 @@
 // so every relative default (--in, --out) just works. Pure logic lives in lib/cli-core.mjs.
 
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { route, classify, buildArgs, findRepoRoot, missingRoadmapHelp, expandShort, REL } from "./lib/cli-core.mjs";
 
 const SCRIPTS = dirname(fileURLToPath(import.meta.url));
+
+// --version / -v / version — print the installed package version and exit.
+// Reading package.json at invocation is fine (it's ~1 KB, once, before any
+// work); it also means the printed version can't drift from what npm shipped.
+function readPackageVersion() {
+  try {
+    const pkgPath = join(SCRIPTS, "..", "package.json");
+    return JSON.parse(readFileSync(pkgPath, "utf8")).version || "unknown";
+  } catch { return "unknown"; }
+}
 
 const HELP = `roadmap — roadmap CLI   (run from anywhere inside a repo with ${REL.join("/")})
 
@@ -90,13 +101,31 @@ PLATFORM
   where your terminal lives (tmux in WSL/macOS/Linux; wt or warp in Windows PowerShell).
   Install per environment with 'npm link' (once in each Node you use, e.g. Windows + WSL).`;
 
+// --version / -v / version — print and exit before any repo walk. Standard
+// CLI hygiene: works from anywhere, needs no roadmap.yaml, gives npm consumers
+// a way to verify what's installed.
+const RAW = process.argv.slice(2);
+if (RAW.length === 1 && (RAW[0] === "--version" || RAW[0] === "-v" || RAW[0] === "version")) {
+  console.log(readPackageVersion());
+  process.exit(0);
+}
+
 // Bare `roadmap` in an interactive terminal → the wizard (it hot-loads this repo's roadmap and
 // walks you through terminal/wave/cap). Bare + non-TTY keeps printing the plan, so pipes and
 // scripts (roadmap | cat, CI) are unaffected. `roadmap go` forces the wizard regardless.
-const RAW = process.argv.slice(2);
 if (RAW.length === 0 && process.stdin.isTTY) {
   const root = findRepoRoot(process.cwd());
-  if (!root) { console.error(missingRoadmapHelp(process.cwd())); process.exit(2); }
+  if (!root) {
+    // A TTY user with no roadmap wants a way in, not just a wall of help
+    // text. Offer to launch the interactive init right there; a decline
+    // falls through to the same friendly help (which points at 'roadmap
+    // init' explicitly). Non-TTY still gets help + exit 2, so a CI script
+    // that expects failure doesn't hang on a hidden prompt.
+    console.error(missingRoadmapHelp(process.cwd()));
+    console.error("");
+    console.error("Or run 'roadmap init' now for a guided walkthrough.");
+    process.exit(2);
+  }
   const r = spawnSync("node", [join(SCRIPTS, "wizard.mjs")], { stdio: "inherit", cwd: root });
   process.exit(r.status ?? 0);
 }
