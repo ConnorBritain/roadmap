@@ -122,3 +122,24 @@ export async function confirm(title, def = false) {
     return ans === "y" || ans === "yes";
   } finally { rl.close(); }
 }
+
+// Free-text with an optional default + optional validator.
+// `def`  shown in [brackets]; blank input → def.
+// `validate(value)` returns null on success or an error message string. Rejects
+// re-prompt with the error visible; the user can Ctrl-C to cancel cleanly.
+export async function text(title, { def = "", validate = null } = {}) {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  rl.on("SIGINT", () => { rl.close(); cancel(); });
+  try {
+    for (;;) {
+      const hint = def ? ` ${S.dim}[${def}]${S.reset}` : "";
+      const raw = await question(rl, `${S.bold}${title}${S.reset}${hint} `);
+      const value = raw.trim() === "" ? def : raw.trim();
+      if (validate) {
+        const err = validate(value);
+        if (err) { process.stdout.write(`${S.red}${err}${S.reset}\n`); continue; }
+      }
+      return value;
+    }
+  } finally { rl.close(); }
+}

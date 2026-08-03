@@ -69,29 +69,35 @@ export function expandShort(args) {
 }
 
 // Friendly guidance when no roadmap.yaml is found — say WHERE it goes + how to start one,
-// instead of a terse error. Shown for any command (incl. bare `roadmap`).
+// instead of a terse error. Shown for any command (incl. bare `roadmap`). The interactive
+// path in cli.mjs offers `roadmap init` directly in a TTY; this text is the fallback for a
+// non-TTY (piped, CI) run where a prompt would hang.
 export function missingRoadmapHelp(cwd) {
   const rel = REL.join("/");
   return [
     `roadmap: couldn't find ${rel} at or above`,
     `  ${cwd}`,
     ``,
-    `The CLI walks UP from your current directory looking for the roadmap graph,`,
-    `so run it from anywhere inside a repo whose root has:`,
+    `The CLI walks UP from the current directory looking for the roadmap graph.`,
+    `Run it from anywhere inside a repo whose root has:`,
     `  <repo-root>/${rel}`,
     ``,
-    `Don't have one yet? A minimal starter:`,
+    `New here? The fastest path is a guided walkthrough:`,
+    `  roadmap init          # interactive scaffold: program name, first PI, first sprint,`,
+    `                        # assistant profile, and (optional) backlog + local config.`,
+    `                        # Previews every write; nothing changes until you confirm.`,
+    ``,
+    `Rather write it yourself? Minimal starter for ${rel}:`,
     `  meta:`,
     `    schema_version: 1`,
-    `    program: MYPROJ`,
+    `    program: myproj`,
     `  pis:`,
     `    - id: first`,
     `      title: First initiative`,
     `      status: active`,
     `      sprints:`,
-    `        - { id: s1, title: First sprint, status: next, invoke: first-s1, est_sessions: 1 }`,
+    `        - { id: s1, title: First slice, status: next, invoke: first-s1, est_sessions: 1 }`,
     ``,
-    `Save that to ${rel}, then 'roadmap validate' and 'roadmap render'.`,
-    `Run 'roadmap init' from the repo root for a safe bootstrap preview.`,
+    `Then: 'roadmap validate' → 'roadmap render'.`,
   ].join("\n");
 }
