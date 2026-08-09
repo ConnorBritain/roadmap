@@ -10,24 +10,29 @@ import { diagnoseCodexCloud, launchCodexCloud, observeCodexCloudTask } from "./l
 import {
   EVALUATION_ROOT, assertEvaluationDiffPaths, assignmentFor, assignmentsForWave,
   buildEvaluationPrompt, buildEvaluationRun, evaluationDirectory, normalizeAssignment,
-  requiredRunId, requiredSha, sealableWave,
+  requiredArtifactRoot, requiredRunId, requiredSha, sealableWave,
 } from "./lib/evaluation-core.mjs";
 
 function value(args, name) { const i = args.indexOf(name); return i < 0 ? null : args[i + 1] || null; }
 function flag(args, name) { return args.includes(name); }
-function runPath(root, runId) { return join(root, evaluationDirectory(runId), "RUN.yaml"); }
-function readRun(root, runId) {
-  const path = runPath(root, runId);
+function configuredArtifactRoot(graph) {
+  return requiredArtifactRoot(graph.meta?.dispatch?.evaluation?.artifact_root || EVALUATION_ROOT);
+}
+function runPath(root, runId, artifactRoot) { return join(root, evaluationDirectory(runId, artifactRoot), "RUN.yaml"); }
+function readRun(root, runId, artifactRoot) {
+  const path = runPath(root, runId, artifactRoot);
   if (!existsSync(path)) throw new Error(`evaluation run manifest not found: ${path}`);
   const parsed = parse(readFileSync(path, "utf8"));
   if (!parsed || typeof parsed !== "object") throw new Error("evaluation RUN.yaml is invalid");
   requiredRunId(parsed.run_id); requiredSha(parsed.base_sha);
+  const recordedRoot = requiredArtifactRoot(parsed.artifact_root || EVALUATION_ROOT);
+  if (recordedRoot !== artifactRoot) throw new Error(`evaluation run artifact root changed from ${recordedRoot} to ${artifactRoot}; restore the original repository configuration before continuing`);
   if (!Array.isArray(parsed.assignments)) parsed.assignments = [];
   parsed.assignments = parsed.assignments.map(normalizeAssignment);
   return parsed;
 }
 function writeRun(root, run) {
-  const path = runPath(root, run.run_id);
+  const path = runPath(root, run.run_id, run.artifact_root);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, stringify(run), "utf8");
 }
@@ -49,24 +54,25 @@ function run(command, args, root) {
 
 export async function runEvaluation(root, args) {
   const action = args.shift() || "status";
+  const graph = loadGraph(join(root, "docs", "roadmap", "roadmap.yaml"));
+  const artifactRoot = configuredArtifactRoot(graph);
   if (action === "init") {
     const runId = requiredRunId(value(args, "--run"));
     const baseSha = requiredSha(value(args, "--base-sha"));
     gitSha(root, baseSha);
-    const graph = loadGraph(root);
     const environmentId = value(args, "--environment-id") || graph.meta?.dispatch?.providers?.codex?.environment_id;
     const assignmentsFile = value(args, "--assignments");
     const manifest = buildEvaluationRun({ runId, baseSha, environmentId, title: value(args, "--title") || undefined,
-      assignments: assignmentsFile ? loadAssignments(assignmentsFile) : [] });
-    if (existsSync(runPath(root, runId))) throw new Error(`evaluation run already exists: ${runId}`);
+      artifactRoot, assignments: assignmentsFile ? loadAssignments(assignmentsFile) : [] });
+    if (existsSync(runPath(root, runId, artifactRoot))) throw new Error(`evaluation run already exists: ${runId}`);
     writeRun(root, manifest);
-    const base = join(root, evaluationDirectory(runId));
+    const base = join(root, evaluationDirectory(runId, artifactRoot));
     mkdirSync(join(base, "inbox"), { recursive: true });
     writeFileSync(join(base, "README.md"), `# ${manifest.title}\n\nFrozen base: \`${baseSha}\`. This is a documentation-only evaluation corpus.\n`, "utf8");
-    return { action, runId, path: evaluationDirectory(runId), assignments: manifest.assignments.length };
+    return { action, runId, path: evaluationDirectory(runId, artifactRoot), assignments: manifest.assignments.length };
   }
   const runId = requiredRunId(value(args, "--run") || args.find((arg) => !arg.startsWith("-")));
-  const manifest = readRun(root, runId);
+  const manifest = readRun(root, runId, artifactRoot);
   if (action === "status") {
     const assignments = manifest.assignments.map((assignment) => ({ ...assignment, provider_status: assignment.receipt
       ? observeCodexCloudTask({ taskId: assignment.receipt.external_id, environmentId: manifest.environment_id })?.status || "not_found" : "not_launched" }));
@@ -92,7 +98,7 @@ export async function runEvaluation(root, args) {
     const assignment = assignmentFor(manifest, id);
     if (!assignment.receipt) throw new Error(`assignment ${id} has not been launched`);
     const diff = run("codex", ["cloud", "diff", assignment.receipt.external_id], root);
-    const paths = assertEvaluationDiffPaths({ runId, assignmentId: id, diff });
+    const paths = assertEvaluationDiffPaths({ runId, assignmentId: id, artifactRoot: manifest.artifact_root, diff });
     if (flag(args, "--apply")) run("codex", ["cloud", "apply", assignment.receipt.external_id], root);
     assignment.collected_at = new Date().toISOString(); assignment.state = flag(args, "--apply") ? "applied" : "validated";
     writeRun(root, manifest);

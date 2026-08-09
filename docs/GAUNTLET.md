@@ -46,7 +46,7 @@ point.
 `roadmap gauntlet eval` is a separate, Codex Cloud-oriented conductor for a SHA-pinned evidence
 evaluation. It is not an implementation Gauntlet and it never asks a worker to publish a PR. The
 lead owns one documentation-only evaluation branch/PR; each worker may write only its assigned
-packet beneath `docs/audits/dimensional-coherence-matrix/<run>/inbox/<assignment>/` in its
+packet beneath `<artifact_root>/<run>/inbox/<assignment>/` in its
 ephemeral checkout.
 
 ```text
@@ -60,6 +60,19 @@ An assignment file is a YAML sequence (or an `assignments:` mapping) of `id`, `w
 `prompt`. Launch records the exact task receipt after every submission. Collection validates the
 task's unified diff before applying it and rejects every path outside that assignment's inbox. A
 lead must review and commit the resulting documentation separately.
+
+The default `artifact_root` is `docs/audits/dimensional-coherence-matrix`. A repository may set a
+durable, repository-relative override in its canonical roadmap configuration:
+
+```yaml
+meta:
+  dispatch:
+    evaluation:
+      artifact_root: docs/sprints/dimensional-coherence-matrix/evaluation/runs
+```
+
+The root is recorded in `RUN.yaml`. Changing it while a run exists is refused, which prevents a
+later collection from silently accepting packets outside the frozen corpus.
 
 ## Conducting one run
 

@@ -2,7 +2,7 @@
 // Evaluation is deliberately distinct from an implementation Gauntlet: workers
 // produce isolated evidence packets; a lead chooses what to integrate and merge.
 
-export const EVALUATION_VERSION = 1;
+export const EVALUATION_VERSION = 2;
 export const EVALUATION_ROOT = "docs/audits/dimensional-coherence-matrix";
 
 const RUN_ID = /^[a-z0-9][a-z0-9_-]{2,79}$/;
@@ -21,14 +21,25 @@ export function requiredSha(value) {
   return sha;
 }
 
-export function evaluationDirectory(runId) {
-  return `${EVALUATION_ROOT}/${requiredRunId(runId)}`;
+// Run artifacts are committed repository content, so their configured root must
+// be a portable repository-relative POSIX path. Refuse paths that could escape
+// the checkout rather than relying on the host path resolver after collection.
+export function requiredArtifactRoot(value = EVALUATION_ROOT) {
+  const root = String(value == null ? EVALUATION_ROOT : value).trim().replace(/\/+$/, "");
+  if (!root || root.startsWith("/") || root.includes("\\") || root.split("/").some((part) => !part || part === "." || part === "..")) {
+    throw new Error("evaluation artifact root must be a non-empty repository-relative POSIX path");
+  }
+  return root;
 }
 
-export function assignmentDirectory(runId, assignmentId) {
+export function evaluationDirectory(runId, artifactRoot = EVALUATION_ROOT) {
+  return `${requiredArtifactRoot(artifactRoot)}/${requiredRunId(runId)}`;
+}
+
+export function assignmentDirectory(runId, assignmentId, artifactRoot = EVALUATION_ROOT) {
   const id = String(assignmentId || "").trim();
   if (!ASSIGNMENT_ID.test(id)) throw new Error("evaluation assignment id must be 2-80 lowercase letters, digits, _ or -");
-  return `${evaluationDirectory(runId)}/inbox/${id}`;
+  return `${evaluationDirectory(runId, artifactRoot)}/inbox/${id}`;
 }
 
 export function normalizeAssignment(value = {}) {
@@ -46,7 +57,7 @@ export function normalizeAssignment(value = {}) {
   };
 }
 
-export function buildEvaluationRun({ runId, baseSha, environmentId, title = "Dimensional coherence matrix", assignments = [] } = {}) {
+export function buildEvaluationRun({ runId, baseSha, environmentId, artifactRoot = EVALUATION_ROOT, title = "Dimensional coherence matrix", assignments = [] } = {}) {
   const normalized = assignments.map(normalizeAssignment);
   const ids = new Set();
   for (const assignment of normalized) {
@@ -60,6 +71,7 @@ export function buildEvaluationRun({ runId, baseSha, environmentId, title = "Dim
     run_id: requiredRunId(runId),
     title: String(title || "Dimensional coherence matrix").trim(),
     base_sha: requiredSha(baseSha),
+    artifact_root: requiredArtifactRoot(artifactRoot),
     provider: "codex",
     environment_id: environment,
     state: "planned",
@@ -83,7 +95,7 @@ export function assignmentsForWave(run, wave) {
 }
 
 export function buildEvaluationPrompt({ run, assignment }) {
-  const packetDir = assignmentDirectory(run.run_id, assignment.id);
+  const packetDir = assignmentDirectory(run.run_id, assignment.id, run.artifact_root);
   return `You are an isolated, documentation-only evaluator in the Pidgeon dimensional-coherence matrix.\n\n`
     + `Frozen source baseline: ${requiredSha(run.base_sha)}\n`
     + `Assignment: ${assignment.id} (wave ${assignment.wave})\n\n`
@@ -114,8 +126,8 @@ export function changedPathsFromUnifiedDiff(text) {
   return [...new Set(paths)];
 }
 
-export function assertEvaluationDiffPaths({ runId, assignmentId, diff }) {
-  const prefix = `${assignmentDirectory(runId, assignmentId)}/`;
+export function assertEvaluationDiffPaths({ runId, assignmentId, artifactRoot = EVALUATION_ROOT, diff }) {
+  const prefix = `${assignmentDirectory(runId, assignmentId, artifactRoot)}/`;
   const paths = changedPathsFromUnifiedDiff(diff);
   const forbidden = paths.filter((path) => !path.startsWith(prefix));
   if (forbidden.length) throw new Error(`evaluation diff escapes assigned documentation inbox: ${forbidden.join(", ")}`);
