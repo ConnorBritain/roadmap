@@ -1363,6 +1363,12 @@ export function formatGauntletLaunchResult(result, role) {
 const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
   const args = process.argv.slice(2);
+  if (args[0] === "eval") {
+    const result = spawnSync("node", [resolve(new URL("./evaluate.mjs", import.meta.url).pathname), ...args.slice(1)], {
+      cwd: process.cwd(), stdio: "inherit",
+    });
+    process.exit(result.status ?? 1);
+  }
   const known = new Set(["start", "status", "ack", "critic", "repair", "cancel"]);
   const action = known.has(args[0]) ? args.shift() : "start";
   const val = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
