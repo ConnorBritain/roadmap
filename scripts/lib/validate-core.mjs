@@ -104,6 +104,15 @@ export function validateGraph(graph) {
       if (meta.dispatch.default_provider != null && !["claude", "codex"].includes(meta.dispatch.default_provider)) {
         err("meta.dispatch.default_provider must be one of claude|codex");
       }
+      const evaluation = meta.dispatch.evaluation;
+      if (evaluation != null && (typeof evaluation !== "object" || Array.isArray(evaluation)
+        || (evaluation.artifact_root != null && (typeof evaluation.artifact_root !== "string"
+          || !evaluation.artifact_root.trim()
+          || evaluation.artifact_root.startsWith("/")
+          || evaluation.artifact_root.includes("\\")
+          || evaluation.artifact_root.split("/").some((part) => !part || part === "." || part === ".."))))) {
+        err("meta.dispatch.evaluation.artifact_root must be a non-empty repository-relative POSIX path when configured");
+      }
       const codex = meta.dispatch.providers && meta.dispatch.providers.codex;
       if (meta.dispatch.providers != null && (typeof meta.dispatch.providers !== "object" || Array.isArray(meta.dispatch.providers))) {
         err("meta.dispatch.providers must be a mapping");

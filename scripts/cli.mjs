@@ -41,6 +41,7 @@ COMMANDS
                   legacy --to claude|codex|oz posts a Linear @-mention capsule instead)
   gauntlet <action> <key-or-run>  conduct a frozen-bar cloud run (start|status|critic|ack|repair|cancel); implementation and
                   fresh critics/repairs rendezvous on one SHA-pinned GitHub PR
+  gauntlet eval <action>          conduct a documentation-only, SHA-pinned Codex evaluation
   backlog         erratic-work tracker: list | add "title" [-k kind --tier PN] | set <id> f=v
   plate           the My Issues hopper: list | add/rm/set <key>... | clear  (curated batch → assignee=you)
   cycle           the weekly election: plan [--capacity N] [--json] (stale first, capacity-packed

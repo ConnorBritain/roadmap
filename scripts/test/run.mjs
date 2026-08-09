@@ -74,6 +74,7 @@ import { formatGauntletLaunchResult, formatGauntletStatus, githubClient,
   runGauntletAcknowledge, runGauntletCancel, runGauntletCritic, runGauntletRepair,
   runGauntletStart, runGauntletStatus } from "../gauntlet.mjs";
 import { loadGraph } from "../lib/graph.mjs";
+import { runEvaluation } from "../evaluate.mjs";
 import { graphDiff, backlogDiff, reviewDigest, pisInFlight } from "../lib/review-core.mjs";
 import { doctorReport } from "../lib/doctor-core.mjs";
 import { auditBacklog, collectEntries, AUDIT_CODES, signatureOf, knownDamageOf } from "../lib/backlog-audit.mjs";
@@ -120,6 +121,42 @@ function throws(fn, match, msg) {
 }
 
 const sp = (id, o = {}) => ({ id, title: id, invoke: o.invoke || id, status: o.status || "next", ...o });
+
+// WHY: an evaluation corpus is the durable hand-off from diagnosis to
+// implementation. A per-repository root must never fall back to a generic
+// audit directory, or workers would return valid-looking evidence to the
+// wrong program folder.
+test("evaluation init honors the configured artifact root", async () => {
+  const root = mkdtempSync(join(tmpdir(), "roadmap-evaluation-"));
+  try {
+    mkdirSync(join(root, "docs", "roadmap"), { recursive: true });
+    writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"), `meta:\n  schema_version: 1\n  program: Test\n  dispatch:\n    providers:\n      codex:\n        environment_id: env_test\n    evaluation:\n      artifact_root: docs/sprints/dimensional-coherence-matrix/evaluation/runs\npis: []\n`, "utf8");
+    const git = (args) => spawnSync("git", args, { cwd: root, encoding: "utf8" });
+    git(["init", "-q"]); git(["config", "user.email", "test@example.com"]); git(["config", "user.name", "Test"]);
+    git(["add", "."]); git(["commit", "-qm", "fixture"]);
+    const sha = git(["rev-parse", "HEAD"]).stdout.trim();
+    const assignments = join(root, "assignments.yaml");
+    writeFileSync(assignments, "assignments:\n  - id: suite-map\n    wave: cartography\n    prompt: Map the suite.\n", "utf8");
+    const result = await runEvaluation(root, ["init", "--run", "matrix-2026-08", "--base-sha", sha, "--assignments", assignments]);
+    eq(result.path, "docs/sprints/dimensional-coherence-matrix/evaluation/runs/matrix-2026-08", "configured artifact root is returned");
+    const run = readFileSync(join(root, result.path, "RUN.yaml"), "utf8");
+    ok(run.includes("artifact_root: docs/sprints/dimensional-coherence-matrix/evaluation/runs"), "manifest freezes configured root");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// WHY: a malformed artifact root would let an evaluation escape its intended
+// documentation corpus. The canonical roadmap validation gate must refuse it
+// before any run can be initialized.
+test("validateGraph accepts a safe evaluation artifact root and rejects an escaping one", () => {
+  const valid = { meta: { schema_version: 1, program: "Test", dispatch: {
+    evaluation: { artifact_root: "docs/sprints/dimensional-coherence-matrix/evaluation/runs" },
+  } }, pis: [] };
+  eq(validateGraph(valid).errors, [], "safe configured root validates");
+  const invalid = { meta: { schema_version: 1, program: "Test", dispatch: {
+    evaluation: { artifact_root: "../outside" },
+  } }, pis: [] };
+  ok(validateGraph(invalid).errors.some((error) => error.includes("meta.dispatch.evaluation.artifact_root")), "escaping root is rejected");
+});
 
 // ── dependency resolution ──────────────────────────────────────────────────
 // WHY: a slice's deps decide when it becomes runnable. If sibling/PI/qualified
