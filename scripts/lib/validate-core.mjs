@@ -98,8 +98,43 @@ export function validateGraph(graph) {
       if (w != null && !(Number.isFinite(w) && w > 0)) {
         err("meta.dispatch.in_flight_window_hours must be a number > 0 (a bad value would silently disable the cross-engine dispatch lock)");
       }
-      if (meta.dispatch.provider != null && typeof meta.dispatch.provider !== "string") {
-        err("meta.dispatch.provider must be a string (e.g. 'github', 'gitlab', 'git-native', 'none')");
+      if (meta.dispatch.provider != null && !["github", "gitlab", "git-native", "none"].includes(meta.dispatch.provider)) {
+        err("meta.dispatch.provider must be one of github|gitlab|git-native|none");
+      }
+      if (meta.dispatch.default_provider != null && !["claude", "codex"].includes(meta.dispatch.default_provider)) {
+        err("meta.dispatch.default_provider must be one of claude|codex");
+      }
+      const codex = meta.dispatch.providers && meta.dispatch.providers.codex;
+      if (meta.dispatch.providers != null && (typeof meta.dispatch.providers !== "object" || Array.isArray(meta.dispatch.providers))) {
+        err("meta.dispatch.providers must be a mapping");
+      } else if (codex != null && (typeof codex !== "object" || Array.isArray(codex)
+        || (codex.environment_id != null && (typeof codex.environment_id !== "string" || !codex.environment_id.trim())))) {
+        err("meta.dispatch.providers.codex.environment_id must be a non-empty string when configured");
+      }
+    }
+  }
+
+  // Optional conducted-loop policy. This is planning/config state only; individual run
+  // receipts live outside roadmap.yaml and therefore cannot bloat or mutate the graph.
+  if (meta.gauntlet != null) {
+    if (typeof meta.gauntlet !== "object" || Array.isArray(meta.gauntlet)) {
+      err("meta.gauntlet must be a mapping");
+    } else {
+      const rounds = meta.gauntlet.max_rounds;
+      if (rounds != null && !(Number.isInteger(rounds) && rounds >= 0 && rounds <= 20)) {
+        err("meta.gauntlet.max_rounds must be an integer from 0 to 20");
+      }
+      for (const field of ["implementation_tier", "critic_tier", "repair_tier"]) {
+        const value = meta.gauntlet[field];
+        if (value != null && (typeof value !== "string" || !value.trim() || Buffer.byteLength(value, "utf8") > 512)) {
+          err(`meta.gauntlet.${field} must be a non-empty string up to 512 UTF-8 bytes`);
+        }
+      }
+      for (const field of ["implementation_provider", "critic_provider", "repair_provider"]) {
+        const value = meta.gauntlet[field];
+        if (value != null && !["claude", "codex"].includes(value)) {
+          err(`meta.gauntlet.${field} must be claude or codex`);
+        }
       }
     }
   }

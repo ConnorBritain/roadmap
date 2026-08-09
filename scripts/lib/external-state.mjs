@@ -17,19 +17,20 @@ const git = (root, ...a) => spawnSync("git", a, { cwd: root, encoding: "utf8" })
 export function mergedPrs(root) {
   try {
     const r = spawnSync("gh", ["pr", "list", "--state", "merged", "--limit", "100", "--json", "number,headRefName,title,body"],
-      { cwd: root, encoding: "utf8", timeout: 5000 });
+      { cwd: root, encoding: "utf8", timeout: 15000, maxBuffer: 64 * 1024 * 1024 });
     if (r.status !== 0 || !r.stdout) return [];
     return JSON.parse(r.stdout);
   } catch { return []; }
 }
 
 // All PRs incl. open/draft with merge + check state:
-// [{ number, title, headRefName, state, isDraft, mergeStateStatus, statusCheckRollup }].
+// [{ number, title, body, url, headRefName, headRefOid, state, isDraft,
+//    mergeStateStatus, statusCheckRollup, comments }].
 // null on failure (lets a caller distinguish "gh absent" from "zero PRs"). 5s cap.
 export function allPrs(root) {
   try {
     const r = spawnSync("gh", ["pr", "list", "--state", "all", "--limit", "100",
-      "--json", "number,title,headRefName,state,isDraft,mergeStateStatus,statusCheckRollup"],
+      "--json", "number,title,body,url,headRefName,headRefOid,state,isDraft,mergeStateStatus,statusCheckRollup,comments"],
       { cwd: root, encoding: "utf8", timeout: 5000 });
     if (r.status !== 0) return null;
     return JSON.parse(r.stdout);

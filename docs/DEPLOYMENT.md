@@ -1,21 +1,31 @@
 # Deploying roadmap — every surface, every config, where secrets live
 
-One rule governs everything on this page:
+Two rules govern everything on this page:
 
-> **Committed YAML carries configuration. The environment carries secrets. Nothing else exists.**
-> `docs/roadmap/roadmap.yaml` (including `meta.linear`) is committed and shareable — it never contains a credential. API keys live in environment variables only — never in the YAML, never in `.mcp.json`, never in plugin files. There is no hidden per-plugin config store to manage.
+> **Committed files contain configuration and planning state, never credentials.**
+> API keys belong in environment variables or the explicitly machine-local, protected Routine
+> profile described below — never in roadmap YAML, `.mcp.json`, plugin files, PRs, or comments.
+>
+> **GitHub is durable Gauntlet reality; local run state is only a ledger/cache.**
+> `.roadmap-gauntlet-state.json` stores frozen-bar and launch receipts without tokens or
+> transcripts and must be gitignored. PR bodies/comments retain the auditable bar and exact-SHA
+> verdicts.
 
 ## The surfaces at a glance
 
 | Surface | What you get | Install | Credentials come from |
 |---|---|---|---|
-| **CLI** (`roadmap ...`) | Everything: plan/fan/backlog/next/set/linear | `npm install -D @connorbritain/roadmap` | Your shell environment |
-| **Claude Code plugin** | Skills (`/slice /backlog /imagine /prioritize /sync /init /fanout`), 4 agents, SessionStart hook, PR-watch monitor, **and** the MCP server `graph` (16 tools) — one install | `claude plugin install roadmap@roadmap` | Inherited from your shell environment |
-| **Standalone MCP** (no plugin) | Just the 16 `graph` tools in any MCP client | register `scripts/mcp.mjs` (below) | Inherited env, or an `env` block in the client's MCP config |
+| **CLI** (`roadmap ...`) | Plan/fan/backlog/Gauntlet/reconcile/optional Linear families | `npm install -D @connorbritain/roadmap` | Shell env + optional protected Routine profile |
+| **Claude Code plugin** | Skills including `/gauntlet`, agents, hooks/monitor, and all `graph` MCP tool families | `claude plugin install roadmap@roadmap` | Inherited env + optional protected Routine profile |
+| **Standalone MCP** (no plugin) | The same `graph` tool families in any MCP client | register `scripts/mcp.mjs` (below) | Inherited env, optional client env block, and Routine profile |
 | **Codex / other agents** | CLI + MCP + optional local assistant profile | `npm install -D @connorbritain/roadmap` + `roadmap init` | Shell environment |
-| **CI / headless** | CLI (`validate`, `render`, `linear sync`) | `npm ci` in the tool checkout | CI secret store → env var |
+| **CI / headless** | CLI (`validate`, `render`, optional sync/conduct actuators) | `npm ci` in the tool checkout | CI secret store -> env var |
 
-A **consuming repo** commits only its own `docs/roadmap/roadmap.yaml` + `backlog.yaml` (and the generated `SLICES.md`/`BACKLOG.md`). The tool itself is installed once per machine. The Linear sync cursor (`.roadmap-linear-state.json`) is per-machine local state — git-ignore it.
+A **consuming repo** commits its own `docs/roadmap/roadmap.yaml` + `backlog.yaml` and generated
+views. The tool itself is installed once per machine. `.roadmap-linear-state.json` is a local
+Linear cursor and `.roadmap-gauntlet-state.json` is a local launch ledger/cache; gitignore both.
+Neither is a credential store. The frozen Gauntlet bar is also carried in the implementation PR
+body so a lead can recover when the local cache is unavailable.
 
 ## 1 · CLI
 
@@ -33,7 +43,9 @@ claude plugin marketplace add ConnorBritain/roadmap    # or a local path
 claude plugin install roadmap@roadmap                  # --scope project to pin per-repo
 ```
 
-That single install wires the skills, agents, the SessionStart hook, the PR-watch monitor, **and** the bundled MCP server (`.mcp.json` → server name `graph`, tools `mcp__plugin_roadmap_graph__*`). There is nothing to configure inside the plugin itself.
+That single install wires the skills (including `/gauntlet`), agents, the SessionStart hook, the
+PR-watch monitor, **and** the bundled MCP server (`.mcp.json` -> server name `graph`, tools
+`mcp__plugin_roadmap_graph__*`). There is nothing to configure inside the plugin itself.
 
 **How the plugin's MCP server finds your repo:** it walks up from the session's project directory (`CLAUDE_PROJECT_DIR`) to the nearest `docs/roadmap/roadmap.yaml`.
 
@@ -47,15 +59,23 @@ That single install wires the skills, agents, the SessionStart hook, the PR-watc
     "allow": [
       "mcp__plugin_roadmap_graph__plan", "mcp__plugin_roadmap_graph__ready_wave",
       "mcp__plugin_roadmap_graph__show", "mcp__plugin_roadmap_graph__validate",
-      "mcp__plugin_roadmap_graph__backlog_list", "mcp__plugin_roadmap_graph__linear_status"
+      "mcp__plugin_roadmap_graph__backlog_list", "mcp__plugin_roadmap_graph__linear_status",
+      "mcp__plugin_roadmap_graph__gauntlet_status"
     ],
     "ask": [
       "mcp__plugin_roadmap_graph__set_fields", "mcp__plugin_roadmap_graph__bulk_set",
-      "mcp__plugin_roadmap_graph__backlog_add", "mcp__plugin_roadmap_graph__linear_sync"
+      "mcp__plugin_roadmap_graph__backlog_add", "mcp__plugin_roadmap_graph__linear_sync",
+      "mcp__plugin_roadmap_graph__gauntlet_start", "mcp__plugin_roadmap_graph__gauntlet_critic",
+      "mcp__plugin_roadmap_graph__gauntlet_ack",
+      "mcp__plugin_roadmap_graph__gauntlet_repair", "mcp__plugin_roadmap_graph__gauntlet_cancel"
     ]
   }
 }
 ```
+
+The split is intentional: `gauntlet_status` senses GitHub without launching anything; start,
+critic, and repair fire billable Routines. Ack and cancel mutate durable protocol records. All five
+actuators belong behind confirmation.
 
 ## 3 · Standalone MCP (Claude Desktop, other MCP clients, plugin-less Claude Code)
 
@@ -135,18 +155,83 @@ roadmap linear sync              # projects the roadmap; /sync now includes the 
 | Configured, no key | One advisory line; everything else works; sync errors with the fix |
 | Wired | `/sync` runs the Linear phase; hook reports team/pull/last-sync |
 
-## 5 · Cloud dispatch (Claude Code Routines)
+## 5 · Cloud execution and the Gauntlet (remote agents)
 
-`roadmap dispatch <key>` / `roadmap fan --cloud` fire **Claude Code cloud sessions** directly via the Routines API — no Linear plan required, no local worktrees, bounded only by the firing account's Claude plan (Pro/Max/Team). ⚠ The fire endpoint is **beta** (`experimental-cc-routine-2026-04-01`); shapes may change.
+The recommended meaningful-work path is `roadmap gauntlet start <key>` or the `gauntlet_start`
+MCP actuator. The local lead then uses `gauntlet_status`, `gauntlet_critic`, `gauntlet_ack`,
+`gauntlet_repair`, and the explicit stuck-run escape hatch `gauntlet_cancel` to conduct
+implementation -> independent exact-SHA criticism -> lead acknowledgment -> lead-synthesized
+repair -> fresh criticism -> fresh lead acknowledgment. Every critic result is inert until the
+frozen lead acknowledges both its immutable body digest and exact GitHub comment-URL digest. The
+implementation and repair workers never merge.
+The default is one critic and at most three repair rounds.
 
-**One-time routine setup (per claude.ai account, per repo):**
+`roadmap dispatch <key>` / `roadmap fan --cloud` remain lower-level one-shot actuators. By default
+they fire **Claude Code cloud sessions** directly through the Routines API: no Linear plan and no
+local worktrees. The endpoint is beta (`experimental-cc-routine-2026-04-01`) and may change.
+
+Codex Cloud is opt-in through committed, secret-free repository mapping:
+
+```yaml
+meta:
+  dispatch:
+    providers:
+      codex:
+        environment_id: env_roadmap
+  gauntlet:
+    implementation_provider: codex
+    critic_provider: claude
+    repair_provider: codex
+```
+
+Use `roadmap dispatch <key> --provider codex` or the role-specific Gauntlet provider flags. The
+adapter submits remote work with `codex cloud exec`, stores only the exact returned task receipt,
+and polls the stored ID through paginated JSON task lists. It never allocates a local worktree and
+never chooses the most recent task. Current supported Codex Cloud does not offer per-task model
+selection or an unattended task-to-PR CLI command; model requests fail, and implementation status
+is `awaiting_artifact_publication` until a GitHub PR independently appears. `codex cloud apply` is
+an interactive recovery path, not normal Roadmap execution.
+
+Gauntlet V1 is deliberately GitHub-first. Before conducting a run, the consuming repo must have a
+GitHub `origin`, the repository must be connected to each Routine, and `gh auth status` must
+succeed. GitHub holds the marked PR, frozen bar, commits, checks, and exact-SHA verdict comments.
+Provider-neutral `dispatch` can still be used outside GitHub, but the Gauntlet fails loudly rather
+than pretending a GitLab/git-native observation is sufficient.
+
+The authenticated `gh` identity is frozen as the run lead. Critic/repair launches use durable
+lead-authored precommit comments plus deterministic `refs/heads/roadmap-gauntlet-locks/*`
+create-if-absent claims, so independent conductors cannot spend the same Routine launch twice.
+Configure an active GitHub ruleset for `roadmap-gauntlet-locks/*` that restricts creation,
+updates, and deletion to the trusted lead/service bypass identity and blocks non-fast-forward
+updates. Routine worker identities must not have the bypass; verify that actor list in GitHub.
+Before every claim, the runtime verifies that all four rule types apply to that exact prospective
+ref, but the effective-rules response cannot prove bypass membership.
+`ROADMAP_GAUNTLET_UNSAFE_CLAIMS=1` is an explicit unsafe escape hatch
+for isolated tests only. These refs are protocol receipts, not disposable branches. A critic
+verdict becomes authoritative only after the frozen lead acknowledges both its immutable body
+digest and exact GitHub comment-URL digest. PR-backed cancellation is likewise recorded as a
+full-protocol lead comment plus claim ref and survives local-ledger loss. Pre-PR cancellation
+creates a protected shared tombstone claim so a delayed PR cannot resurrect the run; its detailed
+reason remains local until a PR comment exists.
+
+**One-time Routine setup (per claude.ai account, per repo):**
 
 1. On claude.ai → **Code → Routines** (claude.ai/code/routines) → New routine.
-2. Point it at the target **GitHub repo** (must be pushed/connected). Saved prompt — keep it generic; the dispatch capsule arrives as the fired text:
-   > You are a roadmap dispatch worker. The trigger message contains a machine capsule naming a slice — follow it exactly: read docs/SLICES.md and docs/roadmap/roadmap.yaml for the named slice, honor its gate, open a PR, never merge, leftovers to the backlog only.
+2. Point it at the target **GitHub repo** (must be pushed/connected). Create generic saved prompts
+   for the roles you will use; the run-specific capsule arrives as fired text:
+   - **implementation:** implement the frozen bar, verify, open a marked PR, never merge;
+   - **critic:** independently inspect the PR at the expected full SHA and publish the structured
+     verdict comment; never rely on the builder's private reasoning;
+   - **repair:** recheck the expected head, apply only the lead's packet to the existing PR branch,
+     verify and push; abort on a moved head and never merge.
 3. Add an **API trigger** (save the routine first — the endpoint is generated after saving). The modal shows a **URL** (the `trig_…` id is embedded in it, never labeled separately) and a **Generate token** button — the token (`sk-ant-oat01-…`) is shown ONCE; copy it immediately. Use the whole URL as the `trigger` value — the tool accepts either the full URL or the bare `trig_…` id.
 
-**Single-account:** put them in env — `CLAUDE_ROUTINE_TRIGGER` + `CLAUDE_ROUTINE_TOKEN`. Done.
+**Single generic override:** `CLAUDE_ROUTINE_TRIGGER` + `CLAUDE_ROUTINE_TOKEN` remains available
+for low-level dispatch. A Gauntlet call additionally requires the matching
+`CLAUDE_ROUTINE_ROLE=implementation|critic|repair`; a requested tier also requires
+`CLAUDE_ROUTINE_TIER=<tier>`. This prevents an unclassified generic override from silently
+downgrading the builder/reviewer separation. Role-specific production setups should use the
+profile map below.
 
 **Multi-account on one workstation** (people swapping `claude /login` on the same OS user): each person creates the same routine under *their own* claude.ai account, and the pairs live in a machine-local **`~/.claude-routines.json`** (never committed; same trust level as env — override the path with `CLAUDE_ROUTINES_FILE`):
 
@@ -155,8 +240,10 @@ roadmap linear sync              # projects the roadmap; /sync now includes the 
   "connor": {
     "account": "connor@example.com",
     "routines": {
-      "default":        { "trigger": "trig_aaa", "token": "sk-ant-oat01-..." },
-      "acme/webapp":    { "trigger": "trig_bbb", "token": "sk-ant-oat01-..." }
+      "default":                     { "trigger": "trig_impl", "token": "sk-ant-oat01-..." },
+      "default#critic":              { "trigger": "trig_critic", "token": "sk-ant-oat01-..." },
+      "acme/webapp#repair":           { "trigger": "trig_repair", "token": "sk-ant-oat01-..." },
+      "acme/webapp#critic#fable":     { "trigger": "trig_fable", "token": "sk-ant-oat01-..." }
     }
   },
   "sam": {
@@ -166,9 +253,44 @@ roadmap linear sync              # projects the roadmap; /sync now includes the 
 }
 ```
 
-**Resolution order (the hot-swap):** the env pair wins outright (CI/override) → `CLAUDE_ROUTINE_PROFILE=<name>` pins a profile explicitly → otherwise dispatch reads the **currently-authed claude.ai account** from the CLI's own config (`~/.claude.json → oauthAccount.emailAddress`) and matches it to a profile's `account`. Swap people with `claude /login`; the next dispatch fires on the new person's limits with zero config changes. Within a profile, the repo-specific routine (keyed `owner/repo` from the git remote) wins over `default`. Every miss is an actionable error naming the fix.
+**Profile selection (the hot-swap):** the env pair wins outright (CI/override) ->
+`CLAUDE_ROUTINE_PROFILE=<name>` pins a profile -> otherwise roadmap reads the currently
+authenticated claude.ai account from `~/.claude.json` and matches the profile's `account`. Swap
+accounts with `claude /login`; the next launch uses the new account's limits.
 
-When the dispatched slice is also Linear-mapped and `LINEAR_API_KEY` is set, dispatch comments the session URL onto the issue — the board links to the live session. Best-effort: a comment failure never fails the dispatch.
+**Role selection inside that profile:**
+
+```text
+untiered: <owner/repo>#<role> -> default#<role> -> <owner/repo> -> default
+tiered:   <owner/repo>#<role>#<tier> -> default#<role>#<tier>
+          -> <owner/repo>#<tier> -> default#<tier>
+```
+
+These role keys extend the existing repo/tier/default scheme. An explicitly requested tier never
+falls back to an untiered Routine; a missing strong critic is an actionable configuration error.
+The common role names are `implementation`, `critic`, and `repair`.
+
+Optional committed policy belongs under `meta.gauntlet`:
+
+```yaml
+meta:
+  gauntlet:
+    max_rounds: 3
+    critic_tier: fable            # requires a matching role+tier Routine key
+    # implementation_tier: economy
+    # repair_tier: economy
+```
+
+This contains selection labels, not credentials. A slice/backlog `dispatch_tier` overrides the
+repository implementation/repair tier; critic strength remains separately selectable.
+
+The machine-local `.roadmap-gauntlet-state.json` records run and launch receipts immediately,
+closing the pre-PR duplicate window. It contains no Routine token. The implementation PR body
+must repeat the run identity and frozen bar; critic comments bind verdicts to the exact full PR
+head SHA. A status refresh always prefers live GitHub reality over cached state.
+
+When a subject is also Linear-mapped and `LINEAR_API_KEY` is set, low-level dispatch may comment
+the session URL onto the issue. This is a convenience link, not Gauntlet state.
 
 ## 6 · Jira (planned — not yet implemented)
 
@@ -188,6 +310,24 @@ with secrets in `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` (Atlassian API t
 
 ## 7 · Troubleshooting
 
+- `roadmap gauntlet status <run-or-key>` is the first recovery command. It is read-only and
+  refreshes current GitHub reality before suggesting a safe next action.
+- Gauntlet says GitHub unavailable -> confirm the remote with `git remote get-url origin`, install
+  `gh`, then run `gh auth login` / `gh auth status` with access to the repository.
+- A critic says `PASS` but status still refuses -> compare its reviewed full SHA with the current
+  PR head. A verdict for an older head is intentionally stale.
+- Lost `.roadmap-gauntlet-state.json`, or a local conductor that lost the distributed implementation
+  election to a differently frozen winning PR -> run status while authenticated as the winning
+  packet's frozen GitHub lead. Status is read-only. Recovery verifies the marked PR body/current
+  head, protected launch claims against immutable lead launch attestations, and critic comments
+  against body+exact-comment-URL-bound verdict ACKs. Either half of a claim/attestation or
+  verdict/ACK pair is fail-closed. A ledgerless/incomplete run or differing remote winner remains
+  advisory until that lead inspects its recovered bar/base/ceiling/tiers and launches a fresh
+  critic with `--confirm-recovered-bar` (MCP: `confirm_recovered_bar: true`). Only that confirmed
+  actuator adopts the winning packet and upserts authenticated GitHub launch attestations before
+  mutation. The local file is a cache/launch ledger; do not copy tokens into it to “repair” recovery.
+- A role/tier Routine cannot resolve -> add the exact role-aware key shown in the error. Do not
+  map a requested critic tier to a weaker untiered Routine.
 - `roadmap linear status` tells you which of the three states you're in and the exact next command.
 - Plugin tools missing in a session → `/mcp` to reconnect, or restart the session after install.
 - Two `graph` servers listed → you both installed the plugin and `claude mcp add`ed it; remove one.

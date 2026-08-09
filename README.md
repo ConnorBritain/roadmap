@@ -1,12 +1,28 @@
-# Roadmap: scope, manage, and orchestrate AI coding sessions in any repo
+# Roadmap: plan work and conduct independently evaluated agent loops
 
-`roadmap` is a CLI, MCP server, and Claude Code plugin. It turns two YAML files into your repo's plan of record — a **hierarchical, dependency-aware roadmap graph** plus a **prioritized backlog** for the work that surfaces erratically — then **fans that plan out into parallel coding sessions**, each scoped to a single unit of work in its own git worktree.
+`roadmap` is a CLI, MCP server, and Claude Code plugin. It turns two YAML files into a
+dependency-aware plan of record, then helps a long-lived local lead conduct fresh cloud agents
+through the **Gauntlet Loop**: implementation -> independent exact-SHA criticism -> frozen-lead
+acknowledgment -> lead-synthesized repair -> fresh criticism and acknowledgment. GitHub is the
+durable work artifact; the lead keeps intent and judgment; roadmap supplies deterministic senses
+and actuators.
 
 In a Codex environment, the primary surfaces are the CLI, the MCP server, and the repo-level [`AGENTS.md`](AGENTS.md). The Claude plugin assets are included for teams using them.
 
 - **One source of truth (each).** `docs/roadmap/roadmap.yaml` holds the PIs, sprints, deps, priorities, file-ownership, session estimates, gates, prompts, and kickoff briefs. `docs/roadmap/backlog.yaml` holds the erratic work: follow-ups, bugs, chores, urgent items.
 - **Generated views.** `docs/SLICES.md` and `docs/BACKLOG.md` are *rendered* from the YAML; never hand-edit them.
 - **Derived, never stored.** Per-PI exec-plan lines (`(S0 ∥ S1)→S2→S3`), the cross-PI "ready now" wave map, "sessions remaining" rollups, and priority ordering are all computed from `deps` + `touches` + `status` + `priority`.
+- **Conducted execution, not one-shot hope.** A meaningful slice freezes its quality bar before a
+  cloud implementation worker starts. A fresh critic reviews the actual PR at an exact head SHA;
+  the frozen lead inspects and acknowledges the exact body and GitHub comment-URL digests before
+  the verdict can drive state, then decides which findings justify repair. One critic and at most
+  three repair rounds are the defaults. Nothing auto-merges.
+- **Restartable GitHub reality.** PR bodies carry the Gauntlet run identity and frozen bar;
+  protected distributed claims, lead-authored launch precommits and verdict acknowledgments, plus
+  exact-SHA verdict comments reconstruct authoritative rounds. `.roadmap-gauntlet-state.json` is
+  only a gitignored local launch ledger/cache. If another conductor wins with a different frozen
+  protocol, status exposes that packet read-only; only its authenticated frozen lead can inspect,
+  explicitly confirm, and adopt it through a subsequent actuator.
 - **Deterministic fanout with feasibility pre-checks.** A scheduler decides which slices can run concurrently under a cap it *recommends* from five real ceilings — CPU, RAM, independent work, human review, and **free disk for the worktrees** — then launches each in its own worktree and Claude Code session. When even one worktree won't fit on disk, launch is refused before anything is created.
 - **Zero-prompt pickup.** Stash the pickup instructions on the slice itself (`prompt:`); `/slice <key>` or `roadmap grab <id>` is then all a session needs.
 - **Repo-agnostic.** The resource classifier reads the build/test runner command in each sprint's gate (not its language) to size the session. It recognizes the common runners across JS/TS, Python, Java/Kotlin, C/C++, Go, Rust, and Ruby, and `meta.weight_patterns` teaches it anything bespoke. Nothing is hardcoded to one stack.
@@ -25,6 +41,7 @@ In a Codex environment, the primary surfaces are the CLI, the MCP server, and th
 | **Slice** | A sprint *as the thing you act on*, addressed by its stable `invoke` key (e.g. `auth-sessions`): "show me a slice", "fan out this slice." The slice is the atomic, **launchable** unit. |
 | **Wave** | The set of slices that can run **concurrently right now**: mutually dependency-free, sharing no files, under the cap. Within a wave, declared `priority` decides who gets a scarce cap slot. |
 | **Fanout** | Launching a wave. One git worktree plus Claude Code session per slice, plus an optional **lead** session that reviews and merges the resulting PRs. |
+| **Gauntlet** | The within-slice convergence loop: frozen bar, fresh implementation, independent critic, frozen-lead acknowledgment, lead-directed repair, and fresh re-criticism plus acknowledgment. Fanout is across slices; Gauntlet is inside each slice. |
 | **Backlog** | The tracker beside the roadmap for **erratic work** — follow-ups, bugs, chores, urgent items that surface outside the plan. Items are directly launchable (`roadmap grab <id>`) or promotable into roadmap sprints (`roadmap promote <id> --pi <pi>`), cross-linked both ways. |
 | **Priority** | `{ tier: P0–P3, weight: 0–100, reason }` on any sprint or backlog item. Sort order is derived (tier, then weight), never stored — resorting is just editing the fields. |
 
@@ -48,7 +65,12 @@ roadmap plan       # the text plan: recommended cap + what's runnable (no prompt
 roadmap next       # the single highest-priority ready thing across roadmap + backlog
 roadmap render     # regenerate docs/SLICES.md (+ docs/BACKLOG.md when a backlog exists)
 roadmap validate   # structural + cycle checks
-roadmap fan -w 1   # spin up wave 1 (lead + slice sessions); add -d to preview first
+roadmap gauntlet start auth-sessions  # meaningful cloud work: freeze bar + launch implementation
+roadmap gauntlet status auth-sessions --json # live GitHub + full head SHA for the next actuator
+roadmap gauntlet critic auth-sessions --expected-head <full-40-char-head>
+roadmap gauntlet ack auth-sessions --comment-url <exact-comment-url> --confirm
+roadmap gauntlet repair auth-sessions --expected-head <full-40-char-head> --packet-file repair.md
+roadmap fan -w 1   # local worktree fanout remains available; add -d to preview first
 
 # and the erratic-work loop:
 roadmap backlog add "wt adapter mangles quotes" -k bug --tier P0 --why "breaks every fanout"
@@ -56,7 +78,7 @@ roadmap grab b1                    # launch that one item in its own worktree + 
 roadmap promote b2 --pi auth       # or fold a bigger one into the roadmap as a sprint
 ```
 
-That's the whole loop: `cd` into a repo, type `roadmap ...`, it finds the roadmap and fires.
+The operating loop is `plan -> conduct Gauntlet -> merge decision -> /sync -> plan again`.
 
 ### Using it in Codex
 
@@ -90,13 +112,14 @@ Run from anywhere inside a repo. `docs/roadmap/roadmap.yaml` is found by walking
 | `roadmap backlog [list\|add\|set]` | The erratic-work tracker: `add "title" [-k kind] [--tier PN] [--weight N] [--why reason] [--slice invoke]` (first add creates `backlog.yaml`), `set <id> f=v ...`, bare = priority-sorted open items. |
 | `roadmap grab <id> [-t term] [--dry]` | Launch **one backlog item** in its own worktree (`<root>/backlog-<id>`, branch `backlog/<id>`) with a synthesized kickoff brief (the item's `prompt` embedded). Marks it `in_progress`. |
 | `roadmap promote <id> --pi <pi> [--id sN]` | Promote a backlog item into a roadmap **sprint** (item id becomes the invoke key; title/est/gate/touches/prompt/priority carry; `promoted_to` back-links). Both YAMLs validated before either is written. |
-| `roadmap linear status\|auth\|setup\|provision\|sync\|post-update` | Optional **Linear** integration (see [Linear](#linear-optional--project-manage-from-linear-while-agents-execute)): `status [--probe]` state check, `auth` env-var instructions, `setup --team KEY` guided config, `provision` (labels + views + guidance texts), `sync [--dry] [--push-only] [--pull-only]`, `post-update --pi <id> --body <text>` (digest → project update). |
+| `roadmap linear status\|auth\|setup\|provision\|sync\|post-update` | Optional **Linear** integration (see [Linear](#linear-optional--plan-projection-and-proposal-inbox)): `status [--probe]` state check, `auth` env-var instructions, `setup --team KEY` guided config, `provision` (labels + views + guidance texts), `sync [--dry] [--push-only] [--pull-only]`, `post-update --pi <id> --body <text>` (digest -> project update). |
 | `roadmap review [--since <rev\|date>] [-j]` | The **date-anchored review digest**: shipped vs captured vs aging vs new PIs vs sprawl since `meta.last_review` (git-snapshot diff). The `/debrief` and `/retro` engine; works with zero Linear. |
-| `roadmap dispatch <key> [--to claude]` | Send one slice/backlog item to a **cloud agent** via its Linear issue (v0.5 seam, pending live verification). `roadmap fan --cloud` does the whole wave — no worktrees, no disk ceiling. |
+| `roadmap gauntlet start\|status\|critic\|ack\|repair\|cancel ...` | Conduct or inspect a GitHub-first Gauntlet run. MCP exposes the same six actions. Status is read-only; start/critic/repair launch role-specific Claude or Codex executions and record generic receipts; ack records the lead's inspection of one exact critic comment, and cancel explicitly abandons stuck work without deleting receipts. |
+| `roadmap dispatch <key> [--provider claude\|codex]` | Low-level one-shot cloud actuator. Claude is the compatible default; Codex Cloud uses the configured remote environment and returns an exact task receipt without a local worktree. Use Gauntlet for independently evaluated execution. |
 | `roadmap fan [-t wt\|warp\|tmux\|print\|background] [-c N] [-w N] [--track A] [--lead-claude] [-d] [-o file] [--worker-mode <m>] [--autonomous --yes-spawn-autonomous]` | Launch a wave: a lead pane/tab plus one per slice, each in its own worktree with a synthesized kickoff brief. **Launches by default**; `-d/--dry` or `-o/--out` to preview. `--track <lane>` fans out only the slices in that lane. Worker **and** lead sessions take `--permission-mode` from `meta.worker_mode` (falls back to `plan`); `--worker-mode` overrides per run. Terminal defaults per platform (win32 to `wt`, else `tmux`). |
 | `roadmap cleanup [-r] [-f]` | Prune fanout worktrees merged into the base branch and clean. **Dry by default**; `-r/--remove` acts; `-f/--force` includes unmerged/dirty. Only touches worktrees under the worktree root. |
 | `roadmap mcp` | Run the MCP server (stdio JSON-RPC) directly, for debugging or non-plugin registration. The plugin starts it for you. |
-| `roadmap watch` | Watch this roadmap's fanout PRs and print a line as each becomes ready / conflicts / merges. The plugin runs it as a monitor; this is the manual pane version. |
+| `roadmap watch` | Watch roadmap/Gauntlet PRs and print meaningful head, check, verdict, conflict, and merge transitions without replaying the initial baseline. |
 | `roadmap sync` / `roadmap init` | Reserved on the CLI. Reconcile and bootstrap live as the `/sync` and `/init` **plugin skills** (surface 2). |
 
 Short flags (`-w -c -t -d -o -j -r -f -lc -wm`) expand to their long forms; positional slice keys pass through untouched.
@@ -125,6 +148,10 @@ Install it as a plugin (see [Install](#install)) and the roadmap becomes an *in-
 
 - **Skills** (`skills/*/SKILL.md`)
   - `/slice <key>`: orient on one slice (read-only) — what, priority, the stashed `prompt` (relayed verbatim), read-order, next action, gate, branch. With a prompt stashed, this is the whole pickup: slash command + slice name, nothing else.
+  - `/gauntlet <key>`: the primary meaningful-work conductor — freeze the external bar, launch a
+    fresh implementation Routine, dispatch an independent critic for the exact PR head, inspect
+    and acknowledge its exact body and GitHub comment-URL digests, synthesize repair instructions,
+    then re-critic and re-acknowledge until a safe stop. It never blindly repairs or merges.
   - `/sync`: reconcile statuses against merged PRs and the tracker, harvest PR-body "Leftovers" into proposed backlog captures, then re-render `SLICES.md`.
   - `/init`: a PM-style interview that bootstraps a `roadmap.yaml` (warm-start from existing docs, or cold).
   - `/fanout`: compute the waves and launch (wraps the same scheduler and adapters as the CLI).
@@ -141,7 +168,7 @@ Install it as a plugin (see [Install](#install)) and the roadmap becomes an *in-
 | **roadmap-bootstrapper** | Cold/warm-start: reads the repo's existing roadmap docs, tracker, sprint dirs, and `git log`, and **drafts a `roadmap.yaml`**. Used by `/init` to pre-fill before the interactive confirmation. | reads repo, proposes YAML | sonnet |
 | **slice-scoper** | Takes a thin `scheduled` slice and **fills it in**: infers `touches`/`owns` by grepping the code, drafts `read_order`, `est_sessions`, and the `gate`, and writes the sprint spec, turning it into a `next`-ready slice. | reads code, proposes slice fields | sonnet/opus |
 | **roadmap-auditor** | Read-only **drift and gap finder**: audits `roadmap.yaml` against reality (merged PRs, strategy docs, sprint dirs) and reports stale statuses and un-surfaced work. | read-only report | sonnet |
-| **wave-shepherd** | The **lead-pane brain**: after a fanout wave produces PRs, reviews each against its slice's gate and scope and recommends a safe **merge order** (respecting deps, flagging conflicts). Reviews; never merges. | read-only review | opus |
+| **wave-shepherd** | The **lead-pane merge triage**: after work produces PRs, recommends a dependency-safe merge order and flags conflicts. It is not the disposable exact-SHA Gauntlet critic. | read-only review | opus |
 
 The CLI and the plugin share the same scripts: the CLI is your *shell* entry, the plugin is the *in-session* entry. The interactive PM interview stays a **skill** (not an agent), because a forked subagent can't hold a back-and-forth with you.
 
@@ -153,7 +180,13 @@ The plugin ships its own MCP server — named **`graph`** in `.mcp.json`, auto-s
 - **Mutate (roadmap):** `add_pi`, `add_sprint`, `set_status`, `set_fields`, `bulk_set` (atomic multi-slice edit: one validate, one write, one render — all-or-nothing), `prune` edit `roadmap.yaml` through the YAML Document API (comments preserved), refuse any edit that would corrupt the graph (duplicate invoke key, unresolved dependency, cycle, bad priority/execution block), and re-render `SLICES.md` in the same step.
 - **Mutate (backlog):** `backlog_add` (creates `backlog.yaml` on first capture), `backlog_set`, and `backlog_promote` (spans both files: both validated before either is written).
 - **Linear:** `linear_status` (zero-network state check) and `linear_sync { dry, push, pull }` — always registered, politely erroring with setup guidance when `meta.linear` is absent.
-- **Cloud dispatch:** `dispatch { key }` fires one cloud session; `fan_cloud { wave, cap, confirm }` conducts a whole wave — **previews by default, fires only on `confirm: true`**, returning the session URLs. This is the conductor pattern: a local session plans the wave, fires cloud workers on its own plan (no worktree/disk), and reconciles their PRs via `/sync`.
+- **Gauntlet:** `gauntlet_start`, `gauntlet_status`, `gauntlet_critic`, `gauntlet_ack`,
+  `gauntlet_repair`, and `gauntlet_cancel` expose
+  the minimum conducted-loop sensors and actuators. Status reconstructs from GitHub plus the local
+  ledger; critic/repair launches are SHA-pinned and duplicate-guarded.
+- **Low-level cloud dispatch:** `dispatch { key }` fires one cloud session; `fan_cloud { wave, cap,
+  confirm }` handles a whole wave and previews before firing. These remain available for debugging,
+  low-risk one-shot work, and manual workflows; they do not constitute independent evaluation.
 
 Launched worker sessions are told to file leftovers before opening their PR — `backlog_add` if the MCP is available, `roadmap backlog add` if the CLI is linked, else a **Leftovers** section in the PR body that `/sync` harvests.
 
@@ -309,7 +342,62 @@ items:
 
 ---
 
-## Linear (optional) — project-manage from Linear while agents execute
+## The Gauntlet — independently evaluated execution
+
+The default operating model for meaningful cloud work is:
+
+```text
+roadmap plan
+  -> gauntlet_start                 # frozen bar + fresh implementer
+  -> gauntlet_status                # marked GitHub PR + current full SHA
+  -> gauntlet_critic                # independent verdict for that SHA
+  -> lead inspects + gauntlet_ack   # bind exact body + GitHub comment-URL digests
+  -> lead synthesizes findings
+  -> gauntlet_repair                # expected-SHA guard, same PR branch
+  -> fresh gauntlet_critic
+  -> lead inspects + gauntlet_ack
+  -> PASS -> lead/human merge -> /sync
+```
+
+The tool never becomes the executive function. The long-lived local lead decides what matters,
+rejects scope creep and contradictory critic advice, writes the repair packet, and chooses when
+to stop or escalate. Cloud agents provide disposable labor. One critic is the default; three
+repair rounds is the default ceiling. No roadmap command or worker auto-merges.
+
+GitHub is the durable rendezvous point: the implementation PR body carries the run marker and
+frozen bar; repair workers update that PR; authenticated lead launch comments precommit the full
+immutable protocol, attempt, and nonce/packet hashes; deterministic GitHub refs elect one launch
+across machines; immutable critic verdict comments identify the run, role, nonce, and exact
+reviewed head SHA. A verdict becomes authoritative only after the frozen lead inspects it and
+acknowledges both the exact body digest and GitHub comment-URL digest. Deleting or editing either
+side fails closed.
+PR-backed cancellation is also a durable lead event backed by a claim ref. Pre-PR cancellation
+creates a protected shared tombstone claim so delayed worker output cannot resurrect the run; its
+detailed reason stays in the local ledger until a PR comment can carry it. A `PASS` for an older
+head is stale and cannot pass the current PR.
+`.roadmap-gauntlet-state.json` is a gitignored local launch ledger/cache, never the authority and
+never a token/transcript store.
+
+If a conductor loses the distributed implementation election and the winning PR carries a
+different protocol packet, status discards neither packet and writes nothing. It exposes the
+winning packet for inspection, requires authentication as that packet's frozen lead plus explicit
+recovered-bar confirmation, and only then lets the critic actuator adopt it locally. Authenticated
+lead launch attestations found on GitHub are likewise upserted before an actuator mutates a
+recovered launch; a sensor call never changes the ledger.
+
+V1 requires GitHub plus an authenticated `gh` CLI. The command family is
+`roadmap gauntlet start|status|critic|ack|repair|cancel`; MCP exposes the matching tool family. See
+[The Gauntlet operating model](docs/GAUNTLET.md) for
+the complete conduct, frozen-bar, exact-SHA, idempotency, recovery, and stop contracts.
+Before an actuator can claim work, the repository also needs an active GitHub ruleset for
+`roadmap-gauntlet-locks/*`: restrict creation, updates, and deletion to the trusted lead/service
+bypass actor, block force pushes, and keep cloud workers off the bypass list. The runtime verifies
+that all four rule types apply to each exact prospective claim before spending a Routine call;
+operators must verify bypass membership in GitHub because the effective-rules response omits it.
+
+---
+
+## Linear (optional) — plan projection and proposal inbox
 
 Add `meta.linear` and the roadmap projects itself into Linear: **the YAML stays canonical; Linear is a projection plus a proposal inbox.** Humans see and steer the plan on a board; agents keep executing from the graph; nothing is written twice.
 
@@ -339,7 +427,11 @@ meta:
 
 **The plate — Linear's "My Issues" as your active-work hopper.** Assigning *everything* to yourself is no signal; instead `meta.plate` is a curated list of slice/backlog keys the sync assigns to **you** (Linear's built-in My Issues tab = `assignee: you`). So initiatives/projects/views answer "how's the whole effort" at their tiers, and My Issues answers "what's on my desk right now." The live plate is `meta.plate` **∪ whatever you're actively working** (active slices, `in_progress` items) — so starting work always surfaces it. Curate it with `roadmap plate add|rm|set|clear` (or a planning skill), and completed slices **auto-drain** on the next sync (blocked ones stay as a reminder). Each assigned issue carries a `plate` label, so a hand-assignment you make directly in Linear is never disturbed. `meta.linear.plate_max` (default 7) keeps the explicit list signal-rich; the feature is entirely off until `meta.plate` exists.
 
-**The journal — a progress trail on each issue, so in-flight work survives a dead session.** The plate makes work *visible* on My Issues; the journal makes it *resumable*. As an agent works a slice it posts notes to the mapped issue's comment stream — `roadmap linear note <key> "…" [--kind progress|blocker|done]` (or the `issue_note` MCP tool) — at checkpoints (a gate cleared, a blocker hit, session end). On pickup, an agent reads the stream first (`roadmap linear notes <key>` / `issue_notes`), so a session that died mid-flight is picked up from where it left off, not from zero — the kickoff brief and dispatch guidance both instruct this loop. A **session-end `Stop` hook** also auto-posts a **git-derived snapshot** (branch · recent commits · uncommitted paths) whenever the current branch maps cleanly to a mapped slice with real work — best-effort and heavily guarded (not a roadmap repo / no key / not a slice branch / nothing to report → silent no-op), so it never blocks or slows a session. PI-level rollups go to the project update (`roadmap linear post-update` / `project_update`). All of it is written tracker-neutral, so a future `jira.mjs` mirrors it.
+**The journal — an optional progress trail on each issue.** A mapped local/manual session can post
+checkpoints with `roadmap linear note` / `issue_note`, and pickup can read them with
+`roadmap linear notes` / `issue_notes`. Gauntlet recovery does not depend on this journal or on
+cloud transcripts: its durable artifact is the marked GitHub PR, commits, checks, frozen bar, and
+exact-SHA verdict comments.
 
 **Push** (`roadmap linear sync`, or automatically inside `/sync` when authed): diff-based and idempotent — an unchanged roadmap sends zero ops. Descriptions follow the `verbosity` lever, never copy read-order/prompt, and always end with a machine footer (`roadmap: slice=<invoke> · pick up: /slice <invoke>` + a SLICES.md link) — so an agent dispatched *from Linear* (via Linear's own agent delegation or hosted MCP) self-orients in one command. Set `branch_convention: "{pi}/{linear}-{sprint}"` and Linear auto-links every fanout PR to its issue.
 
@@ -361,11 +453,22 @@ The recommended workspace shape at agent scale: **one team per actively-managed 
 - **Only `active` shows In Progress.** Held work (`blocked`/`paused`/`gated`) maps to Todo with a `status:<held>` label, so the board's In-Progress count means real live work and the "Held on human" view filters the rest. (The pull inbox also suppresses the round-trip echo, so held slices don't generate false status proposals every sync.)
 - **Initiatives group the projects.** A PI declares `initiative: <name>` and sync creates the Linear Initiative (the tier above projects) and attaches the PI's project — turning a flat wall of projects into a handful of strategic groups you can steer. *(The initiative API is behind graceful degradation, pending live verification.)*
 
-### Cloud dispatch
+### Low-level cloud dispatch
 
-`roadmap dispatch <key>` sends one slice/backlog item to a **Claude Code cloud session** — the default `claude-cloud` transport fires the Routines API directly (**no Linear plan required, no worktrees, no disk ceiling**; bounded only by the firing account's Claude plan). Multi-account workstations hot-swap automatically: routine credentials live in `~/.claude-routines.json` keyed by account email, and dispatch fires as **whoever is currently `claude /login`'d** (see [DEPLOYMENT.md § Cloud dispatch](docs/DEPLOYMENT.md)). When the slice is also Linear-mapped, the session URL is commented onto the issue — the board links to the live session. ⚠ Routines fire is a beta API.
+`roadmap dispatch <key>` sends one slice/backlog item to a remote cloud agent. The default
+`claude` provider fires a Routine; `--provider codex` submits a remote Codex Cloud task using the
+repository's configured environment, with no local worktree or disk ceiling. `roadmap fan --cloud`
+does the same for a wave. Codex task IDs are captured only from each submission receipt and status
+is observed through paginated JSON listing—never via “latest task.” Codex Cloud currently has no
+per-task model selector or supported unattended task-to-PR CLI operation, so Codex implementations
+remain explicitly awaiting artifact publication until GitHub has a PR. These are useful raw
+actuators, but a one-shot worker is not a conducted Gauntlet and does not independently grade itself.
 
-`roadmap fan --cloud` does it for a whole wave; the cap defaults to the review ceiling (machine ceilings vanish, but a human still merges). The alternative `--to claude|codex|oz` transport posts an @-mention capsule comment on the Linear issue instead — useful when the workspace has that agent's integration installed (Linear's native coding sessions are paid-plan-gated).
+Multi-account workstations hot-swap through protected `~/.claude-routines.json` profiles keyed by
+account email. Gauntlet roles resolve through `<repo>#<role>` / `default#<role>`, or tiered
+`<repo>#<role>#<tier>` / `default#<role>#<tier>`, then the compatible existing repo/tier/default
+fallbacks. Requested tiers never silently downgrade. See
+[DEPLOYMENT.md § Cloud execution and the Gauntlet](docs/DEPLOYMENT.md#5--cloud-execution-and-the-gauntlet-remote-agents).
 
 ---
 
@@ -382,9 +485,14 @@ Config lives in `meta.estimation` (`engine` path, `hours_per_day` throughput, `e
 
 ---
 
-## Riding the wave: discipline + the review ritual
+## Riding the wave: conducted execution + review discipline
 
-Two second-order effects of agent-scale work, both encoded:
+**The execution ritual.** Fanout and Gauntlet are orthogonal. A wave chooses independent slices;
+each meaningful cloud slice gets its own run, PR, exact-head critic, and repair history. Several
+runs may be in different phases concurrently, but the lead refreshes `gauntlet_status` before
+each actuation and never mixes their identities or automatically chains critic output into repair.
+
+The portfolio review still matters after the artifact-level Gauntlet:
 
 **Sprawl curbing (advisory, never blocking).** Helpful agents love filing follow-up scope; unchecked, every sprint spawns two backlog items and a sibling sprint. The kickoff brief now hard-forbids worker sessions from adding sprints/PIs (leftovers go to the **backlog only**; "YAGNI applies to captures too"), the `add_sprint`/`add_pi` tool descriptions carry the same scope-discipline nudge, and `/sync` + the review digest surface **sprawl warnings**: a capture ratio ((captured items + added sprints) per completed slice, threshold `meta.discipline.capture_ratio`, default 2) plus an unconditional flag on any PI that appeared since the last review.
 
@@ -408,7 +516,9 @@ Fanning out N worktrees costs real disk. `roadmap plan` / `fan` / `grab` estimat
 
 ## Install
 
-> **Full deployment guide** — every surface (CLI, Claude Code plugin, standalone MCP, Claude Desktop, Codex, CI), exactly where config vs. secrets live, Linear setup per environment, and the planned Jira shape: **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**. The short versions follow.
+> **Full deployment guide** — every surface, GitHub/Gauntlet prerequisites, role-aware Routine
+> setup, local ledger placement, config vs. secrets, optional Linear, and the planned Jira shape:
+> **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**.
 
 ### The `roadmap` CLI
 
@@ -455,7 +565,9 @@ claude plugin marketplace add /path/to/roadmap
 claude plugin install roadmap@roadmap   # user scope; --scope project to pin per-repo
 ```
 
-That wires the skills, agents, the SessionStart hook, the PR-watch monitor, and the MCP server in one step (new sessions pick them up; `/mcp` reconnects the current one). The plugin bundles its MCP via `.mcp.json` as `graph`, so don't also `claude mcp add` a second copy of the server.
+That wires the skills (including `/gauntlet`), agents, SessionStart hook, PR-watch monitor, and MCP
+server in one step (new sessions pick them up; `/mcp` reconnects the current one). The plugin
+bundles its MCP via `.mcp.json` as `graph`, so don't also add a second copy.
 
 ### Upgrading from `slice-roadmap` (≤ 0.1.x)
 
@@ -483,10 +595,21 @@ Don't commit a device-specific alias into a repo. Point contributors at this too
 - **Scheduler** (`scheduler.mjs`): recommended-cap eval (CPU / RAM / independent-work / review / **disk** ceilings, reporting which binds) plus the waves.
 - **Fanout** (`fanout.mjs`): `tmux`, `wt`, `warp`, `print`, `background` adapters; per-slice worktree plus synthesized kickoff brief (stashed `prompt` embedded, leftover-capture instruction); disk hard-block; the interactive console (`wizard.mjs`); guarded launch (`--dry`/`--out` preview, autonomous double-ack); `cleanup.mjs` worktree pruning.
 - **Shared mutation store** (`lib/store.mjs`): the one read → mutate → validate → write → re-render path under every mutating surface (MCP, `set`, `backlog`, `promote`), including the validate-both-before-writing-either two-file promote.
-- **Plugin surface**: five skills (`slice`, `sync`, `init`, `fanout`, `backlog`), four agents, and a `SessionStart` hook (ready wave + reconcile nudge + backlog count).
-- **MCP server** (`mcp.mjs`, server `graph`): a bundled, hand-rolled JSON-RPC stdio server with read tools (plan / ready_wave / show / validate / backlog_list) and comment-preserving, schema-validated mutate tools (add_pi / add_sprint / set_status / set_fields / bulk_set / prune / backlog_add / backlog_set / backlog_promote) that re-render the generated views on every edit.
-- **PR-watch monitor** (`watch-prs.mjs` + `lib/pr-watch-core.mjs` + `monitors/monitors.json`): polls `gh` for the fanout branches and notifies the lead on each PR phase transition.
-- **Tests**: `npm test` runs the zero-dependency suite over the pure brain (graph, recommender + disk ceiling, priority, backlog, brief, plan, render, validate, CLI core, wizard core, MCP core, PR-watch core).
+- **Gauntlet core/runtime**: exact run/subject/comment markers, frozen-bar launch records,
+  exact-current-head verdict derivation, duplicate launch guards, role-aware Routine dispatch, and
+  GitHub-first status reconstruction. The local ledger is a cache; the PR is durable reality.
+- **Plugin surface**: planning, pickup, Gauntlet conduct, fanout, reconcile, backlog, strategy, and
+  review skills; specialized agents; SessionStart hook; and PR monitor.
+- **MCP server** (`mcp.mjs`, server `graph`): bundled JSON-RPC stdio tool families for graph reads,
+  validated roadmap/backlog mutations, Gauntlet conduct/status, low-level cloud dispatch, optional
+  Linear projection, notes, and estimation. Mutations preserve YAML comments and validate before
+  writing.
+- **PR-watch monitor** (`watch-prs.mjs` + `lib/pr-watch-core.mjs` + `monitors/monitors.json`):
+  recognizes local fanout branches, canonical roadmap markers, and Gauntlet runs, then notifies on
+  meaningful head/check/verdict/conflict/merge transitions while keeping the initial baseline
+  quiet.
+- **Tests**: `npm test` covers the pure graph/planning/mutation/dispatch/Gauntlet/PR-observation
+  seams, including stale SHA and idempotency races.
 
 The resource classifier matches build/test runner commands, not languages. It ships patterns for the common runners (`npm`/`yarn`/`pnpm`, `jest`, `vitest`, `tsc`, `pytest`, `tox`, Maven, Gradle, `make`, CMake/CTest, `go`, `cargo`, and more), ordered by how common they are, and `meta.weight_patterns` teaches it any bespoke runner.
 

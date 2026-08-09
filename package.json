@@ -1,7 +1,7 @@
 {
   "name": "@connorbritain/roadmap",
-  "version": "0.6.0",
-  "description": "Roadmap + backlog graph with prioritized, deterministic multi-session fanout. YAML canonical, SLICES.md/BACKLOG.md generated.",
+  "version": "0.7.0",
+  "description": "Roadmap + backlog graph with conducted, independently evaluated cloud-agent execution. YAML canonical; GitHub is durable run reality.",
   "type": "module",
   "private": false,
   "author": "Connor England",
@@ -22,6 +22,8 @@
     "schema/",
     "README.md",
     "docs/DEPLOYMENT.md",
+    "docs/GAUNTLET.md",
+    "skills/",
     "LICENSE"
   ],
   "publishConfig": {

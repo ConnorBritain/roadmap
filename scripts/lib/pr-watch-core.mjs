@@ -1,10 +1,10 @@
 // roadmap — PR-watch brain (PURE). Decides which PR changes are worth telling the lead
 // about, and which branches belong to this roadmap's fanout. No IO: watch-prs.mjs polls `gh`,
 // normalizes each PR, and feeds snapshots through here. The watcher stays quiet until a PR
-// actually changes phase, so an always-on monitor never spams.
+// actually changes phase, head, or Gauntlet verdict, so an always-on monitor never spams.
 
-import { flatten } from "./graph.mjs";
-import { branchFor } from "./brief.mjs";
+import { parseCriticMarker, parseGauntletRunMarker } from "./gauntlet-core.mjs";
+export { roadmapBranches, matchesRoadmapBranches, belongsToRoadmapPr } from "./pr-identity.mjs";
 
 // Reduce a PR's statusCheckRollup (raw `gh` JSON) to one of: none | passing | pending | failing.
 // Pure, so the rollup-to-enum mapping that prPhase keys off is unit-testable without calling gh.
@@ -47,26 +47,52 @@ export function diffPrStates(prev, curr) {
     const pr = curr[num];
     const before = prev[num];
     const phase = prPhase(pr);
-    if (before && prPhase(before) === phase) continue; // unchanged
+    const beforePhase = before && prPhase(before);
+    const headChanged = !!before && before.headRefOid !== pr.headRefOid;
+    const criticChanged = !!before && before.criticSignature !== pr.criticSignature;
+    if (before && beforePhase === phase && !headChanged && !criticChanged) continue;
+    let message = `PR #${pr.number} (${pr.headRefName}) ${PHASE_MSG[phase] || phase}`;
+    if (headChanged) message += `; head advanced to ${String(pr.headRefOid || "unknown").slice(0, 12)} — re-evaluate Gauntlet status`;
+    if (criticChanged && pr.criticVerdict) {
+      if (pr.criticStale) {
+        message += `; observed stale ${pr.criticVerdict} marker for ${String(pr.criticReviewedHead || "unknown").slice(0, 12)} — ignored for current head; validate with roadmap gauntlet status`;
+      } else {
+        message += `; observed ${pr.criticVerdict} marker for ${String(pr.headRefOid || "unknown").slice(0, 12)} — validate with roadmap gauntlet status`;
+      }
+    }
     events.push({
       number: pr.number,
       headRefName: pr.headRefName,
       title: pr.title,
       phase,
-      message: `PR #${pr.number} (${pr.headRefName}) ${PHASE_MSG[phase] || phase}`,
+      headChanged,
+      criticChanged,
+      message,
     });
   }
   return events;
 }
 
-// The branch names this roadmap's slices fan out onto (one per node, via branchFor).
-export function roadmapBranches(graph) {
-  const model = flatten(graph);
-  return new Set(model.nodes.map((n) => branchFor(n, graph)));
-}
-
-// Is a PR's head branch one of this roadmap's fanout branches? (So the lead only hears about
-// its own wave, not every PR in the repo.)
-export function matchesRoadmapBranches(headRef, graph) {
-  return roadmapBranches(graph).has(headRef);
+// A watcher signal is deliberately weaker than a Gauntlet verdict: it only says an
+// exact structured marker for this run/current head appeared. The status command also
+// checks launch receipts, commits, checks, and stop conditions before taking action.
+export function criticSignalOf(pr) {
+  const runId = parseGauntletRunMarker(pr && pr.body);
+  const head = pr && pr.headRefOid;
+  if (!runId || typeof head !== "string") return null;
+  const candidates = [];
+  for (const [index, comment] of ((pr && pr.comments) || []).entries()) {
+    const marker = parseCriticMarker(comment && comment.body);
+    if (!marker || marker.runId !== runId) continue;
+    const parsed = Date.parse(comment.createdAt || comment.created_at || "");
+    candidates.push({ marker, index, time: Number.isFinite(parsed) ? parsed : index });
+  }
+  const latest = candidates.sort((a, b) => b.time - a.time)[0];
+  if (!latest) return null;
+  return {
+    verdict: latest.marker.verdict,
+    reviewedHead: latest.marker.head,
+    stale: latest.marker.head !== head,
+    signature: `${runId}:${latest.marker.head}:${latest.marker.criticRole}:${latest.marker.round}:${latest.marker.nonce}:${latest.marker.verdict}`,
+  };
 }

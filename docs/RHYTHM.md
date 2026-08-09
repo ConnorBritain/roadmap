@@ -1,61 +1,90 @@
 # The rhythm — operating a many-agent roadmap as one human
 
-The board is a pulse, not a filing cabinet. Every screen below exists to serve exactly one
-decision; if you're staring at a screen and no decision is forming, you're on the wrong screen.
-When overwhelmed, don't triage from the raw board — run the on-demand election (`/cycle`) and
-let the ritual bound the problem.
+The roadmap selects work; the Gauntlet makes each artifact earn its way to merge. The recurring
+rhythm is GitHub-first:
 
-## Daily — 5 minutes, two screens
+```text
+plan -> conducted Gauntlet -> merge decision -> reconcile -> plan again
+```
 
-| Screen | The decision it serves |
+The long-lived lead owns intent and judgment. Disposable cloud Routines implement, criticize,
+and repair. GitHub holds the PR, current SHA, checks, frozen bar, and verdict history. Linear can
+project the plan and collect intake, but it is not required to conduct work.
+
+## Daily — conduct, do not shuttle
+
+Use three compact views:
+
+| View | Decision |
 |---|---|
-| **My Issues** (the plate) | *What do I touch right now?* Curated by `meta.plate` + auto-included active work. |
-| **This cycle** view | *Dispatch next / unblock gated.* The elected batch — anything ⚠ `stale` gets a journal note, a demotion, or an unblock action today. |
+| `roadmap plan` | Which dependency-safe slice should enter a run next? |
+| `roadmap gauntlet status <run-or-key>` | Is implementation, criticism, repair, human input, or no action safe now? |
+| GitHub PR/checks | What durable artifact and exact head actually exist? |
 
-Nothing else daily. Initiatives, far-future scheduled work, and shipped history are deliberately
-off this loop.
+For every active slice:
 
-## Weekly — 30 minutes, the election (`/cycle`)
+1. Refresh status before acting; resume the existing run instead of launching a duplicate.
+2. When implementation produces a stable head, fire one fresh independent critic for that SHA.
+3. Inspect the exact critic comment and acknowledge both its immutable body digest and GitHub
+   comment-URL digest. On acknowledged `REVISE`, synthesize the material findings into a narrow
+   repair packet; never forward the review blindly.
+4. Re-critic the new head, then repeat the inspection and acknowledgment. A verdict or
+   acknowledgment for an older SHA is stale, even if it says `PASS`.
+5. Stop on acknowledged current-head `PASS`, human judgment, infrastructure failure,
+   non-convergence, or the default ceiling of three repair rounds.
+6. A pass makes that exact head eligible for the normal lead/human merge decision. Nothing
+   auto-merges. After merge, run `/sync`.
 
-Run on cycle rollover (or on demand when the week got crushed or cleared):
+The local `.roadmap-gauntlet-state.json` file is a gitignored launch ledger/cache. It helps the
+lead resume and protects the pre-PR launch window, but GitHub PRs/comments and protected
+`roadmap-gauntlet-locks/*` receipt branches remain durable reality.
 
-1. `roadmap linear sync` — fresh staleness + board state.
-2. `roadmap cycle plan` — stale items FIRST: every ⚠ gets *note / demote / keep-with-reason*.
-3. Elect from the packed candidates up to capacity. Unpriced work gets an `est_sessions` or waits.
-4. One `roadmap cycle lock --promote … [--demote …]`, then sync — the Linear cycle now IS the week.
-5. Post the digest: `roadmap linear post-update --pi <id>` per active project.
+## Weekly — elect the next wave
 
-The cycle is the bar: with `cycles: on`, dispatch/fan refuse out-of-cycle work (`--force` is the
-logged emergency hatch and shows up as scope change on the cycle graph). Mid-week arrivals go to
-the backlog (`/backlog`), not the cycle.
+Use the planning graph to bound work before adding more agents:
 
-## Monthly — the strategic screen
+1. `/sync` merged GitHub PRs into canonical YAML; project to Linear afterward only if configured.
+2. Run `roadmap plan` and inspect dependency, file-contention, priority, and capacity constraints.
+3. Resolve stale/human-required/exhausted Gauntlet runs before opening more fronts.
+4. Elect a small ready wave. Fanout is concurrency across slices; start one separately identified
+   Gauntlet per meaningful cloud slice.
+5. Keep one critic per run by default. Several runs may be at different phases, but their run IDs,
+   PRs, heads, and repair packets never mix.
+6. Post the weekly digest wherever the team works. If Linear is wired, sync it as a projection,
+   not as the source of Gauntlet truth.
 
-Initiatives page (rollup health per bet) + `/debrief` (what shipped vs what grew) + a
-consolidation pass: `roadmap validate` composition warnings (`pi_min_slices`) name the PIs to
-fold or grow. Re-plan with `/imagine` when the roadmap stops matching your intent.
+When `meta.linear.cycles` is on, `roadmap cycle plan` / `roadmap cycle lock` can still elect and
+bound the batch shown in Linear. Out-of-cycle refusal remains a useful scope guard. It does not
+replace the within-slice implement -> critic -> acknowledge -> repair -> fresh critic ->
+acknowledge loop.
 
-## Composition ratios (when new work shows up)
+## Monthly — inspect the bets, not the transcripts
 
-- **A new PI** is a strategic bet: ≥3 slices of real shape, an exit criterion, an initiative.
-- **A slice in an existing PI** is the default home for planned work.
-- **A backlog item** is anything erratic — follow-ups, bugs, ideas. Capture first, triage at the
-  election or `/prioritize`; never straight into the cycle.
-- A PI under ~3 slices is usually a slice wearing a PI's coat — fold it into a sibling.
+Review initiatives and run `/debrief`: what shipped, what grew, which runs repeatedly failed to
+converge, and where humans overruled or clarified a frozen bar. Re-plan with `/imagine` when the
+roadmap no longer matches product intent. Cloud session transcripts are optional debugging
+material, never the program database.
 
-## One-time Linear checklist (manual — the API can't set these)
+## Composition and scope discipline
 
-Team settings → Cycles: **active-issue auto-add ON**; cooldown as preferred.
-Workspace/team settings: **auto-archive closed issues** at the shortest window.
-Default team board: filter = current cycle, group by status.
-Finish the provisioned views' filters (provision creates name + hint only):
+- A new PI is a strategic bet: normally at least three real slices, an exit criterion, and an
+  initiative.
+- A slice in an existing PI is the default home for planned work.
+- A backlog item is erratic work: follow-ups, bugs, chores, and ideas discovered by builders or
+  critics.
+- Implementation, repair, and critic workers do not create PIs or sprints. The lead decides which
+  findings are material; accepted leftovers go through backlog triage.
+- A PI under roughly three slices is usually a slice wearing a PI's coat.
 
-- **This cycle** — current-cycle issues, label `roadmap`
-- **Stale** — label `stale`
-- **Ready wave** — state Todo, label `roadmap`, exclude `status:*`
-- **In flight** — state In Progress, label `roadmap`
-- **Held on human** — labels `status:gated|blocked|paused`
-- **Backlog triage** — state Backlog, label `kind:*`
-- **Recently shipped** — Done in the last 14 days, label `roadmap`
+## Optional Linear operating view
 
-Favorite: This cycle · Held on human · Stale · My Issues. Everything else is drill-down.
+If Linear is configured, use My Issues / the plate for personal focus and the current-cycle view
+for the elected batch. Provisioned views remain useful for Ready wave, In flight, Held on human,
+Backlog triage, Stale, and Recently shipped. Their issue state is a projection of planning/work
+state; exact Gauntlet verdicts live on GitHub and are pinned to PR head SHAs.
+
+On cycle rollover, sync GitHub/YAML first, then `roadmap linear sync`, plan/lock the next cycle,
+and sync again. Mid-cycle arrivals enter the backlog rather than bypassing the election.
+
+See [GAUNTLET.md](GAUNTLET.md) for the full conduct, recovery, Routine-resolution, and safety
+contracts.

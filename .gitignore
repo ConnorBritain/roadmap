@@ -3,6 +3,9 @@ node_modules/
 .DS_Store
 .codex/
 .roadmap-linear-state.json
+.roadmap-gauntlet-state.json
+.roadmap-gauntlet-state.lock
+.roadmap-gauntlet-state.json.tmp-*
 .roadmap/config.local.yaml
 
 # Session artifacts

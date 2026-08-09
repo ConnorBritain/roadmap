@@ -1,7 +1,7 @@
 {
   "name": "roadmap",
-  "description": "Roadmap + backlog graph (PIs → sprints, deps, priorities, session estimates) with deterministic, disk/CPU/RAM-checked multi-session fanout and optional Linear sync. YAML is the source of truth; SLICES.md/BACKLOG.md are generated. Orient with /slice, capture erratic work with /backlog, shape strategy with /imagine, triage with /prioritize, review the wave with /debrief and /retro, refresh with /sync, bootstrap with /init, fan out concurrent sessions with /fanout.",
-  "version": "0.4.0",
+  "description": "Roadmap + backlog graph with the GitHub-first Gauntlet Loop: frozen-bar cloud implementation, independent exact-SHA criticism, frozen-lead acknowledgment after every critic, lead-synthesized repair, and fresh re-criticism plus acknowledgment. YAML is canonical planning state; GitHub is durable run reality. Conduct with /gauntlet, fan out across slices with /fanout, and reconcile with /sync.",
+  "version": "0.7.0",
   "author": { "name": "Connor England" },
   "homepage": "https://github.com/ConnorBritain/roadmap",
   "license": "MIT"
