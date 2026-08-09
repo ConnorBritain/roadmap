@@ -18,7 +18,7 @@ import { configuredProfiles, resolveProfile, commandFor, launchDecisionForProfil
 import { terminalChoices, moveSelection, parseCap, buildFanArgs, autoOutName } from "../lib/wizard-core.mjs";
 import { TOOLS, addSprint, setStatus, setFields, bulkSet, prune, validateDocOrThrow, readValidate, serialize } from "../lib/mcp-core.mjs";
 import { parseAssignments } from "../lib/cli-core.mjs";
-import { diffPrStates, matchesRoadmapBranches, checksOf } from "../lib/pr-watch-core.mjs";
+import { diffPrStates, matchesRoadmapBranches, checksOf, criticSignalOf } from "../lib/pr-watch-core.mjs";
 import { findUnrecordedMerges, reconcileNudge, underParallelizedWarnings, sprawlWarnings, captureRatio } from "../lib/sync-core.mjs";
 import {
   validateExecution, suggestedConcurrency, executionDirectiveLines, normalizeExecution,
@@ -50,9 +50,29 @@ import { runSync, runProvision, syncInitiatives, syncMilestones, readCursor, run
 import { noteBody, sliceForBranch, gitSnapshot, autoPostPlan } from "../lib/journal-core.mjs";
 import { runDispatch, runFanCloud, resolveRoutine, fireRoutine, routineEndpoint, checkInFlightDispatch, markerFor, DEFAULT_IN_FLIGHT_WINDOW_MS, resolveInFlightWindowMs, dispatchStatus } from "../dispatch.mjs";
 import { githubAdapter, gitlabAdapter, gitNativeAdapter, resolveProvider, BUILTIN_PROVIDERS } from "../lib/dispatch-providers.mjs";
+import {
+  buildCodexCloudExecArgs, cloudProviderCapabilities, diagnoseCodexCloud, launchCodexCloud,
+  normalizeCloudProvider, observeCodexCloudTask, parseCodexCloudSubmission, resolveCodexEnvironment,
+} from "../lib/cloud-agent-providers.mjs";
 import { electionPlan, outOfCycle } from "../lib/cycle-core.mjs";
 import { runCyclePlan, runCycleLock } from "../cycle.mjs";
 import { readReadyWave } from "../lib/mcp-core.mjs";
+import {
+  buildCriticPrompt, buildImplementationPrompt, buildRepairPrompt, criticResultForCurrentHead,
+  deriveCriticResults, deriveRunStatus, freezeQualityBar, makeRunId, parseCriticMarker, parseFrozenBarBlock,
+  implementationAttemptForRunId, implementationRunId,
+  parseGauntletPrMarkers, parseGauntletLaunchMarker, parseGauntletCancellationMarker,
+  reconstructCancellationFromComments, reconstructLaunchesFromComments,
+  renderCriticMarker, renderGauntletCancellationMarker, renderGauntletLaunchMarker,
+  renderGauntletPrMarkers, renderGauntletVerdictAck,
+} from "../lib/gauntlet-core.mjs";
+import {
+  belongsToRoadmapPr, parseRoadmapMarker, renderRoadmapMarker, roadmapSubjectMarkers,
+} from "../lib/pr-identity.mjs";
+import { launchReceipt, mutateGauntletLedger, readGauntletLedger } from "../lib/gauntlet-store.mjs";
+import { formatGauntletLaunchResult, formatGauntletStatus, githubClient,
+  runGauntletAcknowledge, runGauntletCancel, runGauntletCritic, runGauntletRepair,
+  runGauntletStart, runGauntletStatus } from "../gauntlet.mjs";
 import { loadGraph } from "../lib/graph.mjs";
 import { graphDiff, backlogDiff, reviewDigest, pisInFlight } from "../lib/review-core.mjs";
 import { doctorReport } from "../lib/doctor-core.mjs";
@@ -65,6 +85,7 @@ import {
 import { parseDocument } from "yaml";
 import { join, resolve } from "node:path";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 
@@ -3996,8 +4017,10 @@ test("resolveRoutine tier: repo#tier > default#tier; a missing tier throws inste
     "trig_c_fable_def", "unknown repo falls back to default#tier, never to the untiered routine");
   throws(() => resolveRoutine({ profiles: { p: { account: "a@b.c", routines: { default: { trigger: "t", token: "k" } } } }, accountEmail: "a@b.c", repoSlug: "x/y", tier: "fable" }),
     'no "fable"-tier routine', "unconfigured tier throws (no silent downgrade to default)");
-  eq(resolveRoutine({ env: { CLAUDE_ROUTINE_TRIGGER: "t", CLAUDE_ROUTINE_TOKEN: "k" }, profiles: PROFILES, tier: "fable" }).source,
-    "env", "explicit env pair still wins outright (CI/manual override)");
+  throws(() => resolveRoutine({ env: { CLAUDE_ROUTINE_TRIGGER: "t", CLAUDE_ROUTINE_TOKEN: "k" }, profiles: PROFILES, tier: "fable" }),
+    "not attested for tier fable", "an unclassified env Routine cannot silently bypass a requested tier");
+  eq(resolveRoutine({ env: { CLAUDE_ROUTINE_TRIGGER: "t", CLAUDE_ROUTINE_TOKEN: "k", CLAUDE_ROUTINE_TIER: "fable" }, profiles: PROFILES, tier: "fable" }).source,
+    "env", "an explicitly tier-attested env override remains available for CI");
 });
 
 // WHY: claude-cloud is the Linear-FREE transport — it must dispatch from a repo with no
@@ -4429,6 +4452,100 @@ test("runDispatch --to claude-cloud fires the routine without any Linear config"
 
 // WHY: the API-trigger modal shows a URL, never a labeled trigger id — users will paste
 // whatever they copied. Both forms must resolve to the same /fire endpoint.
+// WHY: cloud task submission must bind a receipt to its own command output;
+// using "the latest" task would cross-associate concurrent Gauntlet critics.
+test("Codex Cloud builds argument-array launches and captures one exact task receipt", () => {
+  eq(normalizeCloudProvider("codex-cloud"), "codex", "Codex alias resolves deterministically");
+  eq(buildCodexCloudExecArgs({ environmentId: "env_roadmap", prompt: "Fix $HOME; no shell", attempts: 2, branch: "feature/a" }),
+    ["cloud", "exec", "--env", "env_roadmap", "--attempts", "2", "--branch", "feature/a", "Fix $HOME; no shell"],
+    "prompt remains one argv element; no shell interpolation is possible");
+  throws(() => buildCodexCloudExecArgs({ environmentId: "e", prompt: "p", model: "luna" }), "does not support per-task model", "unsupported cloud model fails honestly");
+  const receipt = parseCodexCloudSubmission("Started task: https://chatgpt.com/codex/tasks/task_abc-123\n");
+  eq([receipt.external_id, receipt.external_url], ["task_abc-123", "https://chatgpt.com/codex/tasks/task_abc-123"], "receipt is the returned task URL, not list order");
+  throws(() => parseCodexCloudSubmission("https://x/tasks/a123 https://x/tasks/b123"), "exactly one task URL", "ambiguous output refuses association");
+  const calls = [];
+  const launched = launchCodexCloud({ environmentId: "env_roadmap", prompt: "work", execImpl: (command, args) => {
+    calls.push([command, args]); return { status: 0, stdout: "https://chatgpt.com/codex/tasks/task_launch-1\n", stderr: "" };
+  } });
+  eq(calls, [["codex", ["cloud", "exec", "--env", "env_roadmap", "--attempts", "1", "work"]]], "launch only invokes Codex Cloud; it never creates a worktree");
+  eq(launched.external_id, "task_launch-1", "launch preserves exact external identity");
+});
+
+test("Codex Cloud observation paginates to the exact task and reports infrastructure diagnostics", () => {
+  const pages = [
+    { tasks: Array.from({ length: 20 }, (_, i) => ({ id: `old-${i}`, status: "running" })), cursor: "next-page" },
+    { tasks: [{ id: "wanted-task", url: "https://chatgpt.com/codex/tasks/wanted-task", status: "completed", updated_at: "2026-08-08T00:00:00Z", environment_id: "env_a", attempt_total: 1 }], cursor: null },
+  ];
+  const calls = [];
+  const observed = observeCodexCloudTask({ taskId: "wanted-task", environmentId: "env_a", execImpl: (_command, args) => {
+    calls.push(args); return { status: 0, stdout: JSON.stringify(pages.shift()), stderr: "" };
+  } });
+  eq([observed.external_id, observed.status, calls.length], ["wanted-task", "completed", 2], "pagination finds the stored ID beyond page one");
+  eq(calls[1], ["cloud", "list", "--json", "--limit", "20", "--env", "env_a", "--cursor", "next-page"], "cursor is passed as an argv value");
+  const missing = diagnoseCodexCloud({ environmentId: "env", execImpl: () => ({ error: { code: "ENOENT", message: "missing" }, status: null }) });
+  ok(!missing.ok && missing.reason.includes("not installed"), "missing CLI is an infrastructure diagnostic");
+  eq(resolveCodexEnvironment({ meta: { dispatch: { providers: { codex: { environment_id: "env_a" } } } } }), "env_a", "environment is repository config");
+  eq(cloudProviderCapabilities("codex").select_model, false, "Cloud model selection is not faked");
+});
+
+test("ordinary Codex dispatch uses the remote provider without weakening the PR duplicate lock", async () => {
+  const root = tempRepo();
+  const roadmap = join(root, "docs", "roadmap", "roadmap.yaml");
+  writeFileSync(roadmap, readFileSync(roadmap, "utf8").replace("  program: T", "  program: T\n  dispatch:\n    providers:\n      codex:\n        environment_id: env_roadmap"));
+  let listed = 0;
+  const result = await runDispatch(root, "taken", {
+    provider: "codex", listOpenPrs: () => { listed++; return []; },
+    execImpl: (command, args) => {
+      if (command === "codex" && args[0] === "--version") return { status: 0, stdout: "codex-cli test", stderr: "" };
+      if (command === "codex" && args[0] === "login") return { status: 0, stdout: "logged in", stderr: "" };
+      if (command === "codex" && args[0] === "cloud" && args[1] === "exec") return { status: 0, stdout: "https://chatgpt.com/codex/tasks/task_ordinary-1\n", stderr: "" };
+      return { status: 1, stderr: "unexpected command", stdout: "" };
+    },
+  });
+  eq([result.provider, result.taskId, result.status, listed], ["codex", "task_ordinary-1", "awaiting_artifact_publication", 1],
+    "worker provider stays distinct from the independent SCM duplicate-lock provider");
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("Codex Gauntlet implementation persists a remote receipt without local worktree activity", async () => {
+  const root = gauntletLifecycleRepo();
+  const roadmap = join(root, "docs", "roadmap", "roadmap.yaml");
+  writeFileSync(roadmap, readFileSync(roadmap, "utf8").replace("  gauntlet:\n    max_rounds: 2", "  dispatch:\n    providers:\n      codex:\n        environment_id: env_roadmap\n  gauntlet:\n    max_rounds: 2\n    implementation_provider: codex"));
+  const calls = [];
+  const github = { assertAvailable: () => true, viewerLogin: async () => "roadmap-lead",
+    findPrByRun: async () => null, findPrBySubject: async () => null, findOpenPrBySubject: async () => null,
+    claimLaunch: async (key) => ({ claimed: true, ref: `refs/roadmap-gauntlet-locks/${key}` }) };
+  const result = await runGauntletStart(root, "auth-login", { github, allowLocalBase: true, execImpl: (command, args, options) => {
+    calls.push([command, args]);
+    if (command === "codex" && args[0] === "--version") return { status: 0, stdout: "codex-cli test", stderr: "" };
+    if (command === "codex" && args[0] === "login") return { status: 0, stdout: "logged in", stderr: "" };
+    if (command === "codex" && args[0] === "cloud" && args[1] === "exec") return { status: 0, stdout: "https://chatgpt.com/codex/tasks/task_impl-1\n", stderr: "" };
+    return spawnSync(command, args, options);
+  } });
+  eq([result.provider, result.state, result.externalId], ["codex", "awaiting_artifact_publication", "task_impl-1"], "Codex does not claim an unverified PR publication");
+  const launch = readGauntletLedger(root).runs[result.runId].launches[0];
+  eq([launch.provider, launch.external_id, launch.provider_metadata.environment_id], ["codex", "task_impl-1", "env_roadmap"], "restartable ledger stores a generic receipt");
+  const status = await runGauntletStatus(root, result.runId, { github, execImpl: (command, args) => {
+    if (command === "codex" && args[0] === "cloud" && args[1] === "list") {
+      return { status: 0, stdout: JSON.stringify({ tasks: [{ id: "task_impl-1", status: "completed", updated_at: "2026-08-08T00:00:00Z", environment_id: "env_roadmap" }], cursor: null }), stderr: "" };
+    }
+    return { status: 1, stderr: "unexpected command", stdout: "" };
+  } });
+  eq(status.run.implementationExecution.provider_status, "completed", "Gauntlet status observes the exact stored Codex task ID without writing the ledger");
+  ok(!calls.some(([command, args]) => command === "git" && ["worktree", "clone"].includes(args[0])), "Codex launch never enters local worktree creation");
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("provider-specific critic receipts allow intentional mixed-provider slots", () => {
+  const head = "a".repeat(40);
+  const run = { launches: [
+    { role: "critic", provider: "claude", critic_role: "critic", round: 1, expected_head: head, status: "launched" },
+    { role: "critic", provider: "codex", critic_role: "critic", round: 1, expected_head: head, status: "launched" },
+  ] };
+  ok(launchReceipt(run, { role: "critic", round: 1, expectedHead: head, criticRole: "critic", provider: "claude" }), "Claude critic has its own receipt");
+  ok(launchReceipt(run, { role: "critic", round: 1, expectedHead: head, criticRole: "critic", provider: "codex" }), "Codex critic has its own receipt");
+});
+
 test("routineEndpoint accepts a bare trig id or the full modal URL", () => {
   eq(routineEndpoint("trig_01ABC"), "https://api.anthropic.com/v1/claude_code/routines/trig_01ABC/fire", "bare id");
   eq(routineEndpoint("https://api.anthropic.com/v1/claude_code/routines/trig_01ABC/fire"), "https://api.anthropic.com/v1/claude_code/routines/trig_01ABC/fire", "full fire URL verbatim");
@@ -4441,6 +4558,9 @@ test("fireRoutine errors are actionable; a mapped dispatch comments the session 
   await fireRoutine({ trigger: "t", token: "k" }, "x", async () => ({ ok: false, status: 401 })).then(
     () => { throw new Error("should have thrown"); },
     (e) => ok(e.message.includes("401") && e.message.includes("token invalid"), "401 names the fix"));
+  await fireRoutine({ trigger: "t", token: "k" }, "x", async () => ({ ok: true, json: async () => ({ accepted: true }) })).then(
+    () => { throw new Error("malformed success should have thrown"); },
+    (e) => ok(e.message.includes("malformed success payload") && e.message.includes("ambiguous"), "2xx without a traceable session is not recorded as success"));
   const root = linearRepo();   // Linear-configured fixture
   const yamlPath = join(root, "docs", "roadmap", "roadmap.yaml");
   writeFileSync(yamlPath, readFileSync(yamlPath, "utf8").replace("invoke: auth-login }", "invoke: auth-login, linear: ENG-1 }"), "utf8");
@@ -5333,6 +5453,1212 @@ test("knownDamageOf reads meta.audit.known_damage and degrades safely on any mis
   eq(knownDamageOf({ meta: { audit: { known_damage: "not an array" } } }), [], "wrong type → []");
   eq(knownDamageOf({ meta: { audit: { known_damage: ["ok", 42, null, "also-ok"] } } }),
     ["ok", "also-ok"], "non-string entries are filtered out (config typos don't get pinned)");
+});
+
+// ── Gauntlet conducted execution ───────────────────────────────────────────
+// WHY: PR identity is a protocol boundary. Quoted prose, prefix collisions, and duplicate
+// markers must never associate an old/unrelated PR with a new run or roadmap subject.
+test("roadmap PR identity accepts one exact line and rejects prose, prefixes, and collisions", () => {
+  const marker = renderRoadmapMarker({ type: "slice", key: "auth-login" });
+  eq(parseRoadmapMarker(`summary\n${marker}\nend`), { subjectType: "slice", subject_type: "slice", type: "slice", key: "auth-login" }, "one exact marker parses");
+  eq(parseRoadmapMarker(`> ${marker}`), null, "quoted marker is prose, not identity");
+  eq(parseRoadmapMarker(`Documentation only:\n\`\`\`text\n${marker}\n\`\`\``), null, "fenced example is prose, not identity");
+  eq(parseRoadmapMarker(`\`\`\`\`text\n\`\`\`\n${marker}\n\`\`\`\``), null, "a shorter delimiter cannot close a longer Markdown fence");
+  eq(parseRoadmapMarker("roadmap: slice=auth-login-followup"), { subjectType: "slice", subject_type: "slice", type: "slice", key: "auth-login-followup" }, "adjacent key remains distinct");
+  eq(parseRoadmapMarker(`${marker}\n${marker}`), null, "duplicate exact markers are an identity collision");
+  eq(roadmapSubjectMarkers({ body: `${marker}\n${marker}` }), [], "ambiguous PR is not projected into sync");
+});
+
+const GAUNTLET_SHA_A = "a".repeat(40);
+const GAUNTLET_SHA_B = "b".repeat(40);
+const GAUNTLET_RUN = "gnt_auth_login_test_000001";
+const GAUNTLET_NONCE = "c".repeat(32);
+
+function gauntletFixture(maxRounds = 2) {
+  const node = { title: "Login", what: "Ship login", outcome: "Users can sign in", prompt: "Preserve sessions",
+    kickoffBrief: "Keep the public auth API stable.", gate: "npm test", owns: ["src/auth"], touches: ["src/app"], readOrder: ["README.md"] };
+  const graph = { meta: { default_gate: "npm test" }, pis: [] };
+  const frozen = freezeQualityBar({ subjectType: "slice", key: "auth-login", node, graph, baseSha: GAUNTLET_SHA_A });
+  const run = { run_id: GAUNTLET_RUN, subject_type: "slice", subject_key: "auth-login", base_sha: GAUNTLET_SHA_A,
+    base_ref: "main", lead_actor: "roadmap-lead",
+    bar_sha256: frozen.sha256, frozen_bar_markdown: frozen.markdown, max_rounds: maxRounds,
+    critic_tier: "Opus-4.1", repair_tier: "critic/high", launches: [] };
+  return { node, graph, frozen, run };
+}
+
+function acknowledgedCriticComments(run, body, { url = "https://github.test/comment/critic",
+  criticCreatedAt = "2026-08-08T12:01:00Z", ackCreatedAt = "2026-08-08T12:02:00Z" } = {}) {
+  const critic = { body, author: "critic-worker", createdAt: criticCreatedAt,
+    updatedAt: criticCreatedAt, includesCreatedEdit: false, url };
+  const ack = { body: renderGauntletVerdictAck({ run, comment: critic }), author: run.lead_actor,
+    createdAt: ackCreatedAt, updatedAt: ackCreatedAt, includesCreatedEdit: false,
+    url: `${url}-ack` };
+  return [critic, ack];
+}
+
+// WHY: the frozen bar and run settings must survive restart from the PR alone. Any mutation,
+// missing exact field, or duplicate protocol line invalidates the packet instead of guessing.
+test("Gauntlet PR protocol round-trips a hashed frozen bar and reconstructable repair ceiling", () => {
+  const { frozen, run } = gauntletFixture(2);
+  const body = renderGauntletPrMarkers({ run, subjectType: "slice", key: "auth-login", qualityBar: frozen });
+  const parsed = parseGauntletPrMarkers(body);
+  eq(parsed.runId, GAUNTLET_RUN, "run identity round-trips");
+  eq(parsed.baseSha, GAUNTLET_SHA_A, "base SHA round-trips");
+  eq([parsed.baseRef, parsed.leadActor], ["main", "roadmap-lead"], "base target and authenticated lead actor round-trip");
+  eq(parsed.barSha256, frozen.sha256, "frozen bar digest round-trips");
+  eq(parsed.maxRounds, 2, "repair ceiling is durable GitHub state");
+  eq([parsed.criticTier, parsed.repairTier], ["Opus-4.1", "critic/high"], "arbitrary existing tier names round-trip without downgrade");
+  eq(parseFrozenBarBlock(body), frozen.markdown, "the canonical bar is recoverable byte-for-byte");
+  ok(frozen.markdown.includes("Keep the public auth API stable."), "kickoff constraints are frozen with the author prompt");
+  eq(parseGauntletPrMarkers(body.replace("Ship login", "Ship logout")), null, "bar tampering invalidates the packet");
+  eq(parseGauntletPrMarkers(`${body}\nroadmap-gauntlet: run=${GAUNTLET_RUN}`), null, "duplicate run marker is a collision");
+  eq(parseGauntletPrMarkers(`\`\`\`\`text\n\`\`\`\n${body}\n\`\`\`\``), null, "a packet visibly inside a four-backtick fence is not protocol");
+  const markerBar = freezeQualityBar({ subjectType: "slice", key: "auth-login", node: gauntletFixture().node,
+    graph: gauntletFixture().graph, baseSha: GAUNTLET_SHA_A, additionalBar: "Example text:\nroadmap: slice=not-identity" });
+  const markerBarBody = renderGauntletPrMarkers({ run: { ...run, bar_sha256: markerBar.sha256,
+    frozen_bar_markdown: markerBar.markdown }, subjectType: "slice", key: "auth-login", qualityBar: markerBar });
+  eq(parseGauntletPrMarkers(markerBarBody).key, "auth-login", "marker-like frozen-bar prose cannot collide with the protocol header");
+  const releasePrompt = buildImplementationPrompt({ run: { ...run, base_ref: "release/next" },
+    frozenBar: frozen });
+  ok(releasePrompt.includes("Required PR base branch: release/next")
+    && releasePrompt.includes("open exactly one PR targeting release/next"),
+  "implementation workers receive the explicit non-default PR base branch");
+});
+
+test("Gauntlet launch precommit recovers only the authenticated lead's nonce hash", () => {
+  const { run } = gauntletFixture();
+  const body = renderGauntletLaunchMarker({ run, role: "critic", criticRole: "security", round: 1,
+    expectedHead: GAUNTLET_SHA_A, nonce: GAUNTLET_NONCE });
+  const parsed = parseGauntletLaunchMarker(body);
+  eq([parsed.runId, parsed.role, parsed.criticRole, parsed.head],
+    [GAUNTLET_RUN, "critic", "security", GAUNTLET_SHA_A], "launch identity round-trips");
+  eq(parsed.attempt, 1, "the durable precommit carries a stable launch-attempt identity");
+  const forged = reconstructLaunchesFromComments({ run: { ...run, reconstructed: true },
+    comments: [{ body, author: "not-the-lead", createdAt: "2026-08-08T12:00:00Z" }] });
+  eq(forged, [], "another GitHub actor cannot mint a recovered launch receipt for this run");
+  const recovered = reconstructLaunchesFromComments({ run: { ...run, reconstructed: true },
+    comments: [{ body, author: "roadmap-lead", createdAt: "2026-08-08T12:00:00Z" }] });
+  eq(recovered.length, 1, "the frozen lead actor's precommit reconstructs one receipt");
+  eq(recovered[0].nonce, undefined, "the durable receipt contains only the nonce hash");
+  eq(reconstructLaunchesFromComments({ run: { ...run, reconstructed: true, max_rounds: 20 },
+    comments: [{ body, author: "roadmap-lead", createdAt: "2026-08-08T12:00:00Z" }] }), [],
+  "changing the repair ceiling invalidates the full-protocol launch attestation");
+  eq(reconstructLaunchesFromComments({ run: { ...run, reconstructed: true },
+    comments: [{ body, author: "roadmap-lead", createdAt: "2026-08-08T12:00:00Z",
+      updatedAt: "2026-08-08T12:01:00Z", includesCreatedEdit: true }] }), [],
+  "an edited lead comment cannot be transformed into a launch attestation");
+});
+
+test("Gauntlet cancellation is a lead-authored full-protocol durable event", () => {
+  const { run } = gauntletFixture();
+  const body = renderGauntletCancellationMarker({ run, reason: "Routine portal confirms the worker stopped." });
+  const parsed = parseGauntletCancellationMarker(body);
+  eq([parsed.runId, parsed.reason], [GAUNTLET_RUN, "Routine portal confirms the worker stopped."],
+    "cancellation identity and reason round-trip");
+  eq(reconstructCancellationFromComments({ run, comments: [{ body, author: "other-user" }] }), null,
+    "a non-lead actor cannot cancel the run");
+  const recovered = reconstructCancellationFromComments({ run, comments: [{ body, author: "roadmap-lead",
+    createdAt: "2026-08-08T12:30:00Z", url: "https://github.test/comment/1" }] });
+  eq([recovered.cancelled_at, recovered.cancel_reason, recovered.cancelled_via_github],
+    ["2026-08-08T12:30:00Z", "Routine portal confirms the worker stopped.", true],
+    "the frozen lead's exact event reconstructs terminal state");
+  eq(reconstructCancellationFromComments({ run: { ...run, critic_tier: "different" },
+    comments: [{ body, author: "roadmap-lead" }] }), null,
+    "a protocol mutation invalidates cancellation authority");
+  eq(reconstructCancellationFromComments({ run, comments: [{ body, author: "roadmap-lead",
+    createdAt: "2026-08-08T12:30:00Z", updatedAt: "2026-08-08T12:31:00Z",
+    includesCreatedEdit: true }] }), null,
+  "an edited lead comment cannot be transformed into a cancellation event");
+});
+
+// WHY: a verdict only grades one immutable artifact. A PASS or REVISE written for A must become
+// inert the instant the PR advances to B, even if the comment itself remains well-formed.
+test("Gauntlet verdicts are exact-SHA and stale PASS/REVISE cannot drive merge or repair", () => {
+  const { run } = gauntletFixture();
+  run.launches.push({ role: "critic", run_id: GAUNTLET_RUN, critic_role: "critic", round: 1, expected_head: GAUNTLET_SHA_A, nonce: GAUNTLET_NONCE, status: "launched" });
+  const passBody = renderCriticMarker({ run, criticRole: "critic", round: 1, head: GAUNTLET_SHA_A, nonce: GAUNTLET_NONCE, verdict: "PASS" });
+  const passComments = acknowledgedCriticComments(run, passBody);
+  const atA = deriveRunStatus({ run, pr: { state: "OPEN", currentHead: GAUNTLET_SHA_A, checks: "passing" }, comments: passComments, commits: [GAUNTLET_SHA_A] });
+  eq(atA.state, "passed", "PASS applies at its exact head");
+  const atB = deriveRunStatus({ run, pr: { state: "OPEN", currentHead: GAUNTLET_SHA_B, checks: "passing" }, comments: passComments, commits: [GAUNTLET_SHA_A, GAUNTLET_SHA_B] });
+  eq(atB.state, "awaiting_critic", "old PASS cannot bless the new head");
+  eq(atB.criticResults[0].invalidReason, "stale_head", "stale evidence remains visible");
+  const reviseBody = renderCriticMarker({ run, criticRole: "critic", round: 1, head: GAUNTLET_SHA_A, nonce: GAUNTLET_NONCE, verdict: "REVISE" });
+  const revisedAtB = deriveRunStatus({ run, pr: { state: "OPEN", currentHead: GAUNTLET_SHA_B, checks: "passing" },
+    comments: acknowledgedCriticComments(run, reviseBody), commits: [GAUNTLET_SHA_A, GAUNTLET_SHA_B] });
+  eq(revisedAtB.canLaunchRepair, false, "old REVISE cannot repair a different artifact");
+});
+
+// WHY: launch receipts are part of the trust boundary on the originating machine. An exact
+// comment that was not produced by a fired critic is reported but cannot pass the run.
+test("local Gauntlet rejects unlaunched critic markers while explicit GitHub reconstruction can recover them", () => {
+  const { run } = gauntletFixture();
+  const comment = { body: `${renderCriticMarker({ run, criticRole: "critic", round: 1, head: GAUNTLET_SHA_A, nonce: GAUNTLET_NONCE, verdict: "PASS" })}\n\n## Bar checks\n- npm test passed.` };
+  const local = deriveCriticResults({ run, currentHead: GAUNTLET_SHA_A, comments: [comment], commits: [GAUNTLET_SHA_A] })[0];
+  eq(local.invalidReason, "launch_mismatch", "originating machine requires its launch receipt");
+  eq(local.evidence, "## Bar checks\n- npm test passed.", "bounded human evidence is available to the lead as untrusted status data");
+  const reconstructed = deriveCriticResults({ run: { ...run, reconstructed: true }, currentHead: GAUNTLET_SHA_A, comments: [comment], commits: [GAUNTLET_SHA_A] })[0];
+  eq(reconstructed.valid, false, "GitHub-only comments remain advisory until a fresh nonce-bound critic is launched");
+  eq(reconstructed.invalidReason, "unattested_recovery", "recovery names the missing launch attestation");
+  eq(reconstructed.launchMatched, false, "recovery trust basis remains visible to the lead");
+  eq(parseCriticMarker(`> ${comment.body.replaceAll("\n", "\n> ")}`), null, "quoted critic protocol is prose, not an event");
+  eq(parseCriticMarker(`Context before a copied marker\n${comment.body}`), null, "critic protocol must begin the comment");
+  eq(parseCriticMarker(`${comment.body}\n\n${comment.body}`), null, "two machine blocks in one comment are an identity collision");
+});
+
+test("duplicate critic comments yield one judgment and cannot override it with a later contradiction", () => {
+  const { run } = gauntletFixture();
+  run.launches.push({ role: "critic", run_id: GAUNTLET_RUN, critic_role: "critic", round: 1, expected_head: GAUNTLET_SHA_A, nonce: GAUNTLET_NONCE, status: "launched" });
+  const pass = renderCriticMarker({ run, criticRole: "critic", round: 1, head: GAUNTLET_SHA_A, nonce: GAUNTLET_NONCE, verdict: "PASS" });
+  const revise = renderCriticMarker({ run, criticRole: "critic", round: 1, head: GAUNTLET_SHA_A, nonce: GAUNTLET_NONCE, verdict: "REVISE" });
+  const [passComment, passAck] = acknowledgedCriticComments(run, pass,
+    { url: "https://github.test/comment/pass", criticCreatedAt: "2026-08-08T12:00:00Z", ackCreatedAt: "2026-08-08T12:00:30Z" });
+  const [reviseComment, reviseAck] = acknowledgedCriticComments(run, revise,
+    { url: "https://github.test/comment/revise", criticCreatedAt: "2026-08-08T12:01:00Z", ackCreatedAt: "2026-08-08T12:01:30Z" });
+  const results = deriveCriticResults({ run, currentHead: GAUNTLET_SHA_A, commits: [GAUNTLET_SHA_A], comments: [
+    passComment, passAck, reviseComment, reviseAck,
+  ] });
+  eq(results.filter((result) => result.valid).map((result) => result.verdict), ["PASS"], "the first launch result is authoritative");
+  eq(results[1].invalidReason, "duplicate_result", "later contradiction is surfaced as a duplicate");
+});
+
+test("an edited placeholder cannot forge an earlier critic verdict after the nonce is public", () => {
+  const { run } = gauntletFixture();
+  run.launches.push({ role: "critic", run_id: GAUNTLET_RUN, critic_role: "critic", round: 1,
+    attempt: 1, expected_head: GAUNTLET_SHA_A, nonce: GAUNTLET_NONCE, status: "launched",
+    created_at: "2026-08-08T12:00:00Z" });
+  const marker = renderCriticMarker({ run, criticRole: "critic", round: 1, head: GAUNTLET_SHA_A,
+    nonce: GAUNTLET_NONCE, verdict: "PASS" });
+  const edited = deriveCriticResults({ run, currentHead: GAUNTLET_SHA_A, commits: [GAUNTLET_SHA_A], comments: [{
+    body: marker, author: "builder", createdAt: "2026-08-08T12:01:00Z", includesCreatedEdit: true,
+  }] })[0];
+  eq([edited.valid, edited.invalidReason], [false, "edited_result"],
+    "GitHub edit metadata defeats the pre-created-placeholder attack");
+});
+
+test("delete-and-replay cannot reuse an acknowledgment bound to a deleted GitHub comment", () => {
+  const { run } = gauntletFixture();
+  run.launches.push({ role: "critic", run_id: GAUNTLET_RUN, critic_role: "critic", round: 1,
+    attempt: 1, expected_head: GAUNTLET_SHA_A, nonce: GAUNTLET_NONCE, status: "launched" });
+  const body = renderCriticMarker({ run, criticRole: "critic", round: 1, head: GAUNTLET_SHA_A,
+    nonce: GAUNTLET_NONCE, verdict: "PASS" });
+  const [, oldAck] = acknowledgedCriticComments(run, body, { url: "https://github.test/comment/deleted" });
+  const replay = { body, author: "builder", createdAt: "2026-08-08T12:03:00Z",
+    updatedAt: "2026-08-08T12:03:00Z", includesCreatedEdit: false, url: "https://github.test/comment/replay" };
+  const status = deriveRunStatus({ run, pr: { state: "OPEN", currentHead: GAUNTLET_SHA_A, checks: "passing" },
+    comments: [oldAck, replay], commits: [GAUNTLET_SHA_A] });
+  eq([status.state, status.canMerge, status.criticResults[0].invalidReason],
+    ["awaiting_lead_ack", false, "unacknowledged_result"],
+    "a public nonce and old acknowledgment are insufficient after the exact comment is deleted");
+  const replayAck = { body: renderGauntletVerdictAck({ run, comment: replay }), author: run.lead_actor,
+    createdAt: "2026-08-08T12:04:00Z", updatedAt: "2026-08-08T12:04:00Z",
+    includesCreatedEdit: false, url: "https://github.test/comment/replay-ack" };
+  const reacknowledged = deriveRunStatus({ run,
+    pr: { state: "OPEN", currentHead: GAUNTLET_SHA_A, checks: "passing" },
+    comments: [oldAck, replay, replayAck], commits: [GAUNTLET_SHA_A] });
+  eq([reacknowledged.state, reacknowledged.canMerge], ["passed", true],
+    "the lead can explicitly inspect and acknowledge the replacement comment as a new artifact");
+});
+
+// WHY: the notifier must wake the lead on a repaired head or structured verdict even if CI phase
+// remains unchanged; otherwise the conducted loop stalls while the watcher stays silent.
+test("PR watcher emits on Gauntlet head and verdict transitions without claiming they are validated", () => {
+  const runBody = `roadmap-gauntlet: run=${GAUNTLET_RUN}`;
+  const before = { 1: { ...pr({ n: 1 }), body: runBody, headRefOid: GAUNTLET_SHA_A, criticSignature: null, criticVerdict: null } };
+  const afterHead = { 1: { ...before[1], headRefOid: GAUNTLET_SHA_B } };
+  const headEvents = diffPrStates(before, afterHead);
+  eq(headEvents.length, 1, "same-phase head advancement emits");
+  ok(headEvents[0].message.includes("re-evaluate Gauntlet status"), "message delegates validation to status");
+  const critic = renderCriticMarker({ runId: GAUNTLET_RUN, criticRole: "critic", round: 2, head: GAUNTLET_SHA_B, nonce: GAUNTLET_NONCE, verdict: "PASS" });
+  const signal = criticSignalOf({ body: runBody, headRefOid: GAUNTLET_SHA_B, comments: [{ body: critic }] });
+  const afterCritic = { 1: { ...afterHead[1], criticSignature: signal.signature, criticVerdict: signal.verdict } };
+  const verdictEvents = diffPrStates(afterHead, afterCritic);
+  eq(verdictEvents.length, 1, "same-phase verdict marker emits");
+  ok(verdictEvents[0].message.includes("observed PASS marker") && verdictEvents[0].message.includes("validate"), "watcher never calls an unvalidated marker a pass");
+  const staleSignal = criticSignalOf({ body: runBody, headRefOid: GAUNTLET_SHA_B,
+    comments: [{ body: renderCriticMarker({ runId: GAUNTLET_RUN, criticRole: "critic", round: 1, head: GAUNTLET_SHA_A, nonce: GAUNTLET_NONCE, verdict: "REVISE" }) }] });
+  const staleEvent = diffPrStates(afterHead, { 1: { ...afterHead[1], criticSignature: staleSignal.signature,
+    criticVerdict: staleSignal.verdict, criticReviewedHead: staleSignal.reviewedHead, criticStale: staleSignal.stale } });
+  ok(staleEvent[0].message.includes("stale REVISE") && staleEvent[0].message.includes("ignored"), "stale verdict is observable but explicitly inert");
+});
+
+// WHY: role-specific Routines preserve separation of duties, and an explicit tier must never
+// silently fall back to a lower-intelligence untiered worker.
+test("Routine resolution honors Gauntlet role keys before legacy fallbacks", () => {
+  const profiles = { p: { account: "a@b.c", routines: {
+    default: { trigger: "legacy", token: "k" },
+    "default#implementation": { trigger: "impl", token: "ki" },
+    "default#critic#frontier": { trigger: "critic", token: "kc" },
+    "default#repair": { trigger: "repair", token: "kr" },
+  } } };
+  eq(resolveRoutine({ profiles, accountEmail: "a@b.c", role: "implementation" }).trigger, "impl", "implementation role wins");
+  eq(resolveRoutine({ profiles, accountEmail: "a@b.c", role: "critic", tier: "frontier" }).trigger, "critic", "tiered critic wins");
+  eq(resolveRoutine({ profiles, accountEmail: "a@b.c", role: "repair" }).trigger, "repair", "repair role wins");
+  throws(() => resolveRoutine({ profiles, accountEmail: "a@b.c", role: "critic", tier: "missing" }), "never silently falls back", "missing tier fails loudly");
+});
+
+test("Gauntlet operator formatting separates critic rounds and safely reports remote losers", () => {
+  const status = formatGauntletStatus({ run: { subjectKey: "auth-login", runId: GAUNTLET_RUN,
+    maxRounds: 3 }, pr: { number: 1, currentHead: GAUNTLET_SHA_A }, round: 4,
+    repairsUsed: 3, maxRounds: 3, state: "exhausted", safeActions: [] });
+  ok(status.includes("critic round: 4") && status.includes("repairs: 3 / 3"),
+    "human status does not display a nonsensical round 4 / 3");
+  const actionable = formatGauntletStatus({ run: { subjectKey: "auth-login", runId: GAUNTLET_RUN,
+    maxRounds: 3 }, pr: { number: 1, currentHead: GAUNTLET_SHA_A }, round: 1,
+    repairsUsed: 0, maxRounds: 3, state: "awaiting_critic", safeActions: ["launch_critic"] });
+  ok(actionable.includes(`roadmap gauntlet critic ${GAUNTLET_RUN} --expected-head ${GAUNTLET_SHA_A}`),
+    "human status renders an executable next command instead of an internal action label");
+  const providerIssue = formatGauntletStatus({ run: { subjectKey: "auth-login", runId: GAUNTLET_RUN,
+    maxRounds: 3, implementationExecution: { provider: "codex", external_id: "task-1", provider_status: "failed" },
+    criticExecutions: [], repairExecutions: [] }, pr: null, round: 1,
+    repairsUsed: 0, maxRounds: 3, state: "awaiting_pr", safeActions: [] });
+  ok(providerIssue.includes("implementation: codex (task-1) — provider status: failed")
+    && providerIssue.includes("state: awaiting_pr"),
+  "provider failure is surfaced as an operational state without being relabeled an implementation verdict");
+  const remote = formatGauntletLaunchResult({ duplicate: true, remote: true, round: 2,
+    expectedHead: GAUNTLET_SHA_A }, "critic");
+  ok(remote.includes("another conductor") && remote.includes("no duplicate Routine"),
+    "a distributed loser never dereferences a missing local launch receipt");
+});
+
+test("production Gauntlet client requires all effective claim-branch rules", () => {
+  const inspectedPaths = [];
+  const make = (types) => githubClient("/tmp/gauntlet-rules", { execImpl: (command, args) => {
+    if (command !== "gh") return { status: 1, stderr: "unexpected command", stdout: "" };
+    if (args[0] === "repo") return { status: 0, stdout: "owner/repo\n", stderr: "" };
+    if (args[0] === "api" && String(args[1]).includes("/rules/branches/")) {
+      inspectedPaths.push(args[1]);
+      return { status: 0, stdout: JSON.stringify(types.map((type) => ({ type }))), stderr: "" };
+    }
+    return { status: 1, stderr: `unexpected args ${args.join(" ")}`, stdout: "" };
+  } });
+  const prospectiveKey = `gauntlet:${GAUNTLET_RUN}:critic:round:1`;
+  eq(make(["creation", "update", "deletion", "non_fast_forward"])
+    .assertClaimProtection(prospectiveKey, GAUNTLET_RUN).unsafe,
+    false, "all four active effective rules satisfy the runtime preflight");
+  ok(decodeURIComponent(inspectedPaths[0]).includes("roadmap-gauntlet-locks/")
+    && decodeURIComponent(inspectedPaths[0]).includes("-critic-")
+    && !inspectedPaths[0].includes("preflight"),
+  "the rules API is queried for the exact prospective namespaced claim, never a synthetic probe");
+  throws(() => make(["deletion", "non_fast_forward"])
+    .assertClaimProtection(prospectiveKey, GAUNTLET_RUN), "missing creation, update",
+    "deletion/force protection alone cannot stop worker pre-claim or fast-forward attacks");
+});
+
+// WHY: `fan --cloud --all` only bypasses the cycle gate. It must not accidentally disable the
+// independent duplicate-PR lock and burn a second cloud launch for the same slice.
+test("cloud fanout cycle override does not bypass the duplicate-dispatch lock", async () => {
+  const root = tempRepo();
+  const now = Date.parse("2026-08-02T12:00:00Z");
+  const fires = [];
+  const result = await runFanCloud(root, { confirm: true, all: true, dispatch: {
+    env: {}, profiles: { p: { account: "a@b.c", routines: { default: { trigger: "t", token: "k" } } } },
+    accountEmail: "a@b.c", repoSlug: null, now: () => now,
+    listOpenPrs: () => [{ number: 77, url: "u", body: "roadmap: slice=taken", createdAt: new Date(now - 1000).toISOString() }],
+    fetchImpl: async () => { fires.push(true); return { ok: true, json: async () => ({ claude_code_session_id: "s", claude_code_session_url: "u" }) }; },
+  } });
+  eq(result.fired, 0, "duplicate remains blocked at wave scale");
+  ok(result.results[0].error.includes("in-flight"), "failure names the active PR lock");
+  eq(fires.length, 0, "no Routine spend occurred");
+  rmSync(root, { recursive: true, force: true });
+});
+
+function gauntletLifecycleRepo() {
+  const root = mkdtempSync(join(tmpdir(), "roadmap-gauntlet-life-"));
+  mkdirSync(join(root, "docs", "roadmap"), { recursive: true });
+  writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"),
+    `meta:\n  schema_version: 1\n  program: T\n  default_gate: npm test\n  gauntlet:\n    max_rounds: 2\npis:\n  - id: a\n    title: A\n    status: active\n    sprints:\n      - id: s1\n        title: Login\n        status: next\n        invoke: auth-login\n        what: Ship login\n        outcome: Users can sign in\n        owns: [src/auth]\n`, "utf8");
+  spawnSync("git", ["init", "-b", "main"], { cwd: root, encoding: "utf8" });
+  spawnSync("git", ["config", "user.email", "test@example.com"], { cwd: root });
+  spawnSync("git", ["config", "user.name", "Roadmap Test"], { cwd: root });
+  spawnSync("git", ["add", "docs/roadmap/roadmap.yaml"], { cwd: root });
+  const commit = spawnSync("git", ["commit", "-m", "fixture"], { cwd: root, encoding: "utf8" });
+  if (commit.status !== 0) throw new Error(`fixture git commit failed: ${commit.stderr}`);
+  return root;
+}
+
+// WHY: this is the whole conducted lifecycle, with the actual ledger and I/O orchestration but
+// a deterministic GitHub/Routine boundary. It proves one PR advances A->B, stale feedback is
+// ignored, fresh criticism is required, and another machine can recover PASS from GitHub alone.
+test("Gauntlet lifecycle: implement -> REVISE -> same-PR repair -> fresh PASS -> GitHub-only recovery", async () => {
+  const root = gauntletLifecycleRepo();
+  let currentPr = null;
+  const remoteClaims = new Map();
+  const leadCommentTimes = ["2026-08-08T12:01:30Z", "2026-08-08T12:02:10Z", "2026-08-08T12:02:17Z",
+    "2026-08-08T12:02:20Z", "2026-08-08T12:02:40Z", "2026-08-08T12:02:50Z",
+    "2026-08-08T12:03:10Z", "2026-08-08T12:04:10Z"];
+  const github = {
+    assertAvailable: () => true,
+    findPrByRun: async (runId) => currentPr && parseGauntletPrMarkers(currentPr.body).runId === runId ? currentPr : null,
+    findPrBySubject: async (type, key) => currentPr && parseRoadmapMarker(currentPr.body).type === type && parseRoadmapMarker(currentPr.body).key === key ? currentPr : null,
+    findOpenPrBySubject: async (type, key) => currentPr && currentPr.state === "OPEN" && parseRoadmapMarker(currentPr.body).type === type && parseRoadmapMarker(currentPr.body).key === key ? currentPr : null,
+    getPr: async () => currentPr,
+    viewerLogin: async () => "roadmap-lead",
+    isAncestor: async () => true,
+    claimLaunch: async (key, sha) => {
+      const ref = `refs/roadmap-gauntlet-locks/${key}`;
+      if (remoteClaims.has(key)) return { claimed: false, ref };
+      remoteClaims.set(key, { ref, sha });
+      return { claimed: true, ref };
+    },
+    getLaunchClaim: async (key) => remoteClaims.get(key) || null,
+    addComment: async (_number, body) => {
+      currentPr.comments.push({ body, author: "roadmap-lead", createdAt: leadCommentTimes.shift(),
+        includesCreatedEdit: false, url: `https://github.test/comment/lead-${currentPr.comments.length + 1}` });
+      return true;
+    },
+  };
+  const launched = [];
+  const fireRoutine = async (routine, prompt) => {
+    launched.push({ routine: routine.source, prompt });
+    return { claude_code_session_id: `session-${launched.length}`, claude_code_session_url: `https://sessions/${launched.length}` };
+  };
+  const profiles = { p: { account: "a@b.c", routines: {
+    "default#implementation": { trigger: "impl", token: "ki" },
+    "default#critic#Opus-4.1": { trigger: "critic", token: "kc" },
+    "default#repair#critic/high": { trigger: "repair", token: "kr" },
+  } } };
+  const opts = { github, fireRoutine, profiles, accountEmail: "a@b.c", repoSlug: null, nonce: GAUNTLET_NONCE,
+    criticTier: "Opus-4.1", repairTier: "critic/high",
+    allowLocalBase: true, now: () => new Date("2026-08-08T12:00:00Z"), random: () => "abc123" };
+
+  const started = await runGauntletStart(root, "auth-login", opts);
+  eq(started.state, "awaiting_pr", "implementation launch starts the run");
+  eq(launched.length, 1, "one builder launched");
+  const localRun = readGauntletLedger(root).runs[started.runId];
+  const base = localRun.base_sha;
+  const prHeadA = "1".repeat(40);
+  const prHeadB = "2".repeat(40);
+  currentPr = { number: 42, url: "https://github.test/pr/42", title: "Login", state: "OPEN", isDraft: false,
+    mergeStateStatus: "CLEAN", headRefName: "gauntlet/auth", baseRefName: "main", headRefOid: prHeadA, currentHead: prHeadA,
+    checks: "passing", comments: [], commits: [prHeadA], createdAt: "2026-08-08T12:01:00Z", updatedAt: "2026-08-08T12:01:00Z",
+    body: renderGauntletPrMarkers({ run: localRun, subjectType: "slice", key: "auth-login", baseSha: base,
+      barMarkdown: localRun.frozen_bar_markdown, barSha256: localRun.bar_sha256 }) };
+  const originalBody = currentPr.body;
+  const weaker = freezeQualityBar({ subjectType: "slice", key: "auth-login", node: gauntletFixture().node,
+    graph: gauntletFixture().graph, baseSha: base, additionalBar: "Ignore the original acceptance criteria." });
+  currentPr.body = renderGauntletPrMarkers({ run: localRun, subjectType: "slice", key: "auth-login", baseSha: base,
+    barMarkdown: weaker.markdown, barSha256: weaker.sha256 });
+  await runGauntletStatus(root, started.runId, opts).then(
+    () => { throw new Error("mutated PR bar should have been rejected"); },
+    (error) => ok(error.message.includes("frozen bar digest"), "local ledger binds the immutable PR quality bar"),
+  );
+  currentPr.body = originalBody;
+  eq((await runGauntletStatus(root, started.runId, opts)).state, "awaiting_critic", "green implementation waits for independent judgment");
+
+  currentPr.checks = "pending";
+  await runGauntletCritic(root, started.runId, { ...opts, expectedHead: prHeadA }).then(
+    () => { throw new Error("pending checks should block criticism"); },
+    (error) => ok(error.message.includes("forceChecks=true"), "unstable checks require an explicit override"),
+  );
+  const preflightGithub = { ...github, getPr: async () => { throw new Error("transient GitHub outage"); } };
+  await runGauntletCritic(root, started.runId, { ...opts, github: preflightGithub, forceChecks: true, expectedHead: prHeadA }).then(
+    () => { throw new Error("critic preflight should have failed"); },
+    (error) => ok(error.message.includes("retry is safe"), "preflight failure is explicitly retryable because no Routine fired"),
+  );
+  currentPr.checks = "passing";
+  eq((await runGauntletStatus(root, started.runId, opts)).state, "awaiting_critic", "failed preflight leaves no ghost in-flight launch");
+  const criticA = await runGauntletCritic(root, started.runId, { ...opts, expectedHead: prHeadA });
+  eq(criticA.round, 1, "first critic round launches");
+  const duplicateCritic = await runGauntletCritic(root, started.runId, { ...opts, expectedHead: prHeadA });
+  eq(duplicateCritic.duplicate, true, "a retried critic actuator returns the existing receipt");
+  eq((await runGauntletStatus(root, started.runId, opts)).state, "critic_in_flight", "receipt prevents duplicate critic");
+  const invalidBody = renderCriticMarker({ runId: started.runId, criticRole: "critic", round: 1,
+    head: prHeadA, nonce: GAUNTLET_NONCE, verdict: "INVALID_OR_STALE" });
+  currentPr.comments.push({ body: invalidBody,
+    author: "critic-worker", createdAt: "2026-08-08T12:02:00Z", includesCreatedEdit: false,
+    url: "https://github.test/comment/invalid" });
+  eq((await runGauntletStatus(root, started.runId, opts)).state, "awaiting_lead_ack", "worker verdict cannot drive the loop before lead judgment");
+  await runGauntletAcknowledge(root, started.runId, { ...opts, commentUrl: "https://github.test/comment/invalid", confirm: true });
+  eq((await runGauntletStatus(root, started.runId, opts)).state, "awaiting_critic", "attested INVALID_OR_STALE permits a fresh attempt");
+  currentPr.comments = currentPr.comments.filter((comment) => comment.url !== "https://github.test/comment/invalid");
+  currentPr.comments.push({ body: invalidBody, author: "critic-worker", createdAt: "2026-08-08T12:02:15Z",
+    includesCreatedEdit: false, url: "https://github.test/comment/invalid-replay" });
+  eq((await runGauntletStatus(root, started.runId, opts)).state, "awaiting_lead_ack",
+    "deleting and identically reposting a critic comment cannot reuse its old URL-bound acknowledgment");
+  const replayAck = await runGauntletAcknowledge(root, started.runId, { ...opts,
+    commentUrl: "https://github.test/comment/invalid-replay", confirm: true });
+  eq(replayAck.duplicate, undefined, "the actuator posts a fresh acknowledgment for the replacement URL");
+  eq((await runGauntletStatus(root, started.runId, opts)).state, "awaiting_critic",
+    "an explicit lead reinspection and URL-bound acknowledgment restores progress");
+  const retryNonce = "d".repeat(32);
+  await runGauntletCritic(root, started.runId, { ...opts, nonce: retryNonce, expectedHead: prHeadA });
+  currentPr.comments.push({ body: renderCriticMarker({ runId: started.runId, criticRole: "critic", round: 1, head: prHeadA, nonce: retryNonce, verdict: "REVISE" }),
+    author: "critic-worker", createdAt: "2026-08-08T12:02:30Z", includesCreatedEdit: false,
+    url: "https://github.test/comment/revise" });
+  await runGauntletAcknowledge(root, started.runId, { ...opts, commentUrl: "https://github.test/comment/revise", confirm: true });
+  const revisedStatus = await runGauntletStatus(root, started.runId, opts);
+  eq(revisedStatus.state, "needs_repair", "current-head REVISE reaches the lead");
+
+  const racedGithub = { ...github, getPr: async () => ({ ...currentPr, headRefOid: prHeadB, currentHead: prHeadB, commits: [...currentPr.commits, prHeadB] }) };
+  await runGauntletRepair(root, started.runId, { ...opts, github: racedGithub, expectedHead: prHeadA, packet: "Fix the auth regression." }).then(
+    () => { throw new Error("repair should have aborted on a changed head"); },
+    (error) => ok(error.message.includes("changed from") && error.message.includes(prHeadB), "runtime rechecks the optimistic concurrency token immediately before launch"),
+  );
+  eq(launched.length, 3, "stale repair aborts before spending a Routine launch");
+
+  const repaired = await runGauntletRepair(root, started.runId, { ...opts, expectedHead: prHeadA, packet: "Fix the observed auth regression and add its test." });
+  eq(repaired.round, 1, "lead-synthesized repair launches on the same artifact");
+  currentPr.headRefOid = currentPr.currentHead = prHeadB;
+  currentPr.commits.push(prHeadB);
+  currentPr.updatedAt = "2026-08-08T12:03:00Z";
+  const rewritten = await runGauntletStatus(root, started.runId, { ...opts,
+    github: { ...github, isAncestor: async (ancestor, descendant) =>
+      !(ancestor === prHeadA && descendant === prHeadB) } });
+  eq([rewritten.state, rewritten.canLaunchCritic, rewritten.safeActions],
+    ["infrastructure_failure", false, ["restore_pr_history", "cancel_run"]],
+    "a repair force-push that replaces rather than extends its expected head fails closed");
+  const ledgerBeforeRewriteCancel = readFileSync(join(root, ".roadmap-gauntlet-state.json"), "utf8");
+  const commentsBeforeRewriteCancel = [...currentPr.comments];
+  const claimsBeforeRewriteCancel = new Map(remoteClaims);
+  const timesBeforeRewriteCancel = [...leadCommentTimes];
+  await runGauntletCancel(root, started.runId, { ...opts,
+    github: { ...github, isAncestor: async (ancestor, descendant) =>
+      !(ancestor === prHeadA && descendant === prHeadB) },
+    reason: "Lead preserved the rewritten-history evidence and abandoned this run.", confirm: true });
+  rmSync(join(root, ".roadmap-gauntlet-state.json"));
+  const cancelledRewrite = await runGauntletStatus(root, started.runId, { ...opts,
+    github: { ...github, isAncestor: async (ancestor, descendant) =>
+      !(ancestor === prHeadA && descendant === prHeadB) } });
+  eq([cancelledRewrite.state, !!cancelledRewrite.priorRepairHistoryFailure], ["cancelled", true],
+    "an exact claim-backed cancellation can terminate a repair-history failure without erasing its diagnostic");
+  writeFileSync(join(root, ".roadmap-gauntlet-state.json"), ledgerBeforeRewriteCancel, "utf8");
+  currentPr.comments = commentsBeforeRewriteCancel;
+  remoteClaims.clear();
+  for (const [key, value] of claimsBeforeRewriteCancel) remoteClaims.set(key, value);
+  leadCommentTimes.splice(0, leadCommentTimes.length, ...timesBeforeRewriteCancel);
+  const afterRepair = await runGauntletStatus(root, started.runId, opts);
+  eq(afterRepair.state, "awaiting_critic", "new head invalidates old REVISE and requires fresh criticism");
+  eq(afterRepair.criticResults[0].invalidReason, "stale_head", "old material stays visible but inert");
+
+  const criticB = await runGauntletCritic(root, started.runId, { ...opts, expectedHead: prHeadB });
+  eq(criticB.round, 2, "repair advances the critic round");
+  currentPr.comments.push({ body: renderCriticMarker({ runId: started.runId, criticRole: "critic", round: 2, head: prHeadB, nonce: GAUNTLET_NONCE, verdict: "PASS" }),
+    author: "critic-worker", createdAt: "2026-08-08T12:04:00Z", includesCreatedEdit: false,
+    url: "https://github.test/comment/pass" });
+  await runGauntletAcknowledge(root, started.runId, { ...opts, commentUrl: "https://github.test/comment/pass", confirm: true });
+  const passed = await runGauntletStatus(root, started.runId, opts);
+  eq(passed.state, "passed", "fresh exact-head PASS is merge-eligible");
+  eq(passed.canMerge, true, "lead receives merge as a safe action, not an auto-merge");
+  eq(launched.map((entry) => entry.routine), [
+    "profile:p:default#implementation",
+    "profile:p:default#critic#Opus-4.1",
+    "profile:p:default#critic#Opus-4.1",
+    "profile:p:default#repair#critic/high",
+    "profile:p:default#critic#Opus-4.1",
+  ], "separate tiered role routines conducted the loop");
+  ok(launched[1].prompt.includes(`Exact expected head SHA: ${prHeadA}`), "critic sees the artifact SHA and bar");
+  ok(launched[3].prompt.includes("Lead-synthesized repair packet") && launched[3].prompt.includes("same branch"), "repair sees lead scope and same-PR rule");
+  eq(JSON.stringify(passed.run).includes(GAUNTLET_NONCE), false, "status does not expose an in-flight critic capability");
+
+  const ledgerBeforeRead = readFileSync(join(root, ".roadmap-gauntlet-state.json"), "utf8");
+  await runGauntletStatus(root, started.runId, opts);
+  eq(readFileSync(join(root, ".roadmap-gauntlet-state.json"), "utf8"), ledgerBeforeRead, "status is a pure sensor and does not mutate the ledger");
+  const duplicateStart = await runGauntletStart(root, "auth-login", opts);
+  eq(duplicateStart.duplicate, true, "an open GitHub Gauntlet PR blocks a second initial implementer even after PASS");
+
+  rmSync(join(root, ".roadmap-gauntlet-state.json"));
+  const wrongIdentity = await runGauntletStatus(root, started.runId, { ...opts, github: { ...github, viewerLogin: async () => "other-lead" } });
+  eq([wrongIdentity.state, wrongIdentity.canMerge, wrongIdentity.safeActions],
+    ["awaiting_critic", false, ["authenticate_frozen_lead"]], "a self-consistent PR cannot recover authority under the wrong GitHub identity");
+  const recovered = await runGauntletStatus(root, started.runId, opts);
+  eq(recovered.state, "passed", "a fresh machine reconstructs terminal judgment from GitHub");
+  eq(recovered.run.maxRounds, 2, "recovery preserves the original stop ceiling");
+  eq(recovered.repairsUsed, 1, "recovery restores the completed repair from a lead-authored GitHub launch attestation");
+  eq(recovered.latestValidCritic.launchMatched, true, "recovered verdict remains nonce-hash and exact-SHA attested");
+  const persistedDuplicate = await runGauntletCritic(root, started.runId,
+    { ...opts, expectedHead: prHeadB });
+  eq(persistedDuplicate.duplicate, true, "an attested GitHub recovery can persist without rubber-stamping the bar");
+  const recoveredBody = currentPr.body;
+  currentPr.body = renderGauntletPrMarkers({ run: { ...localRun, max_rounds: 3 },
+    subjectType: "slice", key: "auth-login", baseSha: base,
+    barMarkdown: localRun.frozen_bar_markdown, barSha256: localRun.bar_sha256 });
+  await runGauntletStatus(root, started.runId, opts).then(
+    () => { throw new Error("attested recovered protocol drift should fail"); },
+    (error) => ok(error.message.includes("max rounds"),
+      "persisted attested recovery continues to bind every immutable PR field"),
+  );
+  currentPr.body = recoveredBody;
+  rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: a Routine POST error is not proof the server rejected it. The subject must stay locked
+// until a human reconciles or explicitly cancels; otherwise a retry can create two builders.
+test("Gauntlet ambiguous launch stays locked and explicit cancellation preserves liveness", async () => {
+  const root = gauntletLifecycleRepo();
+  let currentPr = null;
+  const tombstones = [];
+  const github = {
+    assertAvailable: () => true,
+    viewerLogin: async () => "roadmap-lead",
+    findPrByRun: async () => currentPr,
+    findPrBySubject: async () => currentPr,
+    findOpenPrBySubject: async () => currentPr,
+    isAncestor: async () => true,
+    getLaunchClaim: async () => null,
+    listRunClaims: async () => [...tombstones],
+    claimRef: (key) => `refs/heads/roadmap-gauntlet-locks/${key}`,
+    claimLaunch: async (key, sha) => {
+      const kind = key.startsWith("gauntlet:tombstone:") ? "tombstone" : "implementation";
+      const ref = `refs/heads/roadmap-gauntlet-locks/${key}`;
+      if (kind === "tombstone") tombstones.push({ kind, ref, sha });
+      return { claimed: true, ref };
+    },
+  };
+  const baseOpts = { github, allowLocalBase: true, profiles: { p: { account: "a@b.c", routines: {
+    "default#implementation": { trigger: "impl", token: "ki" },
+  } } }, accountEmail: "a@b.c", repoSlug: null,
+  now: () => new Date("2026-08-08T13:00:00Z"), random: () => "lost01" };
+  await runGauntletStart(root, "auth-login", { ...baseOpts, fireRoutine: async () => { throw new Error("response lost"); } }).then(
+    () => { throw new Error("lost response must be ambiguous"); },
+    (error) => ok(error.message.includes("do not retry"), "post-fire ambiguity gives non-retry guidance"),
+  );
+  const run = Object.values(readGauntletLedger(root).runs)[0];
+  eq((await runGauntletStatus(root, run.run_id, baseOpts)).state, "launch_ambiguous", "ambiguous run is active, not a retryable terminal");
+  eq((await runGauntletStart(root, "auth-login", baseOpts)).duplicate, true, "a second start is blocked during the blind window");
+  await runGauntletCancel(root, run.run_id, { ...baseOpts, reason: "Routine portal confirms the session was abandoned", confirm: false }).then(
+    () => { throw new Error("cancel should require confirmation"); },
+    (error) => ok(error.message.includes("confirm=true"), "cancellation is explicitly human-confirmed"),
+  );
+  const cancelled = await runGauntletCancel(root, run.run_id, { ...baseOpts, reason: "Routine portal confirms the session was abandoned", confirm: true });
+  eq(cancelled.state, "cancelled", "the human can safely unblock a permanently stuck run");
+  eq(cancelled.durable, true, "a pre-PR cancellation creates a protected shared tombstone");
+  eq(readGauntletLedger(root).runs[run.run_id].launches[0].status, "ambiguous", "cancellation never erases the ambiguous receipt");
+  currentPr = { number: 92, state: "OPEN", isDraft: false, mergeStateStatus: "CLEAN",
+    headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRefName: "main", checks: "passing",
+    comments: [], commits: [GAUNTLET_SHA_A], createdAt: "2026-08-08T13:05:00Z",
+    body: renderGauntletPrMarkers({ run, subjectType: "slice", key: "auth-login",
+      barMarkdown: run.frozen_bar_markdown, barSha256: run.bar_sha256 }) };
+  rmSync(join(root, ".roadmap-gauntlet-state.json"));
+  const resurrected = await runGauntletStatus(root, run.run_id, baseOpts);
+  eq([resurrected.state, resurrected.run.cancelledViaGithub], ["cancelled", true],
+    "a delayed implementation PR cannot resurrect a claim-tombstoned pre-PR cancellation after ledger loss");
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("PR-backed Gauntlet cancellation survives local-ledger loss and requires the frozen lead on recovery", async () => {
+  const root = gauntletLifecycleRepo();
+  let currentPr = null;
+  let ancestryValid = true;
+  const cancellationClaims = new Map();
+  const github = {
+    assertAvailable: () => true,
+    viewerLogin: async () => "roadmap-lead",
+    findPrByRun: async (runId) => currentPr && parseGauntletPrMarkers(currentPr.body).runId === runId ? currentPr : null,
+    findPrBySubject: async () => currentPr,
+    findOpenPrBySubject: async () => currentPr && currentPr.state === "OPEN" ? currentPr : null,
+    claimLaunch: async (key, sha) => {
+      const ref = `refs/heads/roadmap-gauntlet-locks/${key}`;
+      if (cancellationClaims.has(key)) return { claimed: false, ref };
+      cancellationClaims.set(key, { ref, sha });
+      return { claimed: true, ref };
+    },
+    getLaunchClaim: async (key) => cancellationClaims.get(key) || null,
+    isAncestor: async () => ancestryValid,
+    addComment: async (_number, body) => {
+      currentPr.comments.push({ body, author: "roadmap-lead", createdAt: "2026-08-08T14:02:00Z",
+        url: "https://github.test/comment/cancel" });
+    },
+  };
+  const opts = { github, allowLocalBase: true, profiles: { p: { account: "a@b.c", routines: {
+    "default#implementation": { trigger: "impl", token: "ki" },
+  } } }, accountEmail: "a@b.c", repoSlug: null,
+  fireRoutine: async () => ({ claude_code_session_id: "impl-1", claude_code_session_url: "https://sessions/impl-1" }),
+  now: () => new Date("2026-08-08T14:00:00Z"), random: () => "cancel1" };
+  const started = await runGauntletStart(root, "auth-login", opts);
+  const localRun = readGauntletLedger(root).runs[started.runId];
+  currentPr = { number: 91, url: "https://github.test/pr/91", title: "Login", state: "OPEN", isDraft: false,
+    mergeStateStatus: "CLEAN", headRefName: "gauntlet/auth", baseRefName: "main",
+    headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, checks: "passing", comments: [],
+    commits: [GAUNTLET_SHA_A], createdAt: "2026-08-08T14:01:00Z", updatedAt: "2026-08-08T14:01:00Z",
+    body: renderGauntletPrMarkers({ run: localRun, subjectType: "slice", key: "auth-login",
+      barMarkdown: localRun.frozen_bar_markdown, barSha256: localRun.bar_sha256 }) };
+
+  ancestryValid = false;
+  const brokenBase = await runGauntletStatus(root, started.runId, opts);
+  eq([brokenBase.state, brokenBase.canMerge, brokenBase.safeActions],
+    ["infrastructure_failure", false, ["restore_pr_history", "cancel_run"]],
+    "broken base ancestry is fail-closed but still exposes cancellation");
+  const cancelled = await runGauntletCancel(root, started.runId, { ...opts, confirm: true,
+    reason: "Human confirmed the implementation session is abandoned." });
+  eq([cancelled.state, cancelled.durable], ["cancelled", true], "a PR-backed cancellation is committed to GitHub");
+  ok(parseGauntletCancellationMarker(currentPr.comments[0].body), "the durable comment carries the exact cancellation protocol");
+  rmSync(join(root, ".roadmap-gauntlet-state.json"));
+  const recovered = await runGauntletStatus(root, started.runId, opts);
+  eq([recovered.state, recovered.run.cancelReason, recovered.run.cancelledViaGithub],
+    ["cancelled", "Human confirmed the implementation session is abandoned.", true],
+    "a fresh machine reconstructs the terminal cancellation and its reason");
+  ok(recovered.priorBaseAncestryFailure,
+    "valid cancellation overrides broken base ancestry while preserving the prior corruption diagnostic");
+  ancestryValid = true;
+  const savedClaims = new Map(cancellationClaims);
+  cancellationClaims.clear();
+  const missingClaim = await runGauntletStatus(root, started.runId, opts);
+  eq([missingClaim.state, missingClaim.canMerge, missingClaim.safeActions],
+    ["infrastructure_failure", false, ["restore_cancellation_record"]],
+    "a lead cancellation comment is non-authoritative without its protected claim");
+  for (const [key, value] of savedClaims) cancellationClaims.set(key, value);
+  const wrongActor = await runGauntletStatus(root, started.runId,
+    { ...opts, github: { ...github, viewerLogin: async () => "other-lead" } });
+  eq([wrongActor.state, wrongActor.safeActions], ["awaiting_critic", ["authenticate_frozen_lead"]],
+    "another identity cannot adopt a builder-authored PR's claimed cancellation authority");
+  currentPr.comments = currentPr.comments.filter((comment) => !parseGauntletCancellationMarker(comment.body));
+  const deletedRecord = await runGauntletStatus(root, started.runId, opts);
+  eq([deletedRecord.state, deletedRecord.canMerge, deletedRecord.safeActions],
+    ["infrastructure_failure", false, ["restore_cancellation_record"]],
+    "a surviving protected claim makes cancellation-comment deletion fail closed");
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("repair-history compare errors remain diagnostic and explicitly cancelable", async () => {
+  const root = gauntletLifecycleRepo();
+  let currentPr = null;
+  const claims = new Map();
+  const github = { assertAvailable: () => true, viewerLogin: async () => "roadmap-lead",
+    findPrByRun: async () => currentPr, findPrBySubject: async () => currentPr,
+    findOpenPrBySubject: async () => currentPr, getPr: async () => currentPr,
+    isAncestor: async (ancestor) => {
+      if (ancestor === GAUNTLET_SHA_B) throw new Error("compare API unavailable");
+      return true;
+    },
+    claimLaunch: async (key, sha) => {
+      const ref = `refs/heads/roadmap-gauntlet-locks/${key}`;
+      if (claims.has(key)) return { claimed: false, ref };
+      claims.set(key, { ref, sha }); return { claimed: true, ref };
+    },
+    getLaunchClaim: async (key) => claims.get(key) || null,
+    addComment: async (_number, body) => { currentPr.comments.push({ body, author: "roadmap-lead",
+      createdAt: "2026-08-08T15:02:00Z", updatedAt: "2026-08-08T15:02:00Z",
+      includesCreatedEdit: false, url: `https://github.test/comment/${currentPr.comments.length + 1}` }); } };
+  const opts = { github, allowLocalBase: true,
+    profiles: { p: { account: "a@b.c", routines: {
+      "default#implementation": { trigger: "impl", token: "ki" },
+    } } }, accountEmail: "a@b.c", repoSlug: null,
+    fireRoutine: async () => ({ claude_code_session_id: "impl-compare",
+      claude_code_session_url: "https://sessions/impl-compare" }) };
+  const started = await runGauntletStart(root, "auth-login", opts);
+  mutateGauntletLedger(root, (ledger) => {
+    ledger.runs[started.runId].launches.push({ key: "repair-throwing-compare", role: "repair",
+      round: 1, attempt: 1, expected_head: GAUNTLET_SHA_B, packet_sha256: "d".repeat(64),
+      status: "launched", created_at: "2026-08-08T15:01:00Z" });
+  });
+  const run = readGauntletLedger(root).runs[started.runId];
+  currentPr = { number: 93, state: "OPEN", isDraft: false, mergeStateStatus: "CLEAN",
+    headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRefName: "main", checks: "passing",
+    comments: [], commits: [GAUNTLET_SHA_A], createdAt: "2026-08-08T15:01:30Z",
+    body: renderGauntletPrMarkers({ run, subjectType: "slice", key: "auth-login",
+      barMarkdown: run.frozen_bar_markdown, barSha256: run.bar_sha256 }) };
+  const broken = await runGauntletStatus(root, started.runId, opts);
+  eq([broken.state, broken.safeActions],
+    ["infrastructure_failure", ["restore_pr_history", "cancel_run"]],
+    "a repair compare exception is converted into cancelable infrastructure state");
+  ok(broken.repairHistoryFailure.includes("compare API unavailable"),
+    "the original repair comparison diagnostic is retained");
+  const cancelled = await runGauntletCancel(root, started.runId, { ...opts, confirm: true,
+    reason: "Human confirmed the run should stop while the compare API is unavailable." });
+  eq([cancelled.state, cancelled.durable], ["cancelled", true],
+    "the compare exception cannot block a durable explicit cancellation");
+  const recovered = await runGauntletStatus(root, started.runId, opts);
+  eq(recovered.state, "cancelled", "valid cancellation overrides the repair-history infrastructure failure");
+  ok(recovered.priorRepairHistoryFailure.includes("compare API unavailable"),
+    "cancellation preserves the prior repair comparison diagnostic");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// WHY: recovered state becomes a new local immutable anchor after explicit confirmation.
+// Otherwise a later PR-body edit could silently change the bar/ceiling again.
+test("confirmed GitHub recovery re-freezes every immutable PR field", async () => {
+  const root = gauntletLifecycleRepo();
+  const graph = loadGraph(join(root, "docs", "roadmap", "roadmap.yaml"));
+  const node = flatten(graph).nodes.find((candidate) => candidate.invoke === "auth-login");
+  const base = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim();
+  const frozen = freezeQualityBar({ subjectType: "slice", key: "auth-login", node, graph, baseSha: base });
+  const run = { run_id: "gnt_auth_login_recovered_1", subject_type: "slice", subject_key: "auth-login",
+    base_sha: base, base_ref: "main", lead_actor: "roadmap-lead", bar_sha256: frozen.sha256,
+    frozen_bar_markdown: frozen.markdown, max_rounds: 2, critic_tier: null, repair_tier: null,
+    launches: [], reconstructed: true, recovered_bar_confirmed_at: "2026-08-08T13:00:00Z",
+    created_at: "2026-08-08T12:00:00Z", updated_at: "2026-08-08T13:00:00Z" };
+  mutateGauntletLedger(root, (ledger) => { ledger.runs[run.run_id] = run; });
+  const pr = { number: 7, state: "OPEN", isDraft: false, mergeStateStatus: "CLEAN",
+    headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRefName: "main", checks: "passing",
+    comments: [], commits: [GAUNTLET_SHA_A], createdAt: run.created_at,
+    body: renderGauntletPrMarkers({ run, subjectType: "slice", key: "auth-login", qualityBar: frozen }) };
+  const github = { assertAvailable: () => true, findPrByRun: async () => pr, isAncestor: async () => true };
+  eq((await runGauntletStatus(root, run.run_id, { github })).state, "awaiting_critic", "confirmed recovery is usable");
+  pr.body = renderGauntletPrMarkers({ run: { ...run, max_rounds: 3 }, subjectType: "slice", key: "auth-login", qualityBar: frozen });
+  await runGauntletStatus(root, run.run_id, { github }).then(
+    () => { throw new Error("post-confirmation drift should fail"); },
+    (error) => ok(error.message.includes("max rounds"), "confirmed recovered ceiling is immutable"),
+  );
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("fresh status fails closed on critic and repair claims whose lead attestations are missing", async () => {
+  for (const kind of ["critic", "repair"]) {
+    const root = gauntletLifecycleRepo();
+    const graph = loadGraph(join(root, "docs", "roadmap", "roadmap.yaml"));
+    const node = flatten(graph).nodes.find((candidate) => candidate.invoke === "auth-login");
+    const base = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim();
+    const frozen = freezeQualityBar({ subjectType: "slice", key: "auth-login", node, graph, baseSha: base });
+    const run = { run_id: `gnt_auth_login_${kind}_gap`, subject_type: "slice", subject_key: "auth-login",
+      base_sha: base, base_ref: "main", lead_actor: "roadmap-lead", bar_sha256: frozen.sha256,
+      frozen_bar_markdown: frozen.markdown, max_rounds: 2, critic_tier: null, repair_tier: null, launches: [] };
+    const claimRef = `refs/heads/roadmap-gauntlet-locks/test-${kind}`;
+    let cancellationClaim = null;
+    const pr = { number: 66, state: "OPEN", isDraft: false, mergeStateStatus: "CLEAN",
+      headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRefName: "main", checks: "passing",
+      comments: [], commits: [GAUNTLET_SHA_A], createdAt: "2026-08-08T12:00:00Z",
+      body: renderGauntletPrMarkers({ run, subjectType: "slice", key: "auth-login", qualityBar: frozen }) };
+    const github = { assertAvailable: () => true, viewerLogin: async () => "roadmap-lead",
+      findPrByRun: async () => pr, isAncestor: async () => true,
+      getLaunchClaim: async () => cancellationClaim,
+      listRunClaims: async () => [{ kind, ref: claimRef, sha: GAUNTLET_SHA_A }],
+      claimRef: () => claimRef };
+    const broken = await runGauntletStatus(root, run.run_id, { github });
+    eq([broken.state, broken.canMerge, broken.safeActions],
+      ["infrastructure_failure", false, ["reconcile_launch_attestation", "cancel_run"]],
+      `${kind} claim/comment crash gap is visible after local-ledger loss`);
+    cancellationClaim = { ref: `refs/heads/roadmap-gauntlet-locks/cancel-${kind}`, sha: base };
+    pr.comments.push({ body: renderGauntletCancellationMarker({ run,
+      reason: "Lead reconciled the missing launch attestation and abandoned the run." }),
+    author: "roadmap-lead", createdAt: "2026-08-08T12:00:30Z", updatedAt: "2026-08-08T12:00:30Z",
+    includesCreatedEdit: false, url: `https://github.test/comment/cancel-${kind}` });
+    const cancelled = await runGauntletStatus(root, run.run_id, { github });
+    eq([cancelled.state, cancelled.run.cancelledViaGithub], ["cancelled", true],
+      `a valid claim-backed cancellation can terminate a ${kind} attestation crash gap`);
+    cancellationClaim = null;
+    pr.comments = [];
+    const marker = kind === "critic"
+      ? renderGauntletLaunchMarker({ run, role: "critic", criticRole: "critic", round: 1,
+        attempt: 1, expectedHead: GAUNTLET_SHA_A, nonce: GAUNTLET_NONCE })
+      : renderGauntletLaunchMarker({ run, role: "repair", round: 1,
+        attempt: 1, expectedHead: GAUNTLET_SHA_A, packetSha256: "d".repeat(64) });
+    pr.comments.push({ body: marker, author: "roadmap-lead", createdAt: "2026-08-08T12:01:00Z",
+      updatedAt: "2026-08-08T12:01:00Z", includesCreatedEdit: false,
+      url: `https://github.test/comment/${kind}` });
+    const restored = await runGauntletStatus(root, run.run_id, { github });
+    ok(restored.state !== "infrastructure_failure", `${kind} recovers when claim and immutable lead attestation agree`);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("two independent conductors elect one initial implementer before any PR exists", async () => {
+  const rootA = gauntletLifecycleRepo();
+  const rootB = gauntletLifecycleRepo();
+  const baseline = "9".repeat(40);
+  const claims = new Set();
+  const github = { assertAvailable: () => true, viewerLogin: async () => "roadmap-lead",
+    findPrByRun: async () => null, findPrBySubject: async () => null, findOpenPrBySubject: async () => null,
+    claimLaunch: async (key) => {
+      const ref = `refs/roadmap-gauntlet-locks/${key}`;
+      if (claims.has(key)) return { claimed: false, ref };
+      claims.add(key); return { claimed: true, ref };
+    } };
+  let fires = 0;
+  const common = { github, allowLocalBase: true,
+    execImpl: (command, args, options) => command === "git" && args[0] === "rev-parse"
+      ? { status: 0, stdout: `${baseline}\n`, stderr: "" }
+      : spawnSync(command, args, options),
+    profiles: { p: { account: "a@b.c", routines: { "default#implementation": { trigger: "impl", token: "ki" } } } },
+    accountEmail: "a@b.c", repoSlug: null,
+    fireRoutine: async () => { fires++; return { claude_code_session_id: `impl-${fires}`,
+      claude_code_session_url: `https://sessions/impl-${fires}` }; } };
+  const results = await Promise.all([
+    runGauntletStart(rootA, "auth-login", common),
+    runGauntletStart(rootB, "auth-login", common),
+  ]);
+  eq(fires, 1, "the GitHub create-if-absent claim closes the cross-machine pre-PR blind window");
+  eq(results[0].runId, results[1].runId, "both machines converge on the deterministic subject/base/attempt run id");
+  eq(results.filter((result) => result.duplicate && result.remote).length, 1,
+    "the losing conductor reports the shared pending run without spending a Routine call");
+  rmSync(rootA, { recursive: true, force: true });
+  rmSync(rootB, { recursive: true, force: true });
+});
+
+test("a distributed implementation loser adopts only the confirmed winner protocol", async () => {
+  const rootA = gauntletLifecycleRepo();
+  const rootB = gauntletLifecycleRepo();
+  const rootC = gauntletLifecycleRepo();
+  const baseline = "9".repeat(40);
+  const claims = new Set();
+  const claimRecords = new Map();
+  let currentPr = null;
+  const github = { assertAvailable: () => true, viewerLogin: async () => "roadmap-lead",
+    findPrByRun: async () => currentPr, findPrBySubject: async () => currentPr,
+    findOpenPrBySubject: async () => currentPr && currentPr.state === "OPEN" ? currentPr : null,
+    getPr: async () => currentPr, isAncestor: async () => true,
+    claimRef: (key) => `refs/heads/roadmap-gauntlet-locks/${key}`,
+    listRunClaims: async () => [...claimRecords.values()],
+    claimLaunch: async (key, sha) => {
+      const ref = `refs/heads/roadmap-gauntlet-locks/${key}`;
+      if (claims.has(key)) return { claimed: false, ref };
+      claims.add(key);
+      const kind = key.startsWith("gauntlet:tombstone:") ? "tombstone"
+        : key.includes(":critic:") ? "critic"
+        : key.includes(":repair:") ? "repair" : "implementation";
+      claimRecords.set(key, { kind, ref, sha });
+      return { claimed: true, ref };
+    },
+    addComment: async (_number, body) => { currentPr.comments.push({ body, author: "roadmap-lead",
+      createdAt: "2026-08-08T11:03:00Z", updatedAt: "2026-08-08T11:03:00Z",
+      includesCreatedEdit: false, url: `https://github.test/comment/lead-${currentPr.comments.length + 1}` }); } };
+  const common = { github, allowLocalBase: true,
+    execImpl: (command, args, options) => command === "git" && args[0] === "rev-parse"
+      ? { status: 0, stdout: `${baseline}\n`, stderr: "" }
+      : spawnSync(command, args, options),
+    profiles: { p: { account: "a@b.c", routines: {
+      "default#implementation": { trigger: "impl", token: "ki" },
+      "default#critic": { trigger: "critic", token: "kc" },
+    } } }, accountEmail: "a@b.c", repoSlug: null,
+    fireRoutine: async (_routine, prompt) => ({ claude_code_session_id: prompt.includes("IMPLEMENTATION") ? "impl" : "critic",
+      claude_code_session_url: prompt.includes("IMPLEMENTATION") ? "https://sessions/impl" : "https://sessions/critic" }) };
+  const winner = await runGauntletStart(rootA, "auth-login", { ...common, maxRounds: 1,
+    additionalBar: "Winner bar." });
+  const loser = await runGauntletStart(rootB, "auth-login", { ...common, maxRounds: 2,
+    additionalBar: "Losing candidate bar." });
+  const cancellingLoser = await runGauntletStart(rootC, "auth-login", { ...common, maxRounds: 4,
+    additionalBar: "Another losing candidate bar." });
+  eq([loser.duplicate, loser.remote, loser.runId], [true, true, winner.runId],
+    "different candidate packets still elect one deterministic implementation run");
+  const winnerRun = readGauntletLedger(rootA).runs[winner.runId];
+  const losingRun = readGauntletLedger(rootB).runs[loser.runId];
+  const cancellingLoserRun = readGauntletLedger(rootC).runs[cancellingLoser.runId];
+  await runGauntletCancel(rootB, loser.runId, { ...common, confirm: true,
+    reason: "Cancel only this losing pre-election candidate." });
+  currentPr = { number: 73, state: "OPEN", isDraft: false, mergeStateStatus: "CLEAN",
+    headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRefName: "main", checks: "passing",
+    comments: [], commits: [GAUNTLET_SHA_A], createdAt: "2026-08-08T11:02:00Z",
+    body: renderGauntletPrMarkers({ run: winnerRun, subjectType: "slice", key: "auth-login",
+      barMarkdown: winnerRun.frozen_bar_markdown, barSha256: winnerRun.bar_sha256 }) };
+  const adopted = await runGauntletStatus(rootB, loser.runId, common);
+  eq([adopted.state, adopted.safeActions, adopted.run.barSha256],
+    ["awaiting_critic", ["confirm_recovered_bar"], winnerRun.bar_sha256],
+    "the loser discards its candidate packet and exposes the winner bar for explicit confirmation");
+  ok(adopted.state !== "cancelled",
+    "a tombstone derived from a different losing protocol cannot cancel the winning packet");
+  eq(readGauntletLedger(rootB).runs[loser.runId].bar_sha256, losingRun.bar_sha256,
+    "status remains read-only while presenting the winning protocol");
+  await runGauntletRepair(rootB, loser.runId, { ...common, expectedHead: GAUNTLET_SHA_A,
+    packet: "This must be rejected before protocol adoption." }).then(
+    () => { throw new Error("repair cannot adopt an unconfirmed remote winner"); },
+    (error) => ok(error.message.includes("awaiting_critic"), "repair rejects before persistence"),
+  );
+  eq(readGauntletLedger(rootB).runs[loser.runId].bar_sha256, losingRun.bar_sha256,
+    "a rejected repair leaves the losing candidate ledger untouched");
+  await runGauntletCritic(rootB, loser.runId, { ...common, expectedHead: GAUNTLET_SHA_A,
+    confirmRecoveredBar: true, github: { ...github, viewerLogin: async () => "other-lead" } }).then(
+    () => { throw new Error("wrong actor must not confirm the adopted winner bar"); },
+    (error) => ok(error.message.includes("before any recovered-bar confirmation or ledger write"),
+      "identity is checked before confirmation persistence"),
+  );
+  eq(readGauntletLedger(rootB).runs[loser.runId].recovered_bar_confirmed_at, undefined,
+    "wrong-actor confirmation leaves the losing ledger untouched");
+  await runGauntletCritic(rootB, loser.runId, { ...common, expectedHead: GAUNTLET_SHA_A,
+    confirmRecoveredBar: true, nonce: "8".repeat(32) });
+  const confirmed = readGauntletLedger(rootB).runs[loser.runId];
+  eq([confirmed.bar_sha256, confirmed.max_rounds, !!confirmed.recovered_bar_confirmed_at],
+    [winnerRun.bar_sha256, 1, true],
+    "the authenticated lead atomically replaces the loser packet with the confirmed winner protocol");
+  const cancelledWinner = await runGauntletCancel(rootC, cancellingLoser.runId, { ...common,
+    confirm: true, reason: "Explicitly abandon the remote winner without adopting its bar." });
+  eq([cancelledWinner.state, cancelledWinner.localCached], ["cancelled", false],
+    "cancellation can terminate an unconfirmed recovered winner without caching its protocol");
+  eq(readGauntletLedger(rootC).runs[cancellingLoser.runId].bar_sha256, cancellingLoserRun.bar_sha256,
+    "cancellation does not silently replace a losing candidate with an unconfirmed winner packet");
+  rmSync(rootA, { recursive: true, force: true });
+  rmSync(rootB, { recursive: true, force: true });
+  rmSync(rootC, { recursive: true, force: true });
+});
+
+test("a local conductor persists and retries another machine's invalid critic launch", async () => {
+  const root = gauntletLifecycleRepo();
+  let currentPr = null;
+  let fires = 0;
+  const claims = new Set();
+  const github = { assertAvailable: () => true, viewerLogin: async () => "roadmap-lead",
+    findPrByRun: async () => currentPr, findPrBySubject: async () => currentPr,
+    findOpenPrBySubject: async () => currentPr, getPr: async () => currentPr,
+    isAncestor: async () => true,
+    claimLaunch: async (key) => {
+      const ref = `refs/heads/roadmap-gauntlet-locks/${key}`;
+      if (claims.has(key)) return { claimed: false, ref };
+      claims.add(key); return { claimed: true, ref };
+    },
+    addComment: async (_number, body) => { currentPr.comments.push({ body, author: "roadmap-lead",
+      createdAt: "2026-08-08T11:20:00Z", updatedAt: "2026-08-08T11:20:00Z",
+      includesCreatedEdit: false, url: `https://github.test/comment/lead-${currentPr.comments.length + 1}` }); } };
+  const opts = { github, allowLocalBase: true,
+    profiles: { p: { account: "a@b.c", routines: {
+      "default#implementation": { trigger: "impl", token: "ki" },
+      "default#critic": { trigger: "critic", token: "kc" },
+    } } }, accountEmail: "a@b.c", repoSlug: null,
+    fireRoutine: async () => { fires++; return { claude_code_session_id: `s-${fires}`,
+      claude_code_session_url: `https://sessions/${fires}` }; } };
+  const started = await runGauntletStart(root, "auth-login", opts);
+  const run = readGauntletLedger(root).runs[started.runId];
+  const remoteNonce = "7".repeat(32);
+  const remoteLaunch = { body: renderGauntletLaunchMarker({ run, role: "critic",
+    criticRole: "critic", round: 1, attempt: 1, expectedHead: GAUNTLET_SHA_A,
+    nonce: remoteNonce }), author: "roadmap-lead", createdAt: "2026-08-08T11:10:00Z",
+    updatedAt: "2026-08-08T11:10:00Z", includesCreatedEdit: false,
+    url: "https://github.test/comment/remote-launch" };
+  const invalid = { body: renderCriticMarker({ run, criticRole: "critic", round: 1,
+    head: GAUNTLET_SHA_A, nonce: remoteNonce, verdict: "INVALID_OR_STALE" }),
+    author: "critic-worker", createdAt: "2026-08-08T11:11:00Z",
+    updatedAt: "2026-08-08T11:11:00Z", includesCreatedEdit: false,
+    url: "https://github.test/comment/remote-invalid" };
+  const ack = { body: renderGauntletVerdictAck({ run, comment: invalid }), author: "roadmap-lead",
+    createdAt: "2026-08-08T11:12:00Z", updatedAt: "2026-08-08T11:12:00Z",
+    includesCreatedEdit: false, url: "https://github.test/comment/remote-invalid-ack" };
+  currentPr = { number: 74, state: "OPEN", isDraft: false, mergeStateStatus: "CLEAN",
+    headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRefName: "main", checks: "passing",
+    comments: [remoteLaunch, invalid, ack], commits: [GAUNTLET_SHA_A],
+    createdAt: "2026-08-08T11:05:00Z",
+    body: renderGauntletPrMarkers({ run, subjectType: "slice", key: "auth-login",
+      barMarkdown: run.frozen_bar_markdown, barSha256: run.bar_sha256 }) };
+  eq((await runGauntletStatus(root, started.runId, opts)).state, "awaiting_critic",
+    "the authenticated remote INVALID result permits a fresh attempt");
+  const retry = await runGauntletCritic(root, started.runId, { ...opts,
+    expectedHead: GAUNTLET_SHA_A, nonce: "6".repeat(32) });
+  eq([retry.round, fires], [1, 2], "the local conductor launches exactly one attempt-two critic");
+  const criticReceipts = readGauntletLedger(root).runs[started.runId].launches
+    .filter((launch) => launch.role === "critic");
+  eq(criticReceipts.map((launch) => [launch.attempt, launch.status]),
+    [[1, "invalid_result"], [2, "launched"]],
+    "the remote lead attestation is upserted before its retry receipt is mutated");
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("ledger-loss recovery advances past two acknowledged invalid critic attempts", async () => {
+  const root = gauntletLifecycleRepo();
+  let currentPr = null;
+  let fires = 0;
+  const claims = new Set();
+  const github = { assertAvailable: () => true, viewerLogin: async () => "roadmap-lead",
+    findPrByRun: async () => currentPr, findPrBySubject: async () => currentPr,
+    findOpenPrBySubject: async () => currentPr, getPr: async () => currentPr,
+    isAncestor: async () => true,
+    claimLaunch: async (key) => {
+      const ref = `refs/heads/roadmap-gauntlet-locks/${key}`;
+      if (claims.has(key)) return { claimed: false, ref };
+      claims.add(key); return { claimed: true, ref };
+    },
+    addComment: async (_number, body) => { currentPr.comments.push({ body, author: "roadmap-lead",
+      createdAt: "2026-08-08T12:20:00Z", updatedAt: "2026-08-08T12:20:00Z",
+      includesCreatedEdit: false, url: `https://github.test/comment/lead-${currentPr.comments.length + 1}` }); } };
+  const opts = { github, allowLocalBase: true,
+    profiles: { p: { account: "a@b.c", routines: {
+      "default#implementation": { trigger: "impl", token: "ki" },
+      "default#critic": { trigger: "critic", token: "kc" },
+    } } }, accountEmail: "a@b.c", repoSlug: null,
+    fireRoutine: async () => { fires++; return { claude_code_session_id: `s-${fires}`,
+      claude_code_session_url: `https://sessions/${fires}` }; } };
+  const started = await runGauntletStart(root, "auth-login", opts);
+  const run = readGauntletLedger(root).runs[started.runId];
+  const comments = [];
+  for (const [attempt, nonce, minute] of [[1, "7".repeat(32), 10], [2, "6".repeat(32), 13]]) {
+    comments.push({ body: renderGauntletLaunchMarker({ run, role: "critic",
+      criticRole: "critic", round: 1, attempt, expectedHead: GAUNTLET_SHA_A, nonce }),
+    author: "roadmap-lead", createdAt: `2026-08-08T12:${minute}:00Z`,
+    updatedAt: `2026-08-08T12:${minute}:00Z`, includesCreatedEdit: false,
+    url: `https://github.test/comment/launch-${attempt}` });
+    const invalid = { body: renderCriticMarker({ run, criticRole: "critic", round: 1,
+      head: GAUNTLET_SHA_A, nonce, verdict: "INVALID_OR_STALE" }), author: "critic-worker",
+    createdAt: `2026-08-08T12:${minute + 1}:00Z`, updatedAt: `2026-08-08T12:${minute + 1}:00Z`,
+    includesCreatedEdit: false, url: `https://github.test/comment/invalid-${attempt}` };
+    comments.push(invalid, { body: renderGauntletVerdictAck({ run, comment: invalid }),
+      author: "roadmap-lead", createdAt: `2026-08-08T12:${minute + 2}:00Z`,
+      updatedAt: `2026-08-08T12:${minute + 2}:00Z`, includesCreatedEdit: false,
+      url: `https://github.test/comment/ack-${attempt}` });
+  }
+  currentPr = { number: 75, state: "OPEN", isDraft: false, mergeStateStatus: "CLEAN",
+    headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRefName: "main", checks: "passing",
+    comments, commits: [GAUNTLET_SHA_A], createdAt: "2026-08-08T12:05:00Z",
+    body: renderGauntletPrMarkers({ run, subjectType: "slice", key: "auth-login",
+      barMarkdown: run.frozen_bar_markdown, barSha256: run.bar_sha256 }) };
+  rmSync(join(root, ".roadmap-gauntlet-state.json"));
+  eq((await runGauntletStatus(root, started.runId, opts)).state, "awaiting_critic",
+    "two acknowledged invalid attempts remain retryable after total ledger loss");
+  const third = await runGauntletCritic(root, started.runId, { ...opts,
+    expectedHead: GAUNTLET_SHA_A, nonce: "5".repeat(32) });
+  eq([third.round, fires], [1, 2], "recovery launches exactly one attempt-three critic");
+  const receipts = readGauntletLedger(root).runs[started.runId].launches
+    .filter((launch) => launch.role === "critic");
+  eq(receipts.map((launch) => [launch.attempt, launch.status]),
+    [[1, "invalid_result"], [2, "invalid_result"], [3, "launched"]],
+    "attempt plus nonce proof identifies and retires both recovered receipts independently");
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("a ledgerless conductor advances past a closed same-base implementation attempt", async () => {
+  const root = gauntletLifecycleRepo();
+  const graph = loadGraph(join(root, "docs", "roadmap", "roadmap.yaml"));
+  const node = flatten(graph).nodes.find((candidate) => candidate.invoke === "auth-login");
+  const base = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim();
+  const frozen = freezeQualityBar({ subjectType: "slice", key: "auth-login", node, graph, baseSha: base });
+  const firstRunId = implementationRunId({ subjectType: "slice", key: "auth-login", baseSha: base, attempt: 1 });
+  eq(implementationAttemptForRunId({ subjectType: "slice", key: "auth-login", baseSha: base,
+    runId: firstRunId }), 1, "the deterministic run identity reveals its bounded attempt ordinal");
+  const firstRun = { run_id: firstRunId, subject_type: "slice", subject_key: "auth-login",
+    base_sha: base, base_ref: "main", lead_actor: "roadmap-lead", bar_sha256: frozen.sha256,
+    frozen_bar_markdown: frozen.markdown, max_rounds: 2, critic_tier: null, repair_tier: null,
+    launches: [], created_at: "2026-08-08T10:00:00Z", updated_at: "2026-08-08T11:00:00Z" };
+  const closedPr = { number: 17, state: "CLOSED", baseRefName: "main", currentHead: GAUNTLET_SHA_A,
+    comments: [], commits: [GAUNTLET_SHA_A], createdAt: firstRun.created_at,
+    body: renderGauntletPrMarkers({ run: firstRun, subjectType: "slice", key: "auth-login",
+      qualityBar: frozen }) };
+  let claimedKey = null;
+  const github = { assertAvailable: () => true, viewerLogin: async () => "roadmap-lead",
+    findOpenPrBySubject: async () => null, findPrBySubject: async () => closedPr,
+    claimLaunch: async (key, sha, runId) => { claimedKey = key; return { claimed: true,
+      ref: `refs/heads/roadmap-gauntlet-locks/${runId}-${sha}` }; } };
+  const result = await runGauntletStart(root, "auth-login", { github, allowLocalBase: true,
+    profiles: { p: { account: "a@b.c", routines: {
+      "default#implementation": { trigger: "impl", token: "ki" },
+    } } }, accountEmail: "a@b.c", repoSlug: null,
+    fireRoutine: async () => ({ claude_code_session_id: "impl-2",
+      claude_code_session_url: "https://sessions/impl-2" }) });
+  eq(result.runId, implementationRunId({ subjectType: "slice", key: "auth-login", baseSha: base,
+    attempt: 2 }), "closed GitHub history advances a fresh machine to attempt two");
+  ok(claimedKey.endsWith(":attempt:2"), "the new launch cannot collide with the protected first-attempt claim");
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("implementation ruleset preflight fails before reservation and is retryable after configuration", async () => {
+  const root = gauntletLifecycleRepo();
+  let protectedClaims = false;
+  let fires = 0;
+  const github = { assertAvailable: () => true, viewerLogin: async () => "roadmap-lead",
+    findPrByRun: async () => null, findPrBySubject: async () => null, findOpenPrBySubject: async () => null,
+    assertClaimProtection: async () => {
+      if (!protectedClaims) throw new Error("missing creation, update");
+    },
+    claimLaunch: async () => ({ claimed: true, ref: "refs/heads/roadmap-gauntlet-locks/test" }) };
+  const opts = { github, allowLocalBase: true,
+    profiles: { p: { account: "a@b.c", routines: { "default#implementation": { trigger: "impl", token: "ki" } } } },
+    accountEmail: "a@b.c", repoSlug: null,
+    fireRoutine: async () => { fires++; return { claude_code_session_id: "impl-safe",
+      claude_code_session_url: "https://sessions/impl-safe" }; } };
+  await runGauntletStart(root, "auth-login", opts).then(
+    () => { throw new Error("unsafe rules must block start"); },
+    (error) => ok(error.message.includes("no local reservation") && error.message.includes("retry is safe"),
+      "ruleset failure is explicitly pre-reservation"),
+  );
+  eq([Object.keys(readGauntletLedger(root).runs).length, fires], [0, 0],
+    "unsafe protection leaves no ghost run and spends no Routine");
+  protectedClaims = true;
+  const started = await runGauntletStart(root, "auth-login", opts);
+  eq([started.state, fires], ["awaiting_pr", 1], "the same start succeeds after protection is configured");
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("two independent conductors elect exactly one GitHub launch-lock winner", async () => {
+  const rootA = gauntletLifecycleRepo();
+  const rootB = gauntletLifecycleRepo();
+  const graph = loadGraph(join(rootA, "docs", "roadmap", "roadmap.yaml"));
+  const node = flatten(graph).nodes.find((candidate) => candidate.invoke === "auth-login");
+  const base = spawnSync("git", ["rev-parse", "HEAD"], { cwd: rootA, encoding: "utf8" }).stdout.trim();
+  const frozen = freezeQualityBar({ subjectType: "slice", key: "auth-login", node, graph, baseSha: base });
+  const run = { run_id: "gnt_auth_login_distributed_1", subject_type: "slice", subject_key: "auth-login",
+    base_sha: base, base_ref: "main", lead_actor: "roadmap-lead", bar_sha256: frozen.sha256,
+    frozen_bar_markdown: frozen.markdown, max_rounds: 2, critic_tier: null, repair_tier: null, launches: [] };
+  const pr = { number: 88, state: "OPEN", isDraft: false, mergeStateStatus: "CLEAN",
+    headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRefName: "main", checks: "passing",
+    comments: [], commits: [GAUNTLET_SHA_A], createdAt: "2026-08-08T12:00:00Z",
+    body: renderGauntletPrMarkers({ run, subjectType: "slice", key: "auth-login", qualityBar: frozen }) };
+  const claims = new Set();
+  const leadTimes = ["2026-08-08T12:01:00Z", "2026-08-08T12:03:00Z",
+    "2026-08-08T12:04:00Z", "2026-08-08T12:06:00Z"];
+  const github = { assertAvailable: () => true, viewerLogin: async () => "roadmap-lead",
+    findPrByRun: async () => pr, getPr: async () => pr, isAncestor: async () => true,
+    claimLaunch: async (key) => {
+      const ref = `refs/roadmap-gauntlet-locks/${key}`;
+      if (claims.has(key)) return { claimed: false, ref };
+      claims.add(key); return { claimed: true, ref };
+    },
+    addComment: async (_number, body) => { pr.comments.push({ body, author: "roadmap-lead",
+      createdAt: leadTimes.shift(), includesCreatedEdit: false,
+      url: `https://github.test/comment/lead-${pr.comments.length + 1}` }); } };
+  let fires = 0;
+  const common = { github, confirmRecoveredBar: true, expectedHead: GAUNTLET_SHA_A,
+    profiles: { p: { account: "a@b.c", routines: { "default#critic": { trigger: "critic", token: "kc" } } } },
+    accountEmail: "a@b.c", repoSlug: null, now: () => new Date("2026-08-08T12:00:30Z"),
+    fireRoutine: async () => { fires++; return { claude_code_session_id: `s${fires}`, claude_code_session_url: `https://sessions/${fires}` }; } };
+  await runGauntletCritic(rootA, run.run_id, { ...common,
+    github: { ...github, viewerLogin: async () => "other-lead" }, nonce: "d".repeat(32) }).then(
+    () => { throw new Error("wrong lead identity must fail before the distributed claim"); },
+    (error) => ok(error.message.includes("no GitHub launch lock was claimed"), "identity failure is retry-safe"),
+  );
+  eq([claims.size, fires], [0, 0], "an unauthorized conductor cannot consume the one-shot remote lock");
+  const results = await Promise.all([
+    runGauntletCritic(rootA, run.run_id, { ...common, nonce: "e".repeat(32) }),
+    runGauntletCritic(rootB, run.run_id, { ...common, nonce: "f".repeat(32) }),
+  ]);
+  eq(fires, 1, "the atomic remote ref prevents double Routine spend across machine-local ledgers");
+  eq(results.filter((result) => result.duplicate).length, 1, "the losing conductor returns a remote duplicate result");
+  const firstLaunch = parseGauntletLaunchMarker(pr.comments.find((comment) => parseGauntletLaunchMarker(comment.body)).body);
+  const firstNonce = ["e".repeat(32), "f".repeat(32)].find((nonce) =>
+    createHash("sha256").update(nonce).digest("hex") === firstLaunch.nonceSha256);
+  const invalidBody = renderCriticMarker({ run, criticRole: "critic", round: 1, head: GAUNTLET_SHA_A,
+    nonce: firstNonce, verdict: "INVALID_OR_STALE" });
+  pr.comments.push(
+    { body: invalidBody, author: "critic-worker", createdAt: "2026-08-08T12:02:00Z",
+      updatedAt: "2026-08-08T12:02:00Z", url: "https://github.test/comment/invalid-1" },
+    { body: invalidBody, author: "critic-worker", createdAt: "2026-08-08T12:02:01Z",
+      updatedAt: "2026-08-08T12:02:01Z", url: "https://github.test/comment/invalid-2" },
+  );
+  await runGauntletAcknowledge(rootA, run.run_id, { ...common,
+    commentUrl: "https://github.test/comment/invalid-1", confirm: true });
+  const retries = await Promise.all([
+    runGauntletCritic(rootA, run.run_id, { ...common, nonce: "1".repeat(32) }),
+    runGauntletCritic(rootB, run.run_id, { ...common, nonce: "2".repeat(32) }),
+  ]);
+  eq(fires, 2, "duplicate INVALID comments derive one durable attempt number and elect one retry");
+  eq(retries.filter((result) => result.duplicate).length, 1, "the retry race still has one remote loser");
+  const launchComments = pr.comments.map((comment) => parseGauntletLaunchMarker(comment.body)).filter(Boolean);
+  eq(launchComments.map((marker) => marker.attempt), [1, 2], "durable launch attempts form a stable sequence");
+  const retryNonce = ["1".repeat(32), "2".repeat(32)].find((nonce) =>
+    createHash("sha256").update(nonce).digest("hex") === launchComments[1].nonceSha256);
+  pr.comments.push({ body: renderCriticMarker({ run, criticRole: "critic", round: 1,
+    head: GAUNTLET_SHA_A, nonce: retryNonce, verdict: "PASS" }),
+  author: "critic-worker", createdAt: "2026-08-08T12:05:00Z", updatedAt: "2026-08-08T12:05:00Z",
+  url: "https://github.test/comment/retry-pass" });
+  await runGauntletAcknowledge(rootB, run.run_id, { ...common,
+    commentUrl: "https://github.test/comment/retry-pass", confirm: true });
+  eq([(await runGauntletStatus(rootA, run.run_id, common)).state,
+    (await runGauntletStatus(rootB, run.run_id, common)).state], ["passed", "passed"],
+  "winner and loser ledgers converge on the same attested GitHub PASS");
+  rmSync(rootA, { recursive: true, force: true });
+  rmSync(rootB, { recursive: true, force: true });
+});
+
+test("Gauntlet start honors cycle election and any open roadmap PR lock", async () => {
+  const root = gauntletLifecycleRepo();
+  const yamlPath = join(root, "docs", "roadmap", "roadmap.yaml");
+  writeFileSync(yamlPath, readFileSync(yamlPath, "utf8")
+    .replace("  default_gate: npm test", "  default_gate: npm test\n  linear:\n    team: ENG\n    cycles: on")
+    .replace("        status: next", "        status: scheduled"), "utf8");
+  let asserted = 0;
+  const github = { assertAvailable: () => { asserted++; }, findOpenPrBySubject: async () => null,
+    viewerLogin: async () => "roadmap-lead", findPrByRun: async () => null, findPrBySubject: async () => null };
+  await runGauntletStart(root, "auth-login", { github }).then(
+    () => { throw new Error("out-of-cycle start should refuse"); },
+    (error) => ok(error.message.includes("out of the current cycle"), "cycle lock is enforced before GitHub/Routine spend"),
+  );
+  eq(asserted, 0, "cycle refusal performs no remote work");
+  const oneShot = { number: 99, state: "OPEN", body: "roadmap: slice=auth-login" };
+  github.findOpenPrBySubject = async () => oneShot;
+  const duplicate = await runGauntletStart(root, "auth-login", { github, force: true });
+  eq([duplicate.duplicate, duplicate.state], [true, "existing_pr"], "a low-level one-shot PR blocks a competing Gauntlet start");
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("Gauntlet ledger lock fails closed with actionable owner metadata", () => {
+  const root = gauntletLifecycleRepo();
+  writeFileSync(join(root, ".roadmap-gauntlet-state.lock"), JSON.stringify({ pid: 4242, host: "lead-host", created_at: "2026-08-08T12:00:00Z" }));
+  throws(() => mutateGauntletLedger(root, () => {}), "pid 4242 on lead-host", "lock collision identifies the owner");
+  throws(() => mutateGauntletLedger(root, () => {}), "remove .roadmap-gauntlet-state.lock manually", "stale recovery is explicit and never racy auto-delete");
+  rmSync(root, { recursive: true, force: true });
 });
 
 await Promise.all(pending);

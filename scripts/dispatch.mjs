@@ -24,6 +24,11 @@ import { runSync, postDispatchComment } from "./linear.mjs";
 import { linearState, linearStatusLine, machineFooter, normalizeLinearConfig } from "./lib/linear-core.mjs";
 import { outOfCycle } from "./lib/cycle-core.mjs";
 import { resolveProvider } from "./lib/dispatch-providers.mjs";
+import { parseRoadmapMarker, renderRoadmapMarker } from "./lib/pr-identity.mjs";
+import {
+  cloudProviderCapabilities, diagnoseCodexCloud, launchCodexCloud,
+  normalizeCloudProvider, resolveCodexEnvironment,
+} from "./lib/cloud-agent-providers.mjs";
 
 export const DISPATCH_AGENTS = { claude: "@Claude", codex: "@Codex", oz: "@Oz" };
 
@@ -40,14 +45,20 @@ export const DISPATCH_AGENTS = { claude: "@Claude", codex: "@Codex", oz: "@Oz" }
 // slices that need judgment, not just execution. A requested tier that isn't configured
 // THROWS rather than silently downgrading: the slice asked for frontier intelligence, and a
 // quiet fallback to the standard tier is exactly the kind of silent failure that erodes trust.
-export function resolveRoutine({ env = {}, profiles = null, accountEmail = null, repoSlug = null, tier = null } = {}) {
+export function resolveRoutine({ env = {}, profiles = null, accountEmail = null, repoSlug = null, tier = null, role = null, profile = null } = {}) {
   if (env.CLAUDE_ROUTINE_TRIGGER && env.CLAUDE_ROUTINE_TOKEN) {
-    return { trigger: env.CLAUDE_ROUTINE_TRIGGER, token: env.CLAUDE_ROUTINE_TOKEN, source: "env" };
+    if (role && env.CLAUDE_ROUTINE_ROLE !== role) {
+      throw new Error(`generic Routine env override is not attested for Gauntlet role ${role} — set CLAUDE_ROUTINE_ROLE=${role}, or use a role-aware routines profile`);
+    }
+    if (tier && env.CLAUDE_ROUTINE_TIER !== tier) {
+      throw new Error(`generic Routine env override is not attested for tier ${tier} — set CLAUDE_ROUTINE_TIER=${tier}, or use a tiered routines profile; requested tiers never silently downgrade`);
+    }
+    return { trigger: env.CLAUDE_ROUTINE_TRIGGER, token: env.CLAUDE_ROUTINE_TOKEN, source: "env", role: role || null, tier: tier || null };
   }
   if (!profiles || !Object.keys(profiles).length) {
     throw new Error("no claude-cloud routine configured — set CLAUDE_ROUTINE_TRIGGER + CLAUDE_ROUTINE_TOKEN, or create ~/.claude-routines.json (docs/DEPLOYMENT.md § Cloud dispatch)");
   }
-  let label = env.CLAUDE_ROUTINE_PROFILE || null;
+  let label = profile || env.CLAUDE_ROUTINE_PROFILE || null;
   let entry = label ? profiles[label] : null;
   if (label && !entry) throw new Error(`CLAUDE_ROUTINE_PROFILE "${label}" not in the routines file (profiles: ${Object.keys(profiles).join(", ")})`);
   if (!entry) {
@@ -57,18 +68,30 @@ export function resolveRoutine({ env = {}, profiles = null, accountEmail = null,
     [label, entry] = found;
   }
   const routines = entry.routines || {};
-  if (tier) {
-    const rt = (repoSlug && routines[`${repoSlug}#${tier}`]) || routines[`default#${tier}`];
-    if (!rt || !rt.trigger || !rt.token) {
-      throw new Error(`profile "${label}" has no "${tier}"-tier routine for ${repoSlug || "(unknown repo)"} — add routines["${repoSlug || "owner/repo"}#${tier}"] (or routines["default#${tier}"]) { trigger, token }; a ${tier}-tier dispatch never silently falls back to the standard routine`);
+  const scope = repoSlug || "default";
+  // Role-aware keys are more specific than the legacy repo/tier keys, while the latter
+  // remain valid so existing installations can adopt Gauntlet without reconfiguring first.
+  // A requested tier only considers tiered keys: falling through to an untiered role/base
+  // would silently downgrade the requested intelligence.
+  const candidates = tier
+    ? [
+        ...(role ? [`${scope}#${role}#${tier}`, `default#${role}#${tier}`] : []),
+        `${scope}#${tier}`, `default#${tier}`,
+      ]
+    : [
+        ...(role ? [`${scope}#${role}`, `default#${role}`] : []),
+        scope, "default",
+      ];
+  const key = candidates.find((k, i) => candidates.indexOf(k) === i && routines[k] && routines[k].trigger && routines[k].token);
+  if (!key) {
+    if (tier) {
+      const roleHint = role ? ` (role ${role})` : "";
+      throw new Error(`profile "${label}" has no "${tier}"-tier routine${roleHint} for ${repoSlug || "(unknown repo)"} — add one of ${candidates.map((k) => `routines["${k}"]`).join(" or ")} { trigger, token }; a ${tier}-tier dispatch never silently falls back to the standard routine`);
     }
-    return { trigger: rt.trigger, token: rt.token, source: `profile:${label}:${repoSlug && routines[`${repoSlug}#${tier}`] ? repoSlug : "default"}#${tier}`, account: entry.account };
+    throw new Error(`profile "${label}" has no${role ? ` ${role}-role` : ""} routine for ${repoSlug || "(unknown repo)"} and no default — add one of ${candidates.map((k) => `routines["${k}"]`).join(" or ")} { trigger, token }`);
   }
-  const r = (repoSlug && routines[repoSlug]) || routines.default;
-  if (!r || !r.trigger || !r.token) {
-    throw new Error(`profile "${label}" has no routine for ${repoSlug || "(unknown repo)"} and no default — add routines["${repoSlug || "owner/repo"}"] or routines.default { trigger, token }`);
-  }
-  return { trigger: r.trigger, token: r.token, source: `profile:${label}${repoSlug && routines[repoSlug] ? `:${repoSlug}` : ":default"}`, account: entry.account };
+  const r = routines[key];
+  return { trigger: r.trigger, token: r.token, source: `profile:${label}:${key}`, account: entry.account, role: role || null };
 }
 
 // The currently AUTHED claude.ai account email (from the CLI's own config) — the hot-swap key.
@@ -140,7 +163,7 @@ export function resolveInFlightWindowMs({ override = null, meta = null } = {}) {
 }
 
 export function markerFor({ type, key }) {
-  return `roadmap: ${type}=${key}`;
+  return renderRoadmapMarker({ type, key });
 }
 
 export function checkInFlightDispatch({ type, key, listOpenPrs, now = Date.now, windowMs = DEFAULT_IN_FLIGHT_WINDOW_MS } = {}) {
@@ -159,19 +182,12 @@ export function checkInFlightDispatch({ type, key, listOpenPrs, now = Date.now, 
   if (!Array.isArray(prs) || prs.length === 0) return null;
 
   const cutoff = now() - windowMs;
-  // The marker is a whole line in the fired session's PR body — require an
-  // end boundary so a substring-adjacent key ('auth-login' vs 'auth-login-x')
-  // does not false-positive. The end anchor is any non-alphanumeric character
-  // OR end-of-string; the identifier grammar is [a-zA-Z0-9_-] so a `-` in the
-  // real marker suffix is treated as identifier continuation, which is right.
-  // A trailing dash is legal in slice keys, so tie the boundary to the
-  // char AFTER the marker: word-char (alphanumeric/underscore) OR a bare `-`
-  // between two word-chars extends the match. Simpler: escape the marker
-  // and check with a per-body regex that pins the tail to a non-identifier.
-  const escaped = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const markerRe = new RegExp(`${escaped}(?![A-Za-z0-9_-])`);
   const recent = prs
-    .filter((pr) => pr && pr.body && markerRe.test(pr.body))
+    .filter((pr) => {
+      if (!pr || typeof pr.body !== "string") return false;
+      const parsed = parseRoadmapMarker(pr.body);
+      return parsed && parsed.type === type && parsed.key === key;
+    })
     .filter((pr) => {
       const ts = Date.parse(pr.createdAt || pr.created_at || "");
       return Number.isFinite(ts) && ts >= cutoff;
@@ -262,7 +278,12 @@ export async function fireRoutine(routine, text, fetchImpl = fetch) {
       : res.status === 404 ? " — trigger id wrong, routine deleted, or the beta shape changed" : "";
     throw new Error(`routine fire HTTP ${res.status}${hint} (beta API — check code.claude.com/docs/en/routines)`);
   }
-  return await res.json();   // { claude_code_session_id, claude_code_session_url }
+  const payload = await res.json();
+  if (!payload || typeof payload.claude_code_session_id !== "string" || !payload.claude_code_session_id.trim()
+    || typeof payload.claude_code_session_url !== "string" || !payload.claude_code_session_url.trim()) {
+    throw new Error("routine fire returned a malformed success payload (missing session id/url); the POST outcome is ambiguous");
+  }
+  return payload;
 }
 
 export async function runDispatch(root, key, opts = {}) {
@@ -285,7 +306,7 @@ export async function runDispatch(root, key, opts = {}) {
   // Cycle lock (slices only — backlog is erratic work by design, grab stays unguarded): with
   // cycles on, out-of-cycle work doesn't dispatch. --force is the logged escape hatch; the
   // launch surfaces as scope change on Linear's cycle graph either way.
-  if (found.type === "slice" && !opts.force && outOfCycle(normalizeLinearConfig(found.graph.meta || {}), found.status)) {
+  if (found.type === "slice" && !opts.force && !opts.forceCycle && outOfCycle(normalizeLinearConfig(found.graph.meta || {}), found.status)) {
     throw new Error(`'${key}' is out of the current cycle (status ${found.status}) — elect it first ('roadmap cycle plan', then 'roadmap cycle lock --promote ${key}'), or re-run with --force to override the cycle lock.`);
   }
 
@@ -295,13 +316,16 @@ export async function runDispatch(root, key, opts = {}) {
   // apart from `roadmap dispatch`. --force is the logged escape hatch; use
   // opts.skipInFlightCheck internally to disable in tests. See
   // DEFAULT_IN_FLIGHT_WINDOW_MS for the recency call.
-  if (!opts.force && !opts.skipInFlightCheck) {
+  if (!opts.force && !opts.forceDuplicate && !opts.skipInFlightCheck) {
     // Resolve the provider (github/gitlab/git-native/none) and only run the
     // check if the adapter is actually usable. On unusable providers, degrade
     // to "no protection" silently at the dispatch layer — `roadmap doctor`
     // reports the reason, so a user who wants the check knows why they're
     // not getting it without every dispatch paying a stderr line.
-    const listOpenPrs = opts.listOpenPrs || providerListOpenPrs({ root, meta: found.graph.meta, provider: opts.provider });
+    // `provider` names the cloud worker here; the duplicate lock has a
+    // separate Git-host adapter namespace (meta.dispatch.provider). Never let
+    // `--provider codex` accidentally disable GitHub/GitLab protection.
+    const listOpenPrs = opts.listOpenPrs || providerListOpenPrs({ root, meta: found.graph.meta, provider: opts.lockProvider || null });
     if (listOpenPrs) {
       const inFlight = checkInFlightDispatch({
         type: found.type,
@@ -320,18 +344,17 @@ export async function runDispatch(root, key, opts = {}) {
     }
   }
 
-  // ── claude-cloud: fire a Claude Code cloud session directly (NO Linear required) ──
-  if (to === "claude-cloud") {
+  // ── remote cloud agents: no local worktree or fanout path ──────────────────
+  // `--provider` is the new explicit spelling. Keep --to claude-cloud byte-for-
+  // byte compatible; --to codex remains the old Linear mention transport.
+  const legacyLinearTarget = !!DISPATCH_AGENTS[to] && !opts.provider;
+  const requestedCloudProvider = legacyLinearTarget ? null
+    : (opts.provider || (to === "claude-cloud" || to === "codex-cloud" ? to : null)
+      || (found.graph.meta && found.graph.meta.dispatch && found.graph.meta.dispatch.default_provider) || "claude");
+  if (requestedCloudProvider) {
+    const provider = normalizeCloudProvider(requestedCloudProvider);
     // Tier precedence: explicit --tier beats the node's declared dispatch_tier (the human is
     // overriding for this one launch); the node's field is the durable routing.
-    const tier = opts.tier || found.tier || null;
-    const routine = resolveRoutine({
-      env,
-      profiles: opts.profiles !== undefined ? opts.profiles : loadRoutineProfiles(env),
-      accountEmail: opts.accountEmail !== undefined ? opts.accountEmail : currentClaudeAccount(),
-      repoSlug: opts.repoSlug !== undefined ? opts.repoSlug : repoSlugOf(root),
-      tier,
-    });
     const text = [
       machineFooter({ type: found.type, key }, null),
       "",
@@ -341,14 +364,37 @@ export async function runDispatch(root, key, opts = {}) {
       ` 'roadmap: ${found.type}=${key}' (that line is how the roadmap reconciles cloud PRs). NEVER merge.` +
       " Leftovers go to the BACKLOG ONLY — never new sprints or PIs (YAGNI applies to captures).",
     ].join("\n");
-    const fired = await fireRoutine(routine, text, opts.fetchImpl || fetch);
-    const result = { dispatched: key, transport: "claude-cloud", routine: routine.source,
-      sessionId: fired.claude_code_session_id, sessionUrl: fired.claude_code_session_url };
+    let result;
+    if (provider === "claude") {
+      const tier = opts.tier || found.tier || null;
+      const routine = resolveRoutine({
+        env,
+        profiles: opts.profiles !== undefined ? opts.profiles : loadRoutineProfiles(env),
+        accountEmail: opts.accountEmail !== undefined ? opts.accountEmail : currentClaudeAccount(),
+        repoSlug: opts.repoSlug !== undefined ? opts.repoSlug : repoSlugOf(root),
+        tier,
+      });
+      const fired = await fireRoutine(routine, text, opts.fetchImpl || fetch);
+      result = { dispatched: key, transport: "claude-cloud", provider, routine: routine.source,
+        externalId: fired.claude_code_session_id, externalUrl: fired.claude_code_session_url,
+        sessionId: fired.claude_code_session_id, sessionUrl: fired.claude_code_session_url,
+        status: "launched", providerMetadata: { routine: routine.source, tier } };
+    } else {
+      const environmentId = resolveCodexEnvironment({ meta: found.graph.meta || {}, override: opts.environmentId });
+      const diagnostic = diagnoseCodexCloud({ environmentId, execImpl: opts.execImpl || spawnSync });
+      if (!diagnostic.ok) throw new Error(`Codex Cloud provider unavailable: ${diagnostic.reason}`);
+      const receipt = launchCodexCloud({ environmentId, prompt: text, attempts: opts.attempts || 1,
+        branch: opts.branch || null, model: opts.model || null, execImpl: opts.execImpl || spawnSync });
+      result = { dispatched: key, transport: "codex-cloud", provider, environmentId,
+        externalId: receipt.external_id, externalUrl: receipt.external_url, taskId: receipt.external_id,
+        taskUrl: receipt.external_url, status: "awaiting_artifact_publication",
+        providerMetadata: receipt.provider_metadata, capabilities: cloudProviderCapabilities(provider) };
+    }
     // Board loop: when the node is Linear-mapped and we're authed, link the session on the
     // issue. Best-effort — a failure here never fails the dispatch.
     if (found.identifier && linearState({ meta: found.graph.meta, env }).authed) {
       try {
-        await postDispatchComment(found.identifier, `Claude Code cloud session started for \`${key}\`: ${result.sessionUrl}`, io);
+        await postDispatchComment(found.identifier, `${provider === "codex" ? "Codex Cloud task" : "Claude Code cloud session"} started for \`${key}\`: ${result.externalUrl}`, io);
         result.linearComment = found.identifier;
       } catch { /* board link is a bonus, not a dependency */ }
     }
@@ -356,7 +402,7 @@ export async function runDispatch(root, key, opts = {}) {
   }
 
   const agent = DISPATCH_AGENTS[to];
-  if (!agent) throw new Error(`unknown dispatch target "${opts.to}" (claude-cloud | ${Object.keys(DISPATCH_AGENTS).join(" | ")})`);
+  if (!agent) throw new Error(`unknown dispatch target "${opts.to}" (claude-cloud | codex-cloud | ${Object.keys(DISPATCH_AGENTS).join(" | ")})`);
   const state = linearState({ meta: found.graph.meta, env });
   if (!state.configured || !state.authed) throw new Error(linearStatusLine(state));
 
@@ -413,6 +459,17 @@ export async function runFanCloud(root, opts = {}) {
     // its unresolvable slices before confirm instead of failing them mid-wave. Resolution
     // failures are captured per-slice — the whole point is showing them, never throwing.
     const d = opts.dispatch || {};
+    const provider = normalizeCloudProvider(d.provider || opts.provider || "claude");
+    if (provider === "codex") {
+      const environmentId = resolveCodexEnvironment({ meta: graph.meta || {}, override: d.environmentId || opts.environmentId });
+      const diagnostic = diagnoseCodexCloud({ environmentId, execImpl: d.execImpl || opts.execImpl || spawnSync });
+      const detail = wave.map((nd) => ({ invoke: nd.invoke, provider, environment_id: environmentId,
+        resolvable: diagnostic.ok, ...(diagnostic.ok ? {} : { error: diagnostic.reason }) }));
+      const unresolvable = detail.filter((s) => !s.resolvable).map((s) => s.invoke);
+      return { preview: true, wave: waveIdx, cap, slices: detail,
+        ...(excluded.length ? { excludedOutOfCycle: excluded } : {}),
+        note: `${detail.length} slice(s) would each submit a Codex Cloud task in environment ${environmentId}. ${unresolvable.length ? `Codex is unavailable for ${unresolvable.join(", ")}: ${diagnostic.reason}. ` : ""}Codex Cloud tasks do not create local worktrees and may require artifact publication before a PR exists. Re-call with confirm=true to submit.` };
+    }
     const envv = d.env || opts.env || process.env;
     const profiles = d.profiles !== undefined ? d.profiles : loadRoutineProfiles(envv);
     const accountEmail = d.accountEmail !== undefined ? d.accountEmail : currentClaudeAccount();
@@ -437,9 +494,10 @@ export async function runFanCloud(root, opts = {}) {
   }
   const results = [];
   for (const invoke of slices) {
-    // force: the fan-level filter above IS the cycle gate (and opts.all is an explicit human
-    // include) — re-guarding per dispatch would veto what the wave already admitted.
-    try { const r = await runDispatch(root, invoke, { ...(opts.dispatch || {}), force: true }); results.push({ slice: invoke, ok: true, sessionUrl: r.sessionUrl }); }
+    // The fan-level filter above IS the cycle gate (and opts.all is an explicit human
+    // include), so skip only that second check. Do not disable the independent in-flight
+    // duplicate lock: cycle authority and duplicate-dispatch authority are different things.
+    try { const r = await runDispatch(root, invoke, { ...(opts.dispatch || {}), provider: (opts.dispatch || {}).provider || opts.provider, forceCycle: true }); results.push({ slice: invoke, ok: true, provider: r.provider, externalUrl: r.externalUrl, sessionUrl: r.sessionUrl || null, taskUrl: r.taskUrl || null }); }
     catch (e) { results.push({ slice: invoke, ok: false, error: e.message }); }
   }
   return { fired: results.filter((r) => r.ok).length, of: slices.length, wave: waveIdx, ...(excluded.length ? { excludedOutOfCycle: excluded } : {}), results };
@@ -452,16 +510,20 @@ if (isMain) {
   const val = (n) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : undefined; };
   const key = args.find((a) => !a.startsWith("-"));
   if (!key) {
-    console.error(`usage: roadmap dispatch <slice-invoke|backlog-id> [--to claude-cloud|${Object.keys(DISPATCH_AGENTS).join("|")}]   (default claude-cloud)`);
+    console.error(`usage: roadmap dispatch <slice-invoke|backlog-id> [--provider claude|codex] [--to claude-cloud|codex-cloud|${Object.keys(DISPATCH_AGENTS).join("|")}]   (default claude)`);
     process.exit(2);
   }
   try {
-    const r = await runDispatch(process.cwd(), key, { to: val("--to"), force: args.includes("--force"), tier: val("--tier") });
+    const r = await runDispatch(process.cwd(), key, { to: val("--to"), provider: val("--provider"), environmentId: val("--environment"), attempts: val("--attempts"), model: val("--model"), force: args.includes("--force"), tier: val("--tier") });
     if (r.transport === "claude-cloud") {
       console.log(`dispatched ${r.dispatched} → Claude Code cloud session (${r.routine}).`);
       console.log(`session: ${r.sessionUrl}`);
       if (r.linearComment) console.log(`board:   session link commented on ${r.linearComment}`);
       console.log(`(beta Routines API — if shapes change, check code.claude.com/docs/en/routines)`);
+    } else if (r.transport === "codex-cloud") {
+      console.log(`dispatched ${r.dispatched} → Codex Cloud task.`);
+      console.log(`environment: ${r.environmentId}\ntask: ${r.taskId}\nurl: ${r.taskUrl}`);
+      console.log("artifact: awaiting publication (the supported Codex CLI has no unattended task→PR command)");
     } else {
       console.log(`dispatched ${r.dispatched} → ${r.identifier} via ${r.agent} @-mention comment.`);
       console.log(`VERIFY the agent picked it up. Live-tested finding: the comment posts fine, but summoning requires the agent's`);

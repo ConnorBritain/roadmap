@@ -61,6 +61,29 @@
           "items": { "type": "string" },
           "description": "The 'My Issues' hopper: an explicit list of slice invoke keys / backlog ids the Linear sync assigns to YOU (assignee), so Linear's My Issues tab = your curated current batch. Presence enables the feature (absent → no assignee projection at all). Active slices / in_progress items are ALWAYS included on top; completed slices auto-drain on sync. Capped for signal by meta.linear.plate_max. Issues we assign carry a 'plate' label so a hand-assignment in Linear is never disturbed."
         },
+        "dispatch": {
+          "type": "object", "additionalProperties": false,
+          "description": "Cloud-dispatch safety and provider settings. Runtime credentials remain machine-local.",
+          "properties": {
+            "provider": { "enum": ["github", "gitlab", "git-native", "none"], "description": "Provider for the best-effort in-flight duplicate lock. Omit to auto-detect from origin." },
+            "in_flight_window_hours": { "type": "number", "exclusiveMinimum": 0, "default": 24, "description": "How recent an open marker-bearing PR must be to block a duplicate low-level dispatch." },
+            "default_provider": { "enum": ["claude", "codex"], "description": "Default remote-agent provider for ordinary cloud dispatch. Existing installations default to Claude when omitted." },
+            "providers": { "type": "object", "additionalProperties": false, "properties": { "codex": { "type": "object", "additionalProperties": false, "properties": { "environment_id": { "type": "string", "minLength": 1, "description": "Codex Cloud environment ID for this repository. It is configuration, not a credential." } } } } }
+          }
+        },
+        "gauntlet": {
+          "type": "object", "additionalProperties": false,
+          "description": "Conducted implementation/critic/repair policy. Run history stays in GitHub plus the gitignored local launch ledger, never on slices.",
+          "properties": {
+            "max_rounds": { "type": "integer", "minimum": 0, "maximum": 20, "default": 3, "description": "Maximum repair launches in one run. The lead may stop earlier for diminishing returns or human judgment." },
+            "implementation_tier": { "type": "string", "minLength": 1, "maxLength": 512, "description": "Optional Routine tier for initial implementation. A slice/item dispatch_tier takes precedence." },
+            "critic_tier": { "type": "string", "minLength": 1, "maxLength": 512, "description": "Optional Routine tier for independent criticism. Missing requested tiers fail; they never silently downgrade." },
+            "repair_tier": { "type": "string", "minLength": 1, "maxLength": 512, "description": "Optional Routine tier for fresh repair workers. A slice/item dispatch_tier takes precedence." }
+            ,"implementation_provider": { "enum": ["claude", "codex"], "description": "Remote provider for initial implementation; defaults to Claude." }
+            ,"critic_provider": { "enum": ["claude", "codex"], "description": "Remote provider for independent critics; defaults to Claude." }
+            ,"repair_provider": { "enum": ["claude", "codex"], "description": "Remote provider for repair workers; defaults to Claude." }
+          }
+        },
         "linear": {
           "type": "object", "additionalProperties": false,
           "required": ["team"],

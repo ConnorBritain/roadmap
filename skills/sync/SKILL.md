@@ -1,20 +1,50 @@
 ---
 name: sync
-description: Reconcile the roadmap graph with reality (merged PRs + tracker/status) and re-render docs/SLICES.md. Run after a batch of merges. Edits docs/roadmap/roadmap.yaml statuses + regenerates the markdown; never touches code.
+description: Reconcile canonical roadmap/backlog state with merged GitHub PRs, then re-render generated views and optionally project to Linear. Run after lead/human merge decisions; never touches product code.
 argument-hint: "[--since YYYY-MM-DD] [--dry-run]"
-allowed-tools: Read, Edit, Bash(roadmap render:*), Bash(roadmap backlog:*), Bash(roadmap linear:*), Bash(roadmap:*), Bash(node:*), Bash(git log:*), Bash(gh pr list:*), Bash(gh pr view:*)
+allowed-tools: Read, Bash(roadmap render:*), Bash(roadmap backlog:*), Bash(roadmap linear:*), Bash(roadmap gauntlet status:*), Bash(roadmap:*), Bash(node:*), Bash(git log:*), Bash(gh pr list:*), Bash(gh pr view:*)
 ---
 
-You reconcile `docs/roadmap/roadmap.yaml` against what actually shipped, then re-render. **Touch only the YAML's status/prs fields and the generated SLICES.md** — never code, frozen dirs, or unrelated docs.
+Reconcile `docs/roadmap/roadmap.yaml` and `docs/roadmap/backlog.yaml` with durable GitHub reality,
+then re-render `docs/SLICES.md` and `docs/BACKLOG.md`. GitHub is the primary execution record;
+Linear, when configured, is a later projection/pull-inbox phase.
 
-1. **Window.** Use `--since <date>` if given; else infer from the newest PR already cited in the YAML (default last ~14 days).
-2. **Ground truth.** `gh pr list --state merged --search "merged:>=<date>" --json number,title,body,headRefName,mergedAt` + `git log --since=<date> --first-parent --oneline`. Read STATUS/tracker if the repo has them (see `meta.links`). **Cloud PRs** (branches prefixed `claude/` from `roadmap dispatch`/`fan --cloud`) don't follow the branch convention — match them by the `roadmap: slice=<key>` marker line in the PR description (the capsule requires it; `findUnrecordedMerges` in `lib/sync-core.mjs` does this automatically).
-3. **Compute deltas** per sprint: a slice whose work merged → flip its `status` to `complete` and add the PR to `prs` (cite it); a `next`/`scheduled` slice with merges against it → promote; a newly-scoped PI → propose adding it (flag for a detail entry). **Keep `invoke` keys stable** — they're the `/slice` keys.
-4. **Apply** with `Edit` to the YAML, then **re-render**: `roadmap render` (regenerates SLICES.md from the YAML). With `--dry-run`, print the proposed YAML edits + PR→change mapping and stop.
-5. **Under-parallelization guardrail.** For a slice you're flipping to complete that declares an `execution.min_concurrency` and touches disjoint dirs, check how many live workers it actually ran (PR/commit authorship, session logs, or the user). If it ran with fewer than its floor, surface a one-line warning — *"slice X ran 2 workers; min_concurrency 4 — under-parallelized"* — so the next run staffs correctly. (`underParallelizedWarnings` in `lib/sync-core.mjs` computes these from `[{ invoke, workers }]` telemetry.) Don't block the sync on it; it's a nudge.
-6. **Harvest leftovers.** Scan the merged PR bodies for a **Leftovers** heading (the kickoff brief tells workers to list hanging items there when they can't file directly), and note any gate items a completed slice left unfinished. **Propose** each as a backlog capture — `backlog_add` (MCP server `graph`) or `roadmap backlog add "<title>" -k followup --slice <invoke>` — and ask before filing; never auto-file.
-7. **Sprawl guardrail.** Count for the reconcile window: slices flipped to complete, backlog items captured, sprints added, PIs added (from the diffs you just applied, or `git log -p --since=<date> -- docs/roadmap/roadmap.yaml docs/roadmap/backlog.yaml`). Feed them to `sprawlWarnings` in `lib/sync-core.mjs` (threshold = `meta.discipline.capture_ratio`, default 2) and surface each warning verbatim. Don't block the sync on it; it's a nudge. If a PI warning fires, name the PI and ask whether it should stay.
-8. **Linear (skip unless wired).** Run `roadmap linear status`. If it says *not configured*, skip this step silently. If it says *configured, unauthed*, print exactly one line — "Linear is configured but LINEAR_API_KEY isn't set (`roadmap linear auth` explains) — skipping the Linear phase." — and move on. If wired: run `roadmap linear sync --dry` and read the plan: **push ops** (roadmap→Linear creates/updates) and the **pull inbox** (new issues from watch sources → proposed backlog items; edits to mapped issues → proposed status/priority deltas). With `pull: propose`, walk the inbox with the user: for each proposed item show *title · source (team/project) · default kind + tier* and ask **keep / edit / skip**; for each delta show *slice-or-item · field: old → new* and ask **apply / skip**. Apply keeps via `backlog_add` / `set_status` / `backlog_set`, then run `roadmap linear sync` to execute the push and advance the cursor. With `pull: auto` the sync already applied inbound changes — report what it did. Never invent Linear state: everything you report must come from the sync output.
-9. **Report** a concise PR→change mapping. Cite a merged PR for every status flip; surface anything ambiguous rather than guessing.
+1. **Window.** Use `--since <date>` when given; otherwise infer from the newest PR already cited
+   in canonical YAML, falling back to roughly 14 days.
+2. **Read GitHub ground truth.** List merged PRs and first-parent commits in the window. Associate
+   roadmap work through the shared membership rules: recognized local fanout branch, exact
+   `roadmap: slice=<key>` / backlog marker, or a Gauntlet run marker. Cloud branch names are not
+   identity.
+3. **Audit Gauntlet evidence.** For every associated Gauntlet PR, inspect the run/status, frozen
+   bar, merge SHA/head history, and critic comments. Only call a verdict valid for an artifact
+   when its recorded full SHA matches the reviewed PR head and its immutable body digest and exact
+   GitHub comment-URL digest are bound by a frozen-lead acknowledgment. Surface stale or unacknowledged
+   verdicts, a merge without an acknowledged current-head `PASS`, human-required state, exhausted
+   repair rounds, or ambiguous run association; never rewrite history or invent a pass. A
+   human-authorized merge is still durable shipment, so record it while reporting the exception.
+4. **Compute the delta.** A slice whose associated PR merged becomes `complete` with a cited PR;
+   a started subject is promoted appropriately. Keep `invoke` keys stable. New strategic scope is
+   a proposal for the human, never an automatic PI/sprint addition.
+5. **Apply only through validated mutation surfaces.** Prefer `set_status`, `set_fields`,
+   `bulk_set`, `backlog_set`, and the other `graph` MCP mutators; use the matching `roadmap`
+   commands where available. Those paths preserve YAML comments and validate before writing.
+   Never hand-edit generated Markdown. With `--dry-run`, print the proposed PR-to-change mapping
+   and stop. Otherwise run `roadmap render` after the canonical mutations.
+6. **Harvest leftovers, with consent.** Scan merged PR bodies and critic findings for material
+   follow-ups. Propose each as `backlog_add` / `roadmap backlog add ... --slice <invoke>` and ask
+   before filing. Workers and critics never create PIs or sprints. Do not turn nits or rejected
+   critic advice into backlog churn.
+7. **Retain discipline guardrails.** Surface under-parallelization telemetry when available and
+   run the sprawl checks for completions, captures, added sprints, and added PIs. These are
+   advisory, not blockers.
+8. **Project to Linear only when wired.** If no `meta.linear` exists, skip silently. If configured
+   but unauthenticated, emit one setup advisory and finish the GitHub/YAML reconciliation. If
+   wired, preview `roadmap linear sync --dry`, walk any `pull: propose` inbox with the user, apply
+   accepted proposals through validated mutators, then run `roadmap linear sync`. Never use
+   Linear issue state as a substitute for GitHub run evidence.
+9. **Report concisely.** Give a PR -> canonical change mapping, cite every merge used for a status
+   flip, list any stale/missing Gauntlet verdicts, and name ambiguous associations. Note unrelated
+   dirty work without touching it.
 
-This is a docs/data refresh — no test gate. If the working tree has unrelated dirty changes, note it.
+This is a docs/data reconciliation, not a product-code test gate. The Gauntlet concludes the
+artifact review; `/sync` records the already-authorized merge in the planning graph.

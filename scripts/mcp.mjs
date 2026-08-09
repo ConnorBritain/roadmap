@@ -17,6 +17,7 @@ import { linearState, linearStatusLine, normalizeLinearConfig } from "./lib/line
 import { platedKeys } from "./lib/plate-core.mjs";
 import { runSync, runNote, runNotes, runProjectUpdate } from "./linear.mjs";
 import { runDispatch, runFanCloud } from "./dispatch.mjs";
+import { runGauntletStart, runGauntletStatus, runGauntletAcknowledge, runGauntletCritic, runGauntletRepair, runGauntletCancel } from "./gauntlet.mjs";
 import { runEstimate, runTimeline, runLog } from "./estimate.mjs";
 import { LOG_STATUSES } from "./lib/estimate-core.mjs";
 
@@ -29,18 +30,52 @@ const LINEAR_TOOLS = [
     inputSchema: { type: "object", properties: { dry: { type: "boolean" }, push: { type: "boolean" }, pull: { type: "boolean" } } } },
 ];
 
-// Cloud dispatch — lets the SESSION conduct a cloud fanout. Fires on the currently-authed
-// claude.ai account's plan (no local worktree/disk). fan_cloud PREVIEWS by default; confirm=true
-// actually fires (it spends plan usage + opens real PRs). Needs ~/.claude-routines.json configured.
+// Cloud dispatch conducts remote agents without consuming local worktrees. Claude
+// Routines can publish PRs; Codex Cloud records a task receipt and may await
+// artifact publication because its supported CLI has no unattended task→PR call.
 const CLOUD_TOOLS = [
-  { name: "dispatch", description: "Fire a Claude Code CLOUD session for ONE slice or backlog item via the Routines API — runs on the currently-authed claude.ai account's plan, no local worktree or disk. Returns the session URL (and comments it on the Linear issue when the node is mapped). With meta.linear.cycles on, an out-of-cycle slice refuses (elect it via 'roadmap cycle', or pass force=true — the logged escape hatch, surfaces as scope change). Requires ~/.claude-routines.json (docs/DEPLOYMENT.md § Cloud dispatch).",
-    inputSchema: { type: "object", required: ["key"], properties: { key: { type: "string", description: "slice invoke key or backlog id" }, force: { type: "boolean", description: "override the cycle lock for this one dispatch (out-of-cycle work; surfaces as scope change)" } } } },
-  { name: "fan_cloud", description: "Conduct a cloud FANOUT of a ready wave — the worktree-free, disk-free fanout. Each slice fires a Claude Code cloud session on the authed account's plan and opens a PR. DEFAULT is a dry preview (lists what would fire, spawns nothing); pass confirm=true to actually fire. With meta.linear.cycles on, out-of-cycle slices are excluded from the wave (reported in excludedOutOfCycle; pass all=true to include). Returns session URLs when confirmed. The conducting session reconciles the resulting PRs via the roadmap marker (/sync).",
+  { name: "dispatch", description: "Launch one remote cloud agent for a slice or backlog item. provider=claude (default) fires a Routine; provider=codex submits an exact Codex Cloud task receipt in the configured repository environment. Neither consumes a local worktree. Codex currently cannot be claimed as an unattended task→PR transport, so its result may be awaiting artifact publication.",
+    inputSchema: { type: "object", required: ["key"], properties: { key: { type: "string", description: "slice invoke key or backlog id" }, provider: { enum: ["claude", "codex"] }, attempts: { type: "integer", minimum: 1, maximum: 4, description: "Codex Cloud best-of-N attempts; not independent critics" }, force: { type: "boolean", description: "override the cycle lock for this one dispatch (out-of-cycle work; surfaces as scope change)" } } } },
+  { name: "fan_cloud", description: "Preview or conduct a provider-aware cloud fanout of a ready wave without local worktrees. provider=claude opens Routine sessions; provider=codex creates distinct remote task receipts. DEFAULT is a preview; pass confirm=true to submit.",
     inputSchema: { type: "object", properties: {
       wave: { type: "integer", minimum: 1, description: "which ready wave (default 1)" },
       cap: { type: "integer", minimum: 1, description: "max slices in the wave (default the review ceiling, 5 — machine limits don't apply to cloud)" },
       confirm: { type: "boolean", description: "false/absent = preview only; true = actually fire the cloud sessions" },
-      all: { type: "boolean", description: "include out-of-cycle slices in the wave (explicit override of the cycle lock)" } } } },
+      all: { type: "boolean", description: "include out-of-cycle slices in the wave (explicit override of the cycle lock)" },
+      provider: { enum: ["claude", "codex"] }, attempts: { type: "integer", minimum: 1, maximum: 4 } } } },
+];
+
+// Conducted cloud work: deterministic senses/actuators only. The lead model remains the
+// executive function that judges critic materiality, synthesizes repairs, and decides stops.
+const GAUNTLET_TOOLS = [
+  { name: "gauntlet_start", description: "Freeze the current quality bar, create a run, and launch one provider-selected implementation execution. GitHub remains the durable artifact; the local ledger records generic provider receipts. Codex implementation may await artifact publication rather than claiming a PR.",
+    inputSchema: { type: "object", required: ["key"], properties: {
+      key: { type: "string", description: "slice invoke key or backlog id" },
+      max_rounds: { type: "integer", minimum: 0, maximum: 20, description: "maximum repair launches (default meta.gauntlet.max_rounds or 3)" },
+      bar: { type: "string", description: "additional immutable acceptance criteria/references appended to the roadmap-derived bar" },
+      implementation_tier: { type: "string" }, critic_tier: { type: "string" }, repair_tier: { type: "string" },
+      implementation_provider: { enum: ["claude", "codex"] }, critic_provider: { enum: ["claude", "codex"] }, repair_provider: { enum: ["claude", "codex"] },
+      force: { type: "boolean", description: "explicitly override the roadmap cycle lock for this run" },
+      critic_profile: { type: "string", description: "optional machine-local Routine profile label for critics" } } } },
+  { name: "gauntlet_status", description: "Reconstruct a Gauntlet run from the local launch ledger plus GitHub PR/body/head/checks/comments and protected claim refs. Strictly read-only, including when exposing a different winning protocol to a distributed loser. Reports stale or unacknowledged worker verdicts as non-authoritative, detects claim/attestation and repair-history gaps, and returns the safe next actuator(s).",
+    inputSchema: { type: "object", required: ["run"], properties: { run: { type: "string", description: "run id or roadmap subject key" } } } },
+  { name: "gauntlet_ack", description: "After the frozen lead independently inspects one exact critic comment from gauntlet_status, post a lead-authored acknowledgment bound to both its immutable body digest and exact GitHub comment-URL digest. A worker verdict cannot drive PASS/REVISE until acknowledged. Requires the exact comment URL and explicit confirmation.",
+    inputSchema: { type: "object", required: ["run", "comment_url", "confirm"], properties: {
+      run: { type: "string" }, comment_url: { type: "string", minLength: 1 }, confirm: { const: true } } } },
+  { name: "gauntlet_critic", description: "Fire one fresh-context independent critic for an exact open PR head. Refuses when the expected SHA is stale, checks are unstable/failing, or the same run/head/critic role is already launched. The critic receives the frozen bar and artifact—not builder reasoning—and posts a structured SHA-pinned GitHub candidate verdict that remains non-authoritative until frozen-lead acknowledgment.",
+    inputSchema: { type: "object", required: ["run", "expected_head"], properties: {
+      run: { type: "string" }, expected_head: { type: "string", pattern: "^[a-f0-9]{40}$" },
+      critic_role: { type: "string", pattern: "^[a-z0-9][a-z0-9-]{0,63}$", description: "one selected critic role for this run/head; defaults to critic" },
+      tier: { type: "string" }, profile: { type: "string" }, provider: { enum: ["claude", "codex"] },
+      confirm_recovered_bar: { type: "boolean", description: "after ledgerless recovery or discovery of a different distributed-election winner, explicitly attest as that packet's frozen lead that its bar still matches lead/human intent before local adoption and re-criticism" },
+      force_checks: { type: "boolean", description: "explicitly review despite pending/failing checks; SHA safety is never bypassed" } } } },
+  { name: "gauntlet_repair", description: "Fire a fresh repair Routine against the existing PR at an exact expected head, using a lead-synthesized repair packet. Requires a frozen-lead-acknowledged current-head REVISE verdict, refuses duplicates/stale heads/exhausted rounds, and never creates or merges a competing PR.",
+    inputSchema: { type: "object", required: ["run", "expected_head", "packet"], properties: {
+      run: { type: "string" }, expected_head: { type: "string", pattern: "^[a-f0-9]{40}$" },
+      packet: { type: "string", minLength: 1, maxLength: 50000 }, tier: { type: "string" }, profile: { type: "string" }, provider: { enum: ["claude", "codex"] } } } },
+  { name: "gauntlet_cancel", description: "Explicitly abandon a stuck or ambiguous Gauntlet run while preserving all launch receipts. Human confirmation and a reason are required. A protected pre-PR tombstone prevents delayed-PR resurrection after ledger loss; the detailed reason remains local until a PR comment exists. An existing GitHub PR is never closed or deleted.",
+    inputSchema: { type: "object", required: ["run", "reason", "confirm"], properties: {
+      run: { type: "string" }, reason: { type: "string", minLength: 1, maxLength: 2000 }, confirm: { const: true } } } },
 ];
 
 // plate_list is a read that needs the backlog too (in_progress items), so it's handled inline here
@@ -71,7 +106,7 @@ const ESTIMATE_TOOLS = [
 ];
 
 const PROTOCOL_VERSION = "2024-11-05";
-const SERVER_INFO = { name: "graph", version: "0.2.0" };
+const SERVER_INFO = { name: "graph", version: "0.6.0" };
 
 function repoRoot() {
   const root = findRepoRoot(process.env.CODEX_PROJECT_DIR || process.env.CLAUDE_PROJECT_DIR || process.cwd());
@@ -115,12 +150,37 @@ function callTool(name, args) {
   }
   if (name === "dispatch") {
     // async; runDispatch fires the routine (or the Linear @-mention) and returns the session/comment.
-    return runDispatch(repoRoot(), args.key, { force: !!args.force });
+    return runDispatch(repoRoot(), args.key, { force: !!args.force, provider: args.provider, attempts: args.attempts });
   }
   if (name === "fan_cloud") {
     // preview unless confirm=true; runFanCloud loops runDispatch over the ready wave.
     return runFanCloud(repoRoot(), args || {});
   }
+  if (name === "gauntlet_start") {
+    return runGauntletStart(repoRoot(), args.key, {
+      maxRounds: args.max_rounds, additionalBar: args.bar,
+      implementationTier: args.implementation_tier, criticTier: args.critic_tier,
+      repairTier: args.repair_tier, implementationProvider: args.implementation_provider,
+      criticProvider: args.critic_provider, repairProvider: args.repair_provider,
+      criticProfile: args.critic_profile, force: !!args.force,
+    });
+  }
+  if (name === "gauntlet_status") return runGauntletStatus(repoRoot(), args.run);
+  if (name === "gauntlet_ack") return runGauntletAcknowledge(repoRoot(), args.run,
+    { commentUrl: args.comment_url, confirm: args.confirm === true });
+  if (name === "gauntlet_critic") {
+    return runGauntletCritic(repoRoot(), args.run, {
+      expectedHead: args.expected_head,
+      criticRole: args.critic_role || "critic", tier: args.tier, profile: args.profile, provider: args.provider, forceChecks: !!args.force_checks,
+      confirmRecoveredBar: !!args.confirm_recovered_bar,
+    });
+  }
+  if (name === "gauntlet_repair") {
+    return runGauntletRepair(repoRoot(), args.run, {
+      expectedHead: args.expected_head, packet: args.packet, tier: args.tier, profile: args.profile, provider: args.provider,
+    });
+  }
+  if (name === "gauntlet_cancel") return runGauntletCancel(repoRoot(), args.run, { reason: args.reason, confirm: args.confirm === true });
   if (name === "plate_list") {
     const root = repoRoot();
     const graph = loadGraph(roadmapPaths(root).yaml);
@@ -158,7 +218,7 @@ function handle(msg) {
   if (method === "notifications/initialized" || method === "initialized") return; // notification: no reply
   if (method === "ping") return out({ jsonrpc: "2.0", id, result: {} });
   if (method === "tools/list") {
-    return out({ jsonrpc: "2.0", id, result: { tools: [...TOOLS, ...BACKLOG_TOOLS, ...LINEAR_TOOLS, ...CLOUD_TOOLS, ...PLATE_TOOLS, ...JOURNAL_TOOLS, ...ESTIMATE_TOOLS] } });
+    return out({ jsonrpc: "2.0", id, result: { tools: [...TOOLS, ...BACKLOG_TOOLS, ...LINEAR_TOOLS, ...CLOUD_TOOLS, ...GAUNTLET_TOOLS, ...PLATE_TOOLS, ...JOURNAL_TOOLS, ...ESTIMATE_TOOLS] } });
   }
   if (method === "tools/call") {
     const name = params && params.name;

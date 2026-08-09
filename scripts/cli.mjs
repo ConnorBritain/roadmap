@@ -36,9 +36,11 @@ COMMANDS
   set <name> f=v  edit a slice's fields (f=@file for multiline, f=null deletes)
   render          regenerate docs/SLICES.md (+ docs/BACKLOG.md when a backlog exists)
   fan             launch a wave — a lead + one pane/tab per slice, each in its own worktree
-                  (--cloud dispatches the wave to CLOUD agents via Linear instead — no worktrees)
-  dispatch <key>  fire a Claude Code CLOUD session for one slice/backlog item (default --to claude-cloud;
-                  --to claude|codex|oz posts a Linear @-mention capsule instead)
+                  (--cloud dispatches a remote provider instead — no local worker worktrees)
+  dispatch <key>  dispatch a remote Claude Routine or Codex Cloud task (--provider claude|codex;
+                  legacy --to claude|codex|oz posts a Linear @-mention capsule instead)
+  gauntlet <action> <key-or-run>  conduct a frozen-bar cloud run (start|status|critic|ack|repair|cancel); implementation and
+                  fresh critics/repairs rendezvous on one SHA-pinned GitHub PR
   backlog         erratic-work tracker: list | add "title" [-k kind --tier PN] | set <id> f=v
   plate           the My Issues hopper: list | add/rm/set <key>... | clear  (curated batch → assignee=you)
   cycle           the weekly election: plan [--capacity N] [--json] (stale first, capacity-packed
@@ -48,7 +50,7 @@ COMMANDS
   cleanup         prune fanout worktrees merged into the base branch + clean
   validate        structural + dependency + cycle checks
   mcp             run the MCP server (stdio); read + mutate tools over JSON-RPC
-  watch           watch fanout PRs and print a line as each lands (lead notifications)
+  watch           watch roadmap branches, canonical-marker PRs, and Gauntlet PR transitions
   review          date-anchored review digest: what shipped vs what grew since meta.last_review
   doctor          reconcile the roadmap against reality (merged PRs, docs, Linear, worktrees,
                   structure) and report drift — read-only; exits non-zero when drift is found

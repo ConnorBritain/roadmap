@@ -7,7 +7,8 @@
 // NOT drift — they're `roadmap validate`'s job — so they are deliberately not folded in here.
 
 import { findUnrecordedMerges } from "./sync-core.mjs";
-import { prPhase, matchesRoadmapBranches, checksOf } from "./pr-watch-core.mjs";
+import { prPhase, checksOf } from "./pr-watch-core.mjs";
+import { belongsToRoadmapPr } from "./pr-identity.mjs";
 import { auditBacklog, knownDamageOf } from "./backlog-audit.mjs";
 
 // Open-PR phases that count as drift — a PR sitting in one of these needs a human/agent nudge.
@@ -53,7 +54,7 @@ export function doctorReport({ graph, backlog = null, backlogText = null, dispat
   add("Open PRs needing attention",
     (allPrs || [])
       .map((pr) => ({ ...pr, checks: checksOf(pr) }))
-      .filter((pr) => matchesRoadmapBranches(pr.headRefName, graph) && OPEN_PR_DRIFT.has(prPhase(pr)))
+      .filter((pr) => belongsToRoadmapPr(pr, graph) && OPEN_PR_DRIFT.has(prPhase(pr)))
       .map((pr) => `PR #${pr.number} (${pr.headRefName}) — ${prPhase(pr)}.`));
 
   // 5. STALE WORKTREES — fanout worktrees left unmerged or dirty (work parked mid-air).

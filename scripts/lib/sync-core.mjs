@@ -6,6 +6,7 @@
 import { flatten, isDone } from "./graph.mjs";
 import { branchFor } from "./brief.mjs";
 import { normalizeExecution, dirClusters } from "./execution.mjs";
+import { roadmapSubjectMarkers } from "./pr-identity.mjs";
 
 // findUnrecordedMerges(graph, mergedPrs): mergedPrs is [{ number, headRefName, title?, body? }]
 // (state=merged). Returns the not-done slices whose work has a merged PR: [{ invoke, pr, branch }].
@@ -20,9 +21,8 @@ export function findUnrecordedMerges(graph, mergedPrs) {
   for (const pr of mergedPrs || []) {
     if (!pr) continue;
     if (pr.headRefName && !byBranch.has(pr.headRefName)) byBranch.set(pr.headRefName, pr.number);
-    const text = `${pr.title || ""}\n${pr.body || ""}`;
-    for (const m of text.matchAll(/roadmap: slice=([a-z0-9][a-z0-9-]*)/g)) {
-      if (!byMarker.has(m[1])) byMarker.set(m[1], pr.number);
+    for (const marker of roadmapSubjectMarkers(pr)) {
+      if (marker.subjectType === "slice" && !byMarker.has(marker.key)) byMarker.set(marker.key, pr.number);
     }
   }
   const model = flatten(graph);

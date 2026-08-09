@@ -5,7 +5,7 @@
     {
       "name": "roadmap",
       "source": "./",
-      "description": "Roadmap + backlog graph with prioritized, feasibility-checked multi-session fanout. Skills (/slice, /backlog, /sync, /init, /fanout), four agents, a SessionStart hook (ready-wave + backlog count + reconcile nudge), a PR-watch monitor, and an MCP server 'graph' (read + comment-preserving mutate, roadmap + backlog tools)."
+      "description": "Roadmap + backlog graph with the GitHub-first Gauntlet Loop as the primary meaningful-work path: /gauntlet conducts frozen-bar implementation, independent exact-SHA criticism, frozen-lead acknowledgment, repair, then fresh re-criticism and fresh acknowledgment. /fanout remains cross-slice concurrency; /sync reconciles durable GitHub results. The graph MCP includes all six Gauntlet tools plus roadmap/backlog planning and comment-preserving mutation."
     }
   ]
 }
