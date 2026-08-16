@@ -96,17 +96,20 @@ export function assignmentsForWave(run, wave) {
 
 export function buildEvaluationPrompt({ run, assignment }) {
   const packetDir = assignmentDirectory(run.run_id, assignment.id, run.artifact_root);
+  const packetCommit = `docs(evaluation): ${run.run_id} ${assignment.id} packet`;
   return `You are an isolated, documentation-only evaluator in the Pidgeon dimensional-coherence matrix.\n\n`
     + `Frozen source baseline: ${requiredSha(run.base_sha)}\n`
     + `Assignment: ${assignment.id} (wave ${assignment.wave})\n\n`
     + `Hard boundaries:\n`
     + `- Inspect only the checked-out repository at the frozen baseline.\n`
     + `- Do not modify product code, configuration, tests, roadmap files, generated files, or dependencies.\n`
-    + `- Do not commit, push, open a PR, use secrets, authenticate to production, or submit forms.\n`
+    + `- Do not push, open a PR, use secrets, authenticate to production, or submit forms.\n`
     + `- You may create files ONLY beneath ${packetDir}/.\n`
     + `- Write REPORT.md plus evidence.yaml. Include the exact base SHA, commands run, evidence IDs, limitations, and confidence.\n`
+    + `- evidence.yaml must contain packet.run_id, packet.assignment, packet.base_sha, and packet.captured_at. Each evidence entry must have a packet-local ID, one type (source_code, test, documentation, rendered_ui, history, or other), at least one exact source path or URL, capture time, and known limitations. For an unexecuted test, cite its package/test path and record the command plus result.\n`
     + `- A live public-page observation must be labelled deployed evidence with URL and capture time; do not conflate it with source evidence.\n`
-    + `- Do not read or rely on other evaluation packets.\n\n`
+    + `- Do not read or rely on other evaluation packets.\n`
+    + `- To make your two new files retrievable, create one local commit containing ONLY ${packetDir}/REPORT.md and ${packetDir}/evidence.yaml with message ${JSON.stringify(packetCommit)}. Do not push it. Before finishing, verify that the commit changes only those two paths and report its SHA.\n\n`
     + `Your assignment:\n${assignment.prompt}\n`;
 }
 

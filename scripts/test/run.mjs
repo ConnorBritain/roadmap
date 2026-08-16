@@ -75,6 +75,7 @@ import { formatGauntletLaunchResult, formatGauntletStatus, githubClient,
   runGauntletStart, runGauntletStatus } from "../gauntlet.mjs";
 import { loadGraph } from "../lib/graph.mjs";
 import { runEvaluation } from "../evaluate.mjs";
+import { buildEvaluationPrompt } from "../lib/evaluation-core.mjs";
 import { graphDiff, backlogDiff, reviewDigest, pisInFlight } from "../lib/review-core.mjs";
 import { doctorReport } from "../lib/doctor-core.mjs";
 import { auditBacklog, collectEntries, AUDIT_CODES, signatureOf, knownDamageOf } from "../lib/backlog-audit.mjs";
@@ -142,6 +143,23 @@ test("evaluation init honors the configured artifact root", async () => {
     const run = readFileSync(join(root, result.path, "RUN.yaml"), "utf8");
     ok(run.includes("artifact_root: docs/sprints/dimensional-coherence-matrix/evaluation/runs"), "manifest freezes configured root");
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// WHY: Cloud applies only track committed changes reliably. An evaluator must
+// make a local, inbox-only artifact commit, while never gaining authority to
+// push or alter the product checkout.
+test("evaluation prompt requires a schema-complete local packet commit", () => {
+  const prompt = buildEvaluationPrompt({
+    run: {
+      run_id: "matrix-2026-08", base_sha: "a".repeat(40),
+      artifact_root: "docs/audits/dimensional-coherence-matrix",
+    },
+    assignment: { id: "post-map", wave: "cartography", prompt: "Map Post." },
+  });
+  ok(prompt.includes("Do not push, open a PR"), "push and PR remain prohibited");
+  ok(prompt.includes("packet.run_id, packet.assignment, packet.base_sha, and packet.captured_at"), "schema identity is explicit");
+  ok(prompt.includes("at least one exact source path or URL"), "per-record provenance is explicit");
+  ok(prompt.includes("create one local commit containing ONLY docs/audits/dimensional-coherence-matrix/matrix-2026-08/inbox/post-map/REPORT.md and docs/audits/dimensional-coherence-matrix/matrix-2026-08/inbox/post-map/evidence.yaml"), "Cloud transport commit is inbox-only");
 });
 
 // WHY: a malformed artifact root would let an evaluation escape its intended
