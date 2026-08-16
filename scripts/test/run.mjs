@@ -448,6 +448,8 @@ test("route: bare → plan, leading flag → plan, -h → help, word → that co
   eq(route(["-h"]), { cmd: "help", rest: [] }, "-h → help");
   eq(route(["--help"]), { cmd: "help", rest: [] }, "--help → help");
   eq(route(["fan", "--wave", "1"]), { cmd: "fan", rest: ["--wave", "1"] }, "subcommand + rest");
+  eq(route(["gauntlet", "eval", "init", "--run", "matrix-2026-08"]),
+    { cmd: "gauntlet-eval", rest: ["init", "--run", "matrix-2026-08"] }, "evaluation route preserves its action");
 });
 
 // WHY: classify decides what actually runs; a built command misrouted to 'unknown'
@@ -456,6 +458,7 @@ test("classify: maps built commands, flags P4 stubs, rejects unknown", () => {
   eq(classify("plan").kind, "run", "plan runs");
   eq(classify("plan").script, "scheduler.mjs", "plan → scheduler");
   eq(classify("fan").script, "fanout.mjs", "fan → fanout");
+  eq(classify("gauntlet-eval").script, "evaluate.mjs", "gauntlet eval → evaluation conductor");
   eq(classify("validate").script, "validate.mjs", "validate → validate");
   eq(classify("sync"), { kind: "notyet", phase: "P4" }, "sync is P4");
   eq(classify("bogus").kind, "unknown", "unknown command");
