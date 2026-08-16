@@ -1,6 +1,6 @@
 {
   "name": "@connorbritain/roadmap",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Roadmap + backlog graph with conducted, independently evaluated cloud-agent execution. YAML canonical; GitHub is durable run reality.",
   "type": "module",
   "private": false,
