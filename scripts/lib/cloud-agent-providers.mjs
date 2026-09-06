@@ -10,6 +10,8 @@ export const CLOUD_PROVIDER_CAPABILITIES = Object.freeze({
   claude: Object.freeze({
     remote_repo_checkout: true,
     select_model: true, // Routine tiers are selected in the configured Routine.
+    per_task_model: false, // A tier is not a per-request model-name parameter.
+    per_task_reasoning_effort: false,
     multiple_attempts: false,
     structured_task_status: false,
     native_pr_context: false,
@@ -26,6 +28,8 @@ export const CLOUD_PROVIDER_CAPABILITIES = Object.freeze({
     remote_repo_checkout: true,
     // The current supported cloud CLI deliberately has no per-chat model flag.
     select_model: false,
+    per_task_model: false,
+    per_task_reasoning_effort: false,
     multiple_attempts: true,
     structured_task_status: true,
     native_pr_context: true,

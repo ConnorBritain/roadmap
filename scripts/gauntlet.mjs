@@ -54,6 +54,7 @@ const REQUIRED_CLAIM_RULES = Object.freeze(["creation", "update", "deletion", "n
 
 function claimKindOf(claimKey) {
   const key = String(claimKey || "");
+  if (key.startsWith("gauntlet:authority:")) return "authority";
   if (key.startsWith("gauntlet:implementation:")) return "implementation";
   if (key.startsWith("gauntlet:tombstone:")) return "tombstone";
   if (key.startsWith("gauntlet:cancellation:")) return "cancellation";

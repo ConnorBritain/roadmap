@@ -7,6 +7,7 @@ import { validateExecution } from "./execution.mjs";
 import { validatePriority } from "./priority.mjs";
 import { validateLinearConfig } from "./linear-core.mjs";
 import { validateEstimation } from "./estimate-core.mjs";
+import { requiredArtifactRoot } from "./evaluation-core.mjs";
 
 const isDone = (s) => !!(STATUS[s] && STATUS[s].done);
 
@@ -105,13 +106,14 @@ export function validateGraph(graph) {
         err("meta.dispatch.default_provider must be one of claude|codex");
       }
       const evaluation = meta.dispatch.evaluation;
-      if (evaluation != null && (typeof evaluation !== "object" || Array.isArray(evaluation)
-        || (evaluation.artifact_root != null && (typeof evaluation.artifact_root !== "string"
-          || !evaluation.artifact_root.trim()
-          || evaluation.artifact_root.startsWith("/")
-          || evaluation.artifact_root.includes("\\")
-          || evaluation.artifact_root.split("/").some((part) => !part || part === "." || part === ".."))))) {
-        err("meta.dispatch.evaluation.artifact_root must be a non-empty repository-relative POSIX path when configured");
+      if (evaluation != null) {
+        try {
+          if (typeof evaluation !== "object" || Array.isArray(evaluation)) throw new Error("not a mapping");
+          if (evaluation.artifact_root != null) {
+            if (typeof evaluation.artifact_root !== "string") throw new Error("not a path string");
+            requiredArtifactRoot(evaluation.artifact_root);
+          }
+        } catch { err("meta.dispatch.evaluation.artifact_root must be a non-empty repository-relative POSIX path when configured"); }
       }
       const codex = meta.dispatch.providers && meta.dispatch.providers.codex;
       if (meta.dispatch.providers != null && (typeof meta.dispatch.providers !== "object" || Array.isArray(meta.dispatch.providers))) {

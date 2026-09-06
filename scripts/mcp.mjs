@@ -80,6 +80,35 @@ const GAUNTLET_TOOLS = [
 ];
 
 const EVALUATION_TOOLS = [
+  { name: "gauntlet_eval_launch", description: "Launch the specified frozen evaluation wave using protected authorization and durable capacity reservations. Exactly one attempt per submission; duplicate or ambiguous reservations never cause a blind resubmission. Does not authorize new scope.",
+    inputSchema: { type: "object", required: ["run", "wave"], properties: { run: { type: "string" }, wave: { type: "string" } } } },
+  { name: "gauntlet_eval_reconcile", description: "After the frozen lead inspects an exact cloud task and verifies its association with an unresolved launch, bind its exact ID/URL to the protected reservation. Records an attributable reason and observes that same task. Never guesses by recency, replaces an existing receipt or replenishes spent submissions.",
+    inputSchema: { type: "object", required: ["run", "launch_key", "task_id", "task_url", "reason", "confirm"], properties: {
+      run: { type: "string" }, launch_key: { type: "string" }, task_id: { type: "string" }, task_url: { type: "string" }, reason: { type: "string" }, confirm: { const: true } } } },
+  { name: "gauntlet_eval_authorize", description: "Freeze the human-approved evaluation scope, providers, role preferences, reviews and launch/concurrency/repair/deadline ceilings in protected GitHub state. Requires an approved policy file and confirmation. Existing authority cannot be replaced and lost local state cannot replenish budgets.",
+    inputSchema: { type: "object", required: ["run", "authorization", "confirm"], properties: { run: { type: "string" }, authorization: { type: "string" }, confirm: { const: true } } } },
+  { name: "gauntlet_eval_attach", description: "Bind the single lead-owned evidence PR to an authorized run at an exact expected head. Refuses product changes or a competing evidence PR. Does not create or merge a PR.",
+    inputSchema: { type: "object", required: ["run", "pr", "expected_head", "confirm"], properties: { run: { type: "string" }, pr: { type: "integer", minimum: 1 }, expected_head: { type: "string" }, confirm: { const: true } } } },
+  { name: "gauntlet_eval_accept", description: "After the lead inspects claims and attachments for truth and redaction, record an authenticated GitHub accepted/rejected decision bound to the exact packet digest. Acceptance requires valid committed content at the current evidence PR head. A rejection does not turn missing evidence into resolved coverage.",
+    inputSchema: { type: "object", required: ["run", "assignment", "packet_digest", "expected_head", "decision", "reason", "redaction_inspected", "confirm"], properties: {
+      run: { type: "string" }, assignment: { type: "string" }, packet_digest: { type: "string" }, expected_head: { type: "string" },
+      decision: { enum: ["accepted", "rejected"] }, reason: { type: "string" }, redaction_inspected: { const: true }, confirm: { const: true } } } },
+  { name: "gauntlet_eval_critic", description: "Launch the next required independent corpus critic within frozen authority. Requires all expected packets adjudicated, an exact evidence PR head, stable checks and available durable submission/concurrency budget. Mandatory reviewer roles execute sequentially. No local/API/provider fallback.",
+    inputSchema: { type: "object", required: ["run", "expected_head"], properties: { run: { type: "string" }, expected_head: { type: "string" }, critic_role: { type: "string" } } } },
+  { name: "gauntlet_eval_repair", description: "Launch a fresh documentation-only repair worker using a versioned lead-synthesized packet file. Every finding must name an acknowledged current-head REVISE comment and explicit permitted documentation paths. Reserves frozen submission/concurrency/repair capacity. The worker commits locally; only the lead publishes.",
+    inputSchema: { type: "object", required: ["run", "expected_head", "packet"], properties: { run: { type: "string" }, expected_head: { type: "string" }, packet: { type: "string", description: "Path to the inspected lead repair YAML/JSON packet" } } } },
+  { name: "gauntlet_eval_collect_repair", description: "Preview an exact repair receipt diff against its frozen expected head and lead-approved file list, validating all packets. apply=true applies that exact patch and invalidates changed packet admissions by digest. Refuses moved heads or local conflicts; never rebases or force-pushes a repair.",
+    inputSchema: { type: "object", required: ["run", "launch_key"], properties: { run: { type: "string" }, launch_key: { type: "string" }, apply: { type: "boolean" } } } },
+  { name: "gauntlet_eval_ack", description: "After real lead inspection, acknowledge one immutable exact-head critic comment using the shared Gauntlet body-and-URL digest protocol. Authorization does not permit rubber-stamping. Refuses stale or changed criticism.",
+    inputSchema: { type: "object", required: ["run", "expected_head", "comment_url", "confirm"], properties: { run: { type: "string" }, expected_head: { type: "string" }, comment_url: { type: "string" }, confirm: { const: true } } } },
+  { name: "gauntlet_eval_seal", description: "Post a lead GitHub seal attestation for an adjudicated corpus with every mandatory reviewer acknowledged PASS on the current evidence PR head. No file commit moves the sealed head. Later content/head changes invalidate sealing. Never merges.",
+    inputSchema: { type: "object", required: ["run", "expected_head", "confirm"], properties: { run: { type: "string" }, expected_head: { type: "string" }, confirm: { const: true } } } },
+  { name: "gauntlet_eval_observe", description: "Refresh exact cloud receipts into the protected authorization journal. Terminal observations release concurrency, not spent submissions. Failed queries, missing tasks and ambiguous submissions remain unresolved; durable fingerprints deduplicate unchanged observations across restarts.",
+    inputSchema: { type: "object", required: ["run"], properties: { run: { type: "string" } } } },
+  { name: "gauntlet_eval_status", description: "Read-only evaluation view of exact provider receipts, publication, admission, review, seal and remaining authorization limits. Explicitly reports observation failures and legacy verification gaps.",
+    inputSchema: { type: "object", required: ["run"], properties: { run: { type: "string" } } } },
+  { name: "gauntlet_eval_recover", description: "Preview restart recovery from protected GitHub scope, reservations and exact receipts. confirm=true restores only a missing local manifest, preserving committed history when a PR exists. Never resets budgets, silently adopts changed scope or overwrites local files.",
+    inputSchema: { type: "object", required: ["run"], properties: { run: { type: "string" }, confirm: { type: "boolean" } } } },
   { name: "gauntlet_eval_validate", description: "Read-only validation of a local versioned evidence packet against its frozen source Git tree. Checks identity, evidence links, artifacts and detected prohibited data. Does not accept claims, attest redaction, launch agents or seal a run.",
     inputSchema: { type: "object", required: ["run", "assignment"], properties: { run: { type: "string" }, assignment: { type: "string" } } } },
   { name: "gauntlet_eval_collect", description: "Inspect an exact Codex task's packet patch. Defaults to read-only preview. apply=true revalidates then applies only that same patch, refusing dirty packet files or unsafe artifacts. A validated packet is not yet lead-accepted. Never launches a replacement worker.",
@@ -126,11 +155,14 @@ function repoRoot() {
 
 function callTool(name, args) {
   if (EVALUATION_TOOLS.some((tool) => tool.name === name)) {
-    const action = name.slice("gauntlet_eval_".length);
+    const action = name.slice("gauntlet_eval_".length).replaceAll("_", "-");
     const argv = [action, "--run", args.run];
-    if (args.assignment) argv.push("--assignment", args.assignment);
+    for (const name of ["assignment", "authorization", "pr", "expected_head", "decision", "packet_digest", "reason", "comment_url", "critic_role", "packet", "launch_key", "task_id", "task_url", "wave"]) {
+      if (args[name] != null) argv.push(`--${name.replaceAll("_", "-")}`, String(args[name]));
+    }
     if (args.apply === true) argv.push("--apply");
     if (args.confirm === true) argv.push("--confirm");
+    if (args.redaction_inspected === true) argv.push("--redaction-inspected");
     return runEvaluation(repoRoot(), argv);
   }
   if (READ_HANDLERS[name]) {

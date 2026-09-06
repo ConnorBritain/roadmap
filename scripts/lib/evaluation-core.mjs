@@ -55,8 +55,8 @@ export function normalizeAssignment(value = {}) {
     state: value.state || "planned",
     receipt: value.receipt || null,
     collected_at: value.collected_at || null,
-    ...(value.collection ? { collection: value.collection } : {}),
-    ...(value.admission ? { admission: value.admission } : {}),
+    ...(Object.hasOwn(value, "collection") ? { collection: value.collection } : {}),
+    ...(Object.hasOwn(value, "admission") ? { admission: value.admission } : {}),
     ...(value.history ? { history: value.history } : {}),
     ...(value.evidence_types ? { evidence_types: value.evidence_types } : {}),
   };
@@ -90,6 +90,17 @@ export function assignmentFor(run, id) {
   const assignment = (run && Array.isArray(run.assignments) ? run.assignments : []).find((entry) => entry && entry.id === id);
   if (!assignment) throw new Error(`evaluation assignment not found: ${id}`);
   return assignment;
+}
+
+// Only lead-authored launch scope belongs in authorization; derived state and
+// receipts cannot change the frozen scope or become a new source of authority.
+export function evaluationScopeSnapshot(run) {
+  return { version: run.version, run_id: run.run_id, title: run.title, base_sha: run.base_sha,
+    artifact_root: run.artifact_root, provider: run.provider, environment_id: run.environment_id,
+    evidence_policy: run.evidence_policy, assignments: run.assignments.map((assignment) => ({
+      id: assignment.id, wave: assignment.wave, prompt: assignment.prompt,
+      ...(assignment.evidence_types ? { evidence_types: assignment.evidence_types } : {}),
+    })) };
 }
 
 export function assignmentsForWave(run, wave) {
