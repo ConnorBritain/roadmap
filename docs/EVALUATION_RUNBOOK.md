@@ -1,6 +1,6 @@
 # Authorized documentation evaluations
 
-Status: implemented and fixture-tested; live Pidgeon qualification is still pending. This
+Status: implemented, fixture-tested and [source-only Pidgeon qualified](qualification/2026-09-06-pidgeon.md). This
 runbook describes the evaluation conductor, not automatic merging or product implementation.
 The shared authority/review primitives also support opt-in bounded implementation runs;
 legacy implementation runs remain readable without gaining verified authorization retroactively.

@@ -350,6 +350,8 @@ export function registerEvaluationLifecycleTests(test) {
       assert.equal(seal.sealed, true); assert.equal(seal.evidence_head, beforeSeal);
       assert.equal(git(r.root, ["rev-parse", "HEAD"]), beforeSeal);
       const status = await r.action("status"); assert.equal(status.review.sealed, true);
+      assert.equal(status.review.state, "sealed"); assert.equal(status.state, "sealed");
+      assert.equal(status.verification, "sealed_current_head");
       // Cloud completion frees concurrency only after durable observation;
       // status itself is read-only and cannot replenish submission budget.
       assert.equal(status.limits.active, 1);
@@ -359,7 +361,9 @@ export function registerEvaluationLifecycleTests(test) {
       writeFileSync(join(r.root, r.manifest.artifact_root, r.manifest.run_id, "NOTE.md"), "A later documentation revision.\n");
       git(r.root, ["add", "."]); git(r.root, ["commit", "-qm", "later corpus revision"]);
       r.pr.currentHead = git(r.root, ["rev-parse", "HEAD"]);
-      assert.equal((await r.action("status")).review.sealed, false);
+      const changed = await r.action("status");
+      assert.equal(changed.review.sealed, false); assert.notEqual(changed.state, "sealed");
+      assert.notEqual(changed.verification, "sealed_current_head");
     } finally { rmSync(r.root, { recursive: true, force: true }); }
   });
   test("evaluation acceptance cannot bless changed digests, product changes or a competing PR", async () => {

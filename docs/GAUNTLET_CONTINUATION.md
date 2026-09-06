@@ -163,6 +163,14 @@ unattended progress. See [Scheduled tasks](https://learn.chatgpt.com/docs/automa
 
 ## Program qualification status
 
+Current closeout (2026-09-06): the bounded source-only Pidgeon run has an
+acknowledged exact-head PASS and GitHub seal. Four actual scheduled wakes and
+missing-manifest recovery are documented in the
+[receipt index](qualification/2026-09-06-pidgeon.md). The same-task 30-minute
+heartbeat is now PAUSED through the supported desktop scheduling tool. Model
+actuals remain unverified. The notes below are chronological preparation history,
+not current blockers or instructions to resume the completed run.
+
 On 2026-09-06 the desktop tool registered `trustworthy-gauntlet-lead-continuation` on lead task
 `019fe38d-cc08-7111-817c-16243fa451c1`, with a 30-minute cadence. No scheduled wake or live
 Pidgeon PASS is claimed. It inherits lead task settings; actual model/effort has not been
