@@ -49,7 +49,8 @@ export function evaluationReviewStatus(state, pr, { corpusDigest = null } = {}) 
   const roles = state.authorization.required_review_roles.map((role) => {
     const valid = results.find((r) => r.criticRole === role && r.valid);
     const candidate = results.find((r) => r.criticRole === role && r.invalidReason === "unacknowledged_result");
-    const inFlight = state.reservations.find((r) => r.role === "critic" && r.expected_head === pr.currentHead && r.request.critic_role === role);
+    const inFlight = state.reservations.find((r) => r.role === "critic" && r.expected_head === pr.currentHead && r.request.critic_role === role
+      && (!corpusDigest || r.request.corpus_digest === corpusDigest));
     return { role, verdict: valid?.verdict || null, acknowledged: !!valid, comment_url: (valid || candidate)?.comment.url || null,
       awaiting_ack: !!candidate, launched: !!inFlight };
   });

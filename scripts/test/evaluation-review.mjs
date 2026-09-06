@@ -65,6 +65,8 @@ export function registerEvaluationReviewTests(test) {
     assert.equal(evaluationReviewStatus(f.state, f.pr).pass, true);
     assert.equal(evaluationReviewStatus(f.state, f.pr, { corpusDigest: "f".repeat(64) }).pass, false,
       "a head-bound PASS does not cover a changed admission corpus");
+    assert.equal(evaluationReviewStatus(f.state, f.pr, { corpusDigest: "f".repeat(64) }).state, "awaiting_critic",
+      "an earlier corpus critic must not block fresh review of the changed corpus");
     result.body += "\nChanged claim";
     assert.equal(evaluationReviewStatus(f.state, f.pr).pass, false);
     result.updatedAt = "2026-09-05T10:02:00Z";

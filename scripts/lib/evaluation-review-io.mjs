@@ -176,7 +176,7 @@ export async function runEvaluationReviewAction(root, action, { manifest, store,
     if (!diagnostic.ok) throw new Error("Codex Cloud critic is unavailable; no submission reserved");
     const round = state.reservations.filter((r) => r.role === "repair").length + 1;
     const nonce = randomBytes(16).toString("hex"), owner = randomUUID();
-    const key = `evaluation:${manifest.run_id}:critic:${role}:${expectedHead}:${round}`;
+    const key = `evaluation:${manifest.run_id}:critic:${role}:${expectedHead}:${round}:${corpus.corpus_digest}`;
     const reserved = await mutateAuthorization(store, manifest.run_id, (current) => reserveAuthorizedLaunch(current, {
       key, role: "critic", provider: "codex", expected_head: expectedHead, critic_role: role, round, nonce_sha256: sha256(nonce), corpus_digest: corpus.corpus_digest,
       model_policy: modelPolicy,

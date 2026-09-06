@@ -86,6 +86,41 @@ export function registerEvaluationLifecycleTests(test) {
       await assert.rejects(() => action("recover", "--confirm"), /will not overwrite/);
     } finally { rmSync(r.root, { recursive: true, force: true }); }
   });
+  test("changed admission at the same head requires a fresh budgeted critic and cannot reuse the previous PASS", async () => {
+    const r = await fixture();
+    try {
+      await r.action("attach", "--pr", "42", "--confirm");
+      await r.action("accept", "--assignment", "packet-one", "--packet-digest", r.collected.digest,
+        "--reason", "Inspected initial fixture", "--redaction-inspected", "--confirm");
+      const head = r.pr.currentHead;
+      await r.action("critic");
+      const nonce = /\nnonce=([a-f0-9]{32})\n/.exec(r.prompts[0])[1];
+      await r.github.addComment(42, renderCriticMarker({ run: evaluationReviewRun((await r.store.read()).state),
+        round: 1, nonce, head, verdict: "PASS" }) + "\nInspected initial fixture corpus.");
+      const pass = r.pr.comments.at(-1); pass.author = "independent-critic";
+      await r.action("ack", "--comment-url", pass.url, "--confirm");
+      await r.action("observe");
+      await r.action("accept", "--assignment", "packet-one", "--packet-digest", r.collected.digest,
+        "--decision", "rejected", "--reason", "Lead inspection found insufficient support", "--redaction-inspected", "--confirm");
+      assert.equal(r.pr.currentHead, head);
+      await assert.rejects(() => r.action("seal", "--confirm"), /seal requires/);
+      const fresh = await r.action("critic");
+      assert.equal(fresh.receipt.external_id, "task_2");
+      const reservations = (await r.store.read()).state.reservations;
+      assert.equal(reservations.length, 2);
+      assert.notEqual(reservations[0].key, reservations[1].key);
+      assert.notEqual(reservations[0].request.corpus_digest, reservations[1].request.corpus_digest);
+      await assert.rejects(() => r.action("critic"), /not the next/);
+      await assert.rejects(() => r.action("seal", "--confirm"), /seal requires/);
+      const freshNonce = /\nnonce=([a-f0-9]{32})\n/.exec(r.prompts[1])[1];
+      await r.github.addComment(42, renderCriticMarker({ run: evaluationReviewRun((await r.store.read()).state),
+        round: 1, nonce: freshNonce, head, verdict: "PASS" }) + "\nInspected changed corpus; rejected packet is not accepted evidence.");
+      const freshPass = r.pr.comments.at(-1); freshPass.author = "independent-critic";
+      await assert.rejects(() => r.action("seal", "--confirm"), /seal requires/);
+      await r.action("ack", "--comment-url", freshPass.url, "--confirm");
+      assert.equal((await r.action("seal", "--confirm")).sealed, true);
+    } finally { rmSync(r.root, { recursive: true, force: true }); }
+  });
   test("evaluation REVISE -> inspected ack -> exact-path cloud repair -> re-admission -> fresh PASS", async () => {
     const r = await fixture();
     try {
