@@ -57,6 +57,7 @@ try {
   assert.ok(!result.isError); assert.equal(JSON.parse(result.content[0].text).digest, validation.digest);
   assert.equal(listed.find((tool) => tool.name === "gauntlet_status").inputSchema.properties.all.type, "boolean");
   assert.ok(listed.find((tool) => tool.name === "gauntlet_eval_critic").inputSchema.properties.model_preference);
+  assert.equal(listed.find((tool) => tool.name === "gauntlet_eval_critic").inputSchema.properties.allow_incomplete.type, "boolean");
   for (const name of ["EVIDENCE_PACKETS.md", "EVALUATION_RUNBOOK.md", "GAUNTLET_CONTINUATION.md", "specs/trustworthy-gauntlet.md"]) assert.ok(readFileSync(join(installed, "docs", name)).length);
   console.log("Packed artifact: CLI roadmap validation, evaluation init/admission, MCP registry and admission parity passed. No remote submissions.");
 } finally { rmSync(root, { recursive: true, force: true }); }

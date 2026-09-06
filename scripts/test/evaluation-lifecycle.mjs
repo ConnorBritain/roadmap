@@ -43,6 +43,53 @@ async function fixture() {
 }
 
 export function registerEvaluationLifecycleTests(test) {
+  for (const verdict of ["PASS", "REVISE"]) test(`explicit incomplete-corpus review ${verdict === "PASS" ? "cannot acknowledge PASS" : "repairs missing evidence through inspected REVISE"}`, async () => {
+    const r = await fixture();
+    try {
+      for (const name of ["REPORT.md", "evidence.yaml"]) unlinkSync(join(r.root, r.packetDir, name));
+      git(r.root, ["add", r.packetDir]); git(r.root, ["commit", "-qm", "missing packet fixture"]);
+      r.pr.currentHead = git(r.root, ["rev-parse", "HEAD"]);
+      await r.action("attach", "--pr", "42", "--confirm");
+      await assert.rejects(() => r.action("critic"), /adjudicate/);
+      await r.action("critic", "--allow-incomplete");
+      assert.ok(r.prompts[0].includes("diagnostic review of an incomplete corpus"));
+      assert.equal((await r.store.read()).state.reservations[0].request.incomplete_corpus_review, true);
+      const nonce = /\nnonce=([a-f0-9]{32})\n/.exec(r.prompts[0])[1];
+      await r.github.addComment(42, renderCriticMarker({ run: evaluationReviewRun((await r.store.read()).state),
+        round: 1, nonce, head: r.pr.currentHead, verdict }) + "\nMissing packet must be supplied with source-only evidence.");
+      const result = r.pr.comments.at(-1); result.author = "independent-critic";
+      if (verdict === "PASS") {
+        await assert.rejects(() => r.action("ack", "--comment-url", result.url, "--confirm"), /cannot acknowledge PASS/);
+        await assert.rejects(() => r.action("seal", "--confirm"), /seal requires/);
+        return;
+      }
+      const packet = { version: 1, expected_head: r.pr.currentHead, findings: [{ id: "MISSING", critic_comment_url: result.url,
+        description: "Create the missing permitted source-only packet.", paths: ["REPORT.md", "evidence.yaml"].map((name) => `${r.packetDir}/${name}`) }],
+        instructions: "Supply only the missing documentation; do not change source or policy." };
+      const file = join(r.root, "repair-request.json"); writeFileSync(file, JSON.stringify(packet));
+      await assert.rejects(() => r.action("repair", "--packet", file), /acknowledged current-head/);
+      await r.action("ack", "--comment-url", result.url, "--confirm");
+      await r.action("observe");
+      const repair = await r.action("repair", "--packet", file);
+      r.opts.cloudDiff = () => r.patch(r.f.files);
+      const applied = await r.action("collect-repair", "--launch-key", repair.launch_key, "--apply");
+      assert.equal(applied.applied, true);
+      git(r.root, ["add", r.manifest.artifact_root]); git(r.root, ["commit", "-qm", "supply missing fixture"]);
+      r.pr.currentHead = git(r.root, ["rev-parse", "HEAD"]);
+      await assert.rejects(() => r.action("seal", "--confirm"), /seal requires/);
+      await r.action("accept", "--assignment", "packet-one", "--packet-digest", applied.packets[0].digest,
+        "--reason", "Inspected newly supplied fixture", "--redaction-inspected", "--confirm");
+      await r.action("observe");
+      await r.action("critic");
+      const freshNonce = /\nnonce=([a-f0-9]{32})\n/.exec(r.prompts[2])[1];
+      await r.github.addComment(42, renderCriticMarker({ run: evaluationReviewRun((await r.store.read()).state),
+        round: 2, nonce: freshNonce, head: r.pr.currentHead, verdict: "PASS" }) + "\nInspected complete corrected packet.");
+      const pass = r.pr.comments.at(-1); pass.author = "fresh-independent-critic";
+      await r.action("ack", "--comment-url", pass.url, "--confirm");
+      assert.equal((await r.action("seal", "--confirm")).sealed, true);
+      assert.equal((await r.action("status")).limits.submissions_used, 3);
+    } finally { rmSync(r.root, { recursive: true, force: true }); }
+  });
   test("PR-backed recovery rejects malformed committed manifests before writing local state", async () => {
     for (const assignments of [null, "not-an-array", [null]]) {
       const r = await fixture();

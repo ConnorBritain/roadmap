@@ -135,6 +135,15 @@ roadmap gauntlet eval ack --run <id> --expected-head <evidence-head> --comment-u
 All expected packets must be adjudicated first. The next frozen reviewer role executes
 sequentially, in a fresh Cloud task. One `critic` is always mandatory. A security or other
 specialist cannot substitute for another required role. Each must PASS the same current head.
+
+If validation refuses a packet and leaves it unapplied, preserve its exact task and rejected
+patch digest in lead notes. Do not weaken the frozen schema or import invalid files. An
+explicit `critic --allow-incomplete` requests diagnostic review of the incomplete PR, within
+the same protected limits. The critic independently identifies missing/invalid evidence;
+only inspected, acknowledged REVISE findings may drive a scoped repair that creates the
+missing permitted packet. PASS acknowledgment and sealing remain forbidden while any
+expected evidence is unresolved. Revalidate and adjudicate repaired packets before fresh
+review. The MCP equivalent is `gauntlet_eval_critic` with `allow_incomplete: true`.
 Actual lead inspection precedes acknowledgment: read the exact critic artifact, independently
 check material claims and reject scope creep. The shared Gauntlet protocol binds acknowledgment
 to both the immutable comment body and its GitHub URL. Editing or replaying a verdict cannot

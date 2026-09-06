@@ -282,6 +282,7 @@ export async function runEvaluation(root, args, opts = {}) {
       expectedHead: value(args, "--expected-head"), prNumber: Number(value(args, "--pr")), assignmentId: value(args, "--assignment"),
       decision: value(args, "--decision") || "accepted", packetDigest: value(args, "--packet-digest"), reason: value(args, "--reason"),
       redactionInspected: flag(args, "--redaction-inspected"), commentUrl: value(args, "--comment-url"), criticRole: value(args, "--critic-role"),
+      allowIncomplete: flag(args, "--allow-incomplete"),
       repairPacket: action === "repair" && value(args, "--packet") ? parseInput(readFileSync(resolve(value(args, "--packet")), "utf8")) : null,
       confirm: flag(args, "--confirm"), opts });
   }

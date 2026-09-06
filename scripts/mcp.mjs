@@ -111,8 +111,8 @@ const EVALUATION_TOOLS = [
     inputSchema: { type: "object", required: ["run", "assignment", "packet_digest", "expected_head", "decision", "reason", "redaction_inspected", "confirm"], properties: {
       run: { type: "string" }, assignment: { type: "string" }, packet_digest: { type: "string" }, expected_head: { type: "string" },
       decision: { enum: ["accepted", "rejected"] }, reason: { type: "string" }, redaction_inspected: { const: true }, confirm: { const: true } } } },
-  { name: "gauntlet_eval_critic", description: "Launch the next required independent corpus critic within frozen authority. Requires all expected packets adjudicated, an exact evidence PR head, stable checks and available durable submission/concurrency budget. Mandatory reviewer roles execute sequentially. No local/API/provider fallback.",
-    inputSchema: { type: "object", required: ["run", "expected_head"], properties: { run: { type: "string" }, expected_head: { type: "string" }, critic_role: { type: "string" } } } },
+  { name: "gauntlet_eval_critic", description: "Launch the next required independent corpus critic within frozen authority. Requires all expected packets adjudicated unless allow_incomplete explicitly requests diagnostic review; unresolved evidence cannot receive acknowledged PASS or seal. Requires an exact evidence PR head, stable checks and available durable capacity. Required roles run sequentially. No fallback.",
+    inputSchema: { type: "object", required: ["run", "expected_head"], properties: { run: { type: "string" }, expected_head: { type: "string" }, critic_role: { type: "string" }, allow_incomplete: { type: "boolean", description: "Explicitly review missing/invalid evidence to obtain independent findings for acknowledged scoped repair; never bypass admission or sealing." } } } },
   { name: "gauntlet_eval_repair", description: "Launch a fresh documentation-only repair worker using a versioned lead-synthesized packet file. Every finding must name an acknowledged current-head REVISE comment and explicit permitted documentation paths. Reserves frozen submission/concurrency/repair capacity. The worker commits locally; only the lead publishes.",
     inputSchema: { type: "object", required: ["run", "expected_head", "packet"], properties: { run: { type: "string" }, expected_head: { type: "string" }, packet: { type: "string", description: "Path to the inspected lead repair YAML/JSON packet" } } } },
   { name: "gauntlet_eval_collect_repair", description: "Preview an exact repair receipt diff against its frozen expected head and lead-approved file list, validating all packets. apply=true applies that exact patch and invalidates changed packet admissions by digest. Refuses moved heads or local conflicts; never rebases or force-pushes a repair.",
@@ -189,6 +189,7 @@ function callTool(name, args) {
     if (args.apply === true) argv.push("--apply");
     if (args.confirm === true) argv.push("--confirm");
     if (args.redaction_inspected === true) argv.push("--redaction-inspected");
+    if (args.allow_incomplete === true) argv.push("--allow-incomplete");
     return runEvaluation(repoRoot(), argv, { modelPreference: args.model_preference || null, decisionRecord: args.record || null, continuationRecord: args.record || null });
   }
   if (READ_HANDLERS[name]) {

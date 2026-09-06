@@ -62,7 +62,7 @@ async function postAttestation(github, pr, kind, payload, lead) {
 
 export async function runEvaluationReviewAction(root, action, { manifest, store, github, expectedHead,
   prNumber, assignmentId, decision = "accepted", packetDigest, reason, redactionInspected = false,
-  commentUrl, criticRole, repairPacket, confirm = false, opts = {} } = {}) {
+  commentUrl, criticRole, repairPacket, allowIncomplete = false, confirm = false, opts = {} } = {}) {
   let snapshot = await store.read(manifest.run_id);
   if (!snapshot) throw new Error("evaluation review requires protected authorization");
   let state = snapshot.state;
@@ -159,6 +159,7 @@ export async function runEvaluationReviewAction(root, action, { manifest, store,
   if (action === "ack") {
     if (!confirm || !commentUrl) throw new Error("ack requires explicit lead inspection and the exact critic comment URL");
     const candidate = review.results.find((r) => r.comment.url === commentUrl);
+    if (candidate?.verdict === "PASS" && corpus.totals.unresolved) throw new Error("cannot acknowledge PASS while expected evidence remains unresolved");
     if (candidate?.valid) return { action, duplicate: true, comment_url: commentUrl, verdict: candidate.verdict };
     if (candidate?.invalidReason !== "unacknowledged_result") throw new Error("critic artifact is not safe to acknowledge at this head");
     pr = await github.getPr(pr.number); assertHead(pr, expectedHead);
@@ -170,7 +171,7 @@ export async function runEvaluationReviewAction(root, action, { manifest, store,
     return { action, run_id: manifest.run_id, comment_url: commentUrl, verdict: candidate.verdict, head: expectedHead };
   }
   if (action === "critic") {
-    if (corpus.totals.unresolved) throw new Error("adjudicate every expected packet before independent corpus review");
+    if (corpus.totals.unresolved && !allowIncomplete) throw new Error("adjudicate every expected packet before independent corpus review, or explicitly use --allow-incomplete for diagnostic review");
     const role = criticRole || review.next_role;
     assertNextEvaluationReviewer(review, role);
     if (!["none", "passing"].includes(pr.checks)) throw new Error("evidence PR checks are not stable/passing");
@@ -183,6 +184,7 @@ export async function runEvaluationReviewAction(root, action, { manifest, store,
     const key = `evaluation:${manifest.run_id}:critic:${role}:${expectedHead}:${round}:${corpus.corpus_digest}`;
     const reserved = await mutateAuthorization(store, manifest.run_id, (current) => reserveAuthorizedLaunch(current, {
       key, role: "critic", provider: "codex", expected_head: expectedHead, critic_role: role, round, nonce_sha256: sha256(nonce), corpus_digest: corpus.corpus_digest,
+      incomplete_corpus_review: !!corpus.totals.unresolved,
       model_policy: modelPolicy,
     }, { owner, now: opts.now || new Date().toISOString() }));
     if (!reserved.reserved) return { action, duplicate: true, reservation: reserved.reservation };
@@ -191,7 +193,8 @@ export async function runEvaluationReviewAction(root, action, { manifest, store,
       pr = await github.getPr(pr.number); assertHead(pr, expectedHead);
       await github.addComment(pr.number, renderGauntletLaunchMarker({ run: review.run, role: "critic", criticRole: role, round, expectedHead, nonce }));
       const prompt = buildCriticPrompt({ run: review.run, pr, expectedHead, criticRole: role, round, nonce })
-        + `\n\nLead-adjudicated packet digest register (verify against actual committed files):\n${JSON.stringify(corpus.records.map(({ assignment, digest, status }) => ({ assignment, digest, status })), null, 2)}`;
+        + `\n\nPacket digest/admission register (verify against actual committed files):\n${JSON.stringify(corpus.records.map(({ assignment, digest, status }) => ({ assignment, digest, status })), null, 2)}`
+        + (corpus.totals.unresolved ? "\nThis is an explicitly requested diagnostic review of an incomplete corpus. Independently inspect missing/invalid evidence and identify documentation repairs; do not invent a packet or treat unresolved coverage as PASS. A PASS cannot be acknowledged or sealed until every expected packet is adjudicated. The normal exact-head REVISE, lead inspection/acknowledgment and scoped repair protocol still applies." : "");
       const currentAuthority = (await store.read(manifest.run_id)).state, now = Date.parse(opts.now || new Date().toISOString());
       if (!authorizationStatus(currentAuthority, { now }).launch_window_open || !continuationStatus(currentAuthority, { now }).launch_ready) throw new Error("launch window or desktop continuation expired");
       submissionAttempted = true;
