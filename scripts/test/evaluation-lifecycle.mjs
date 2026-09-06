@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { parse, stringify } from "yaml";
 import { runEvaluation } from "../evaluate.mjs";
 import { evaluationScopeSnapshot } from "../lib/evaluation-core.mjs";
-import { authorizationFixture, memoryAuthorityStore } from "./authorization.mjs";
+import { authorizationFixture, memoryAuthorityStore, continuationFixtureReceipt } from "./authorization.mjs";
 import { authorizationDigest } from "../lib/gauntlet-authorization.mjs";
 import { evaluationReviewRun } from "../lib/evaluation-review-core.mjs";
 import { renderCriticMarker } from "../lib/gauntlet-core.mjs";
@@ -43,6 +43,105 @@ async function fixture() {
 }
 
 export function registerEvaluationLifecycleTests(test) {
+  for (const verdict of ["PASS", "REVISE"]) test(`explicit incomplete-corpus review ${verdict === "PASS" ? "cannot acknowledge PASS" : "repairs missing evidence through inspected REVISE"}`, async () => {
+    const r = await fixture();
+    try {
+      for (const name of ["REPORT.md", "evidence.yaml"]) unlinkSync(join(r.root, r.packetDir, name));
+      git(r.root, ["add", r.packetDir]); git(r.root, ["commit", "-qm", "missing packet fixture"]);
+      r.pr.currentHead = git(r.root, ["rev-parse", "HEAD"]);
+      await r.action("attach", "--pr", "42", "--confirm");
+      await assert.rejects(() => r.action("critic"), /adjudicate/);
+      await r.action("critic", "--allow-incomplete");
+      assert.ok(r.prompts[0].includes("diagnostic review of an incomplete corpus"));
+      assert.equal((await r.store.read()).state.reservations[0].request.incomplete_corpus_review, true);
+      const nonce = /\nnonce=([a-f0-9]{32})\n/.exec(r.prompts[0])[1];
+      await r.github.addComment(42, renderCriticMarker({ run: evaluationReviewRun((await r.store.read()).state),
+        round: 1, nonce, head: r.pr.currentHead, verdict }) + "\nMissing packet must be supplied with source-only evidence.");
+      const result = r.pr.comments.at(-1); result.author = "independent-critic";
+      if (verdict === "PASS") {
+        await assert.rejects(() => r.action("ack", "--comment-url", result.url, "--confirm"), /cannot acknowledge PASS/);
+        await assert.rejects(() => r.action("seal", "--confirm"), /seal requires/);
+        return;
+      }
+      const packet = { version: 1, expected_head: r.pr.currentHead, findings: [{ id: "MISSING", critic_comment_url: result.url,
+        description: "Create the missing permitted source-only packet.", paths: ["REPORT.md", "evidence.yaml"].map((name) => `${r.packetDir}/${name}`) }],
+        instructions: "Supply only the missing documentation; do not change source or policy." };
+      const file = join(r.root, "repair-request.json"); writeFileSync(file, JSON.stringify(packet));
+      await assert.rejects(() => r.action("repair", "--packet", file), /acknowledged current-head/);
+      await r.action("ack", "--comment-url", result.url, "--confirm");
+      await r.action("observe");
+      const repair = await r.action("repair", "--packet", file);
+      r.opts.cloudDiff = () => r.patch(r.f.files);
+      const applied = await r.action("collect-repair", "--launch-key", repair.launch_key, "--apply");
+      assert.equal(applied.applied, true);
+      git(r.root, ["add", r.manifest.artifact_root]); git(r.root, ["commit", "-qm", "supply missing fixture"]);
+      r.pr.currentHead = git(r.root, ["rev-parse", "HEAD"]);
+      await assert.rejects(() => r.action("seal", "--confirm"), /seal requires/);
+      await r.action("accept", "--assignment", "packet-one", "--packet-digest", applied.packets[0].digest,
+        "--reason", "Inspected newly supplied fixture", "--redaction-inspected", "--confirm");
+      await r.action("observe");
+      await r.action("critic");
+      const freshNonce = /\nnonce=([a-f0-9]{32})\n/.exec(r.prompts[2])[1];
+      await r.github.addComment(42, renderCriticMarker({ run: evaluationReviewRun((await r.store.read()).state),
+        round: 2, nonce: freshNonce, head: r.pr.currentHead, verdict: "PASS" }) + "\nInspected complete corrected packet.");
+      const pass = r.pr.comments.at(-1); pass.author = "fresh-independent-critic";
+      await r.action("ack", "--comment-url", pass.url, "--confirm");
+      assert.equal((await r.action("seal", "--confirm")).sealed, true);
+      assert.equal((await r.action("status")).limits.submissions_used, 3);
+    } finally { rmSync(r.root, { recursive: true, force: true }); }
+  });
+  test("PR-backed recovery rejects malformed committed manifests before writing local state", async () => {
+    for (const assignments of [null, "not-an-array", [null]]) {
+      const r = await fixture();
+      try {
+        await r.action("attach", "--pr", "42", "--confirm");
+        const broken = parse(readFileSync(r.manifestPath, "utf8")); broken.assignments = assignments;
+        writeFileSync(r.manifestPath, stringify(broken));
+        git(r.root, ["add", r.manifestPath]); git(r.root, ["commit", "-qm", "malformed recovery fixture"]);
+        r.pr.currentHead = git(r.root, ["rev-parse", "HEAD"]); unlinkSync(r.manifestPath);
+        await assert.rejects(() => r.action("recover", "--confirm"), /assignments/);
+        assert.equal(existsSync(r.manifestPath), false);
+        assert.equal((await r.store.read()).state.reservations.length, 0);
+      } finally { rmSync(r.root, { recursive: true, force: true }); }
+    }
+  });
+  test("PR-backed recovery adopts only normalized committed assignments", async () => {
+    const r = await fixture();
+    try {
+      await r.action("attach", "--pr", "42", "--confirm");
+      const prior = parse(readFileSync(r.manifestPath, "utf8")); prior.assignments[0].unexpected_field = "discarded";
+      writeFileSync(r.manifestPath, stringify(prior)); git(r.root, ["add", r.manifestPath]);
+      git(r.root, ["commit", "-qm", "extra recovery fixture metadata"]);
+      r.pr.currentHead = git(r.root, ["rev-parse", "HEAD"]); unlinkSync(r.manifestPath);
+      await r.action("recover", "--confirm");
+      assert.equal(parse(readFileSync(r.manifestPath, "utf8")).assignments[0].unexpected_field, undefined);
+    } finally { rmSync(r.root, { recursive: true, force: true }); }
+  });
+  test("a deadline crossed after reservation records no submission and never invents a provider receipt", async () => {
+    const r = await fixture();
+    try {
+      let clock = r.opts.now;
+      r.opts.now = () => clock;
+      const initial = structuredClone(r.state);
+      initial.authorization.limits.launch_deadline = "2026-09-05T10:01:00Z";
+      initial.authorization_digest = authorizationDigest(initial.authorization);
+      r.store = memoryAuthorityStore(initial); r.opts.authorityStore = r.store;
+      const original = r.store.compareAndSwap;
+      r.store.compareAndSwap = async (...args) => {
+        const result = await original(...args);
+        if (result.current.state.reservations.length) clock = "2026-09-05T10:02:00Z";
+        return result;
+      };
+      await assert.rejects(() => r.action("launch", "--wave", "wave-one"), /before provider submission/);
+      assert.equal(r.prompts.length, 0);
+      const state = (await r.store.read()).state;
+      assert.equal(state.reservations.length, 1); assert.equal(state.reservations[0].state, "not_submitted");
+      assert.equal(state.reservations[0].receipt, null);
+      const status = await r.action("status");
+      assert.equal(status.limits.submissions_used, 1); assert.equal(status.limits.active, 0);
+      assert.equal(status.executions[0].observation.state, "not_submitted");
+    } finally { rmSync(r.root, { recursive: true, force: true }); }
+  });
   test("strict unsupported evaluator settings fail before reserving or submitting", async () => {
     const r = await fixture();
     try {
@@ -69,6 +168,10 @@ export function registerEvaluationLifecycleTests(test) {
         } };
       const action = (name, ...args) => runEvaluation(r.root, [name, "--run", manifest.run_id, ...args], opts);
       await action("authorize", "--authorization", policyFile, "--confirm");
+      const handoff = await action("launch", "--wave", "wave-one");
+      assert.equal(handoff.state, "awaiting_continuation"); assert.equal(submissions, 0);
+      opts.continuationRecord = continuationFixtureReceipt();
+      await action("continuation", "--confirm");
       if (ambiguous) await assert.rejects(() => action("launch", "--wave", "wave-one"), /unresolved/);
       else await action("launch", "--wave", "wave-one");
       assert.equal(submissions, 1);
@@ -80,6 +183,41 @@ export function registerEvaluationLifecycleTests(test) {
       const repeated = await action("launch", "--wave", "wave-one");
       assert.equal(repeated.launched[0].skipped, true); assert.equal(submissions, 1);
       await assert.rejects(() => action("recover", "--confirm"), /will not overwrite/);
+    } finally { rmSync(r.root, { recursive: true, force: true }); }
+  });
+  test("changed admission at the same head requires a fresh budgeted critic and cannot reuse the previous PASS", async () => {
+    const r = await fixture();
+    try {
+      await r.action("attach", "--pr", "42", "--confirm");
+      await r.action("accept", "--assignment", "packet-one", "--packet-digest", r.collected.digest,
+        "--reason", "Inspected initial fixture", "--redaction-inspected", "--confirm");
+      const head = r.pr.currentHead;
+      await r.action("critic");
+      const nonce = /\nnonce=([a-f0-9]{32})\n/.exec(r.prompts[0])[1];
+      await r.github.addComment(42, renderCriticMarker({ run: evaluationReviewRun((await r.store.read()).state),
+        round: 1, nonce, head, verdict: "PASS" }) + "\nInspected initial fixture corpus.");
+      const pass = r.pr.comments.at(-1); pass.author = "independent-critic";
+      await r.action("ack", "--comment-url", pass.url, "--confirm");
+      await r.action("observe");
+      await r.action("accept", "--assignment", "packet-one", "--packet-digest", r.collected.digest,
+        "--decision", "rejected", "--reason", "Lead inspection found insufficient support", "--redaction-inspected", "--confirm");
+      assert.equal(r.pr.currentHead, head);
+      await assert.rejects(() => r.action("seal", "--confirm"), /seal requires/);
+      const fresh = await r.action("critic");
+      assert.equal(fresh.receipt.external_id, "task_2");
+      const reservations = (await r.store.read()).state.reservations;
+      assert.equal(reservations.length, 2);
+      assert.notEqual(reservations[0].key, reservations[1].key);
+      assert.notEqual(reservations[0].request.corpus_digest, reservations[1].request.corpus_digest);
+      await assert.rejects(() => r.action("critic"), /not the next/);
+      await assert.rejects(() => r.action("seal", "--confirm"), /seal requires/);
+      const freshNonce = /\nnonce=([a-f0-9]{32})\n/.exec(r.prompts[1])[1];
+      await r.github.addComment(42, renderCriticMarker({ run: evaluationReviewRun((await r.store.read()).state),
+        round: 1, nonce: freshNonce, head, verdict: "PASS" }) + "\nInspected changed corpus; rejected packet is not accepted evidence.");
+      const freshPass = r.pr.comments.at(-1); freshPass.author = "independent-critic";
+      await assert.rejects(() => r.action("seal", "--confirm"), /seal requires/);
+      await r.action("ack", "--comment-url", freshPass.url, "--confirm");
+      assert.equal((await r.action("seal", "--confirm")).sealed, true);
     } finally { rmSync(r.root, { recursive: true, force: true }); }
   });
   test("evaluation REVISE -> inspected ack -> exact-path cloud repair -> re-admission -> fresh PASS", async () => {
@@ -176,7 +314,7 @@ export function registerEvaluationLifecycleTests(test) {
     try {
       await r.action("attach", "--pr", "42", "--confirm");
       await assert.rejects(() => r.action("accept", "--assignment", "packet-one", "--packet-digest", "0".repeat(64),
-        "--reason", "Inspected", "--redaction-inspected", "--confirm"), /valid packet/);
+        "--reason", "Inspected", "--redaction-inspected", "--confirm"), /digest must match/);
       const other = { ...r.opts, github: { ...r.github, getPr: () => ({ ...structuredClone(r.pr), number: 43, url: "https://github.com/owner/repo/pull/43" }) } };
       await assert.rejects(() => runEvaluation(r.root, ["attach", "--run", r.manifest.run_id, "--pr", "43", "--expected-head", r.pr.currentHead, "--confirm"], other), /different evidence PR/);
       writeFileSync(join(r.root, "src/example.js"), "export const example = 2;\n");

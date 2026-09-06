@@ -2,8 +2,8 @@
 
 Status: implemented and fixture-tested; live Pidgeon qualification is still pending. This
 runbook describes the evaluation conductor, not automatic merging or product implementation.
-The shared authority/review primitives are reusable, but integrating bounded authority into
-the existing implementation entrypoints is a remaining program dependency.
+The shared authority/review primitives also support opt-in bounded implementation runs;
+legacy implementation runs remain readable without gaining verified authorization retroactively.
 
 ## Prepare once
 
@@ -85,6 +85,10 @@ roadmap gauntlet eval collect --run <id> --assignment <assignment> --apply
 Launch does not require repeated human approval within frozen authority. Reservations are
 atomically recorded in GitHub before submission; a concurrent loser cannot spend another task.
 Ambiguous responses and abandoned pre-submit reservations consume capacity until reconciled.
+If the reserving conductor knows it stopped before calling the provider, it records
+`not_submitted`: the submission budget stays spent, concurrency is released, and no provider
+receipt is expected. That exact launch key cannot be retried. A lost conductor cannot infer
+this outcome from a missing receipt, and an ambiguous submission cannot be relabelled this way.
 Never recover them by deleting local files and retrying the provider. Every receipt uses its
 exact task ID/URL; never associate tasks by recency.
 
@@ -131,6 +135,15 @@ roadmap gauntlet eval ack --run <id> --expected-head <evidence-head> --comment-u
 All expected packets must be adjudicated first. The next frozen reviewer role executes
 sequentially, in a fresh Cloud task. One `critic` is always mandatory. A security or other
 specialist cannot substitute for another required role. Each must PASS the same current head.
+
+If validation refuses a packet and leaves it unapplied, preserve its exact task and rejected
+patch digest in lead notes. Do not weaken the frozen schema or import invalid files. An
+explicit `critic --allow-incomplete` requests diagnostic review of the incomplete PR, within
+the same protected limits. The critic independently identifies missing/invalid evidence;
+only inspected, acknowledged REVISE findings may drive a scoped repair that creates the
+missing permitted packet. PASS acknowledgment and sealing remain forbidden while any
+expected evidence is unresolved. Revalidate and adjudicate repaired packets before fresh
+review. The MCP equivalent is `gauntlet_eval_critic` with `allow_incomplete: true`.
 Actual lead inspection precedes acknowledgment: read the exact critic artifact, independently
 check material claims and reject scope creep. The shared Gauntlet protocol binds acknowledgment
 to both the immutable comment body and its GitHub URL. Editing or replaying a verdict cannot

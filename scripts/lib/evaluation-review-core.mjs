@@ -19,6 +19,7 @@ export function evaluationReviewRun(state) {
     "Expected packets must have attributable decisions bound to their exact digests. Missing evidence remains unresolved. Check REPORT.md claims against version 1 evidence.yaml and frozen source independently; schema validity is not truth.",
     "Verify report links, limitations, executed versus unexecuted tests, source versus deployed observations, declared attachments, redaction and preserved prior revisions. Do not infer a PASS from collection timestamps.",
     "Synthetic qualification defects must be explicitly labelled and separate from genuine product findings.",
+    `Frozen assignment evidence-type limits: ${JSON.stringify(a.scope.snapshot.assignments.map(({ id, evidence_types }) => ({ id, evidence_types: evidence_types || null })))}. Do not relax these limits to admit a failed packet.`,
     `Required independent reviewer roles (sequential): ${a.required_review_roles.join(", ")}.`,
     `Only these verification commands are approved: ${JSON.stringify(a.verification_commands)}. Do not run other tests, builds or install scripts. Read-only source inspection is allowed.`,
     "Do not read builder/evaluator conversation transcripts or rely on worker self-assessments. Do not change files, push, merge, repair, publish packages or launch additional agents.",
@@ -29,15 +30,16 @@ export function evaluationReviewRun(state) {
     frozen_bar_markdown: bar, bar_sha256: createHash("sha256").update(bar).digest("hex"), launches: [] };
 }
 
-export function evaluationReviewStatus(state, pr) {
+export function evaluationReviewStatus(state, pr, { corpusDigest = null } = {}) {
   const run = evaluationReviewRun(state);
   if (pr.number !== state.evidence_pr.number || pr.url !== state.evidence_pr.url || pr.baseRefName !== state.evidence_pr.base_ref) {
     throw new Error("evidence PR identity or base branch changed");
   }
   const attestations = reconstructLaunchesFromComments({ run, comments: pr.comments || [] });
   const missingAttestations = [];
-  for (const reservation of state.reservations.filter((r) => r.role === "critic")) {
+  for (const reservation of state.reservations.filter((r) => r.role === "critic" && r.state !== "not_submitted")) {
     const request = reservation.request;
+    if (corpusDigest && request.corpus_digest !== corpusDigest) continue;
     const attestation = attestations.find((launch) => launch.role === "critic" && launch.expected_head === reservation.expected_head
       && launch.critic_role === request.critic_role && launch.round === request.round && launch.nonce_sha256 === request.nonce_sha256);
     if (!attestation) { missingAttestations.push(reservation.key); continue; }
@@ -48,15 +50,19 @@ export function evaluationReviewStatus(state, pr) {
   const roles = state.authorization.required_review_roles.map((role) => {
     const valid = results.find((r) => r.criticRole === role && r.valid);
     const candidate = results.find((r) => r.criticRole === role && r.invalidReason === "unacknowledged_result");
-    const inFlight = state.reservations.find((r) => r.role === "critic" && r.expected_head === pr.currentHead && r.request.critic_role === role);
+    const inFlight = state.reservations.find((r) => r.role === "critic" && r.state !== "not_submitted" && r.expected_head === pr.currentHead && r.request.critic_role === role
+      && (!corpusDigest || r.request.corpus_digest === corpusDigest));
+    const notSubmitted = state.reservations.some((r) => r.role === "critic" && r.state === "not_submitted" && r.expected_head === pr.currentHead
+      && r.request.critic_role === role && (!corpusDigest || r.request.corpus_digest === corpusDigest));
     return { role, verdict: valid?.verdict || null, acknowledged: !!valid, comment_url: (valid || candidate)?.comment.url || null,
-      awaiting_ack: !!candidate, launched: !!inFlight };
+      awaiting_ack: !!candidate, launched: !!inFlight, not_submitted: notSubmitted };
   });
   const pass = missingAttestations.length === 0 && roles.every((role) => role.verdict === "PASS");
   const next = roles.find((role) => role.verdict !== "PASS");
   return { run, results, roles, pass, missing_attestations: missingAttestations,
     next_role: next?.role || null,
-    state: missingAttestations.length ? "launch_attestation_missing" : roles.some((role) => role.awaiting_ack) ? "awaiting_lead_ack"
+    state: roles.some((role) => role.not_submitted && !role.acknowledged) ? "launch_not_submitted"
+      : missingAttestations.length ? "launch_attestation_missing" : roles.some((role) => role.awaiting_ack) ? "awaiting_lead_ack"
       : roles.some((role) => role.verdict === "HUMAN_REQUIRED") ? "human_required"
       : roles.some((role) => role.verdict === "REVISE") ? "needs_repair"
       : pass ? "passed_unsealed" : next?.launched ? "critic_in_flight" : "awaiting_critic" };

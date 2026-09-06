@@ -1,5 +1,8 @@
 # The Gauntlet operating model
 
+For bounded policies, portfolio status and desktop heartbeats, see
+[Gauntlet continuation](GAUNTLET_CONTINUATION.md).
+
 Roadmap execution is a conducted loop:
 
 ```text

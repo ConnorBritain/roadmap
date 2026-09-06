@@ -72,16 +72,22 @@ import {
 import { launchReceipt, mutateGauntletLedger, readGauntletLedger } from "../lib/gauntlet-store.mjs";
 import { formatGauntletLaunchResult, formatGauntletStatus, githubClient,
   runGauntletAcknowledge, runGauntletCancel, runGauntletCritic, runGauntletRepair,
-  runGauntletStart, runGauntletStatus } from "../gauntlet.mjs";
+  runGauntletStart, runGauntletStatus, runGauntletReconcile } from "../gauntlet.mjs";
+import { freezeImplementationAuthority, reserveImplementationCapacity } from "../lib/implementation-authorization.mjs";
+import { recordLaunchOutcome, recordLaunchNotSubmitted, recordContinuation } from "../lib/gauntlet-authorization.mjs";
+import { mutateAuthorization } from "../lib/gauntlet-authorization-io.mjs";
 import { loadGraph } from "../lib/graph.mjs";
 import { runEvaluation } from "../evaluate.mjs";
 import { buildEvaluationPrompt } from "../lib/evaluation-core.mjs";
 import { registerEvaluationTests } from "./evaluation.mjs";
 import { registerAuthorizationTests } from "./authorization.mjs";
+import { memoryAuthorityStore, continuationFixtureReceipt } from "./authorization.mjs";
 import { registerEvaluationReviewTests } from "./evaluation-review.mjs";
 import { registerEvaluationLifecycleTests } from "./evaluation-lifecycle.mjs";
 import { registerAuthorizationIoTests } from "./authorization-io.mjs";
 import { registerModelPolicyTests } from "./model-policy.mjs";
+import { registerPortfolioTests } from "./portfolio.mjs";
+import { registerDecisionTests } from "./decisions.mjs";
 import { graphDiff, backlogDiff, reviewDigest, pisInFlight } from "../lib/review-core.mjs";
 import { doctorReport } from "../lib/doctor-core.mjs";
 import { auditBacklog, collectEntries, AUDIT_CODES, signatureOf, knownDamageOf } from "../lib/backlog-audit.mjs";
@@ -5560,6 +5566,23 @@ function acknowledgedCriticComments(run, body, { url = "https://github.test/comm
   return [critic, ack];
 }
 
+test("implementation mandatory reviewer roles are sequential and all must pass the exact head", () => {
+  const { run } = gauntletFixture(); run.required_review_roles = ["critic", "security"];
+  const pr = { state: "OPEN", currentHead: GAUNTLET_SHA_A, checks: "passing" }, comments = [];
+  const add = (role, nonce) => {
+    run.launches.push({ role: "critic", critic_role: role, round: 1, expected_head: GAUNTLET_SHA_A, nonce, status: "launched" });
+    comments.push(...acknowledgedCriticComments(run, renderCriticMarker({ run, criticRole: role, round: 1,
+      head: GAUNTLET_SHA_A, nonce, verdict: "PASS" }), { url: `https://github.test/comment/${role}` }));
+  };
+  add("critic", GAUNTLET_NONCE);
+  const partial = deriveRunStatus({ run, pr, comments, commits: [GAUNTLET_SHA_A] });
+  eq([partial.state, partial.nextRequiredRole, partial.canMerge], ["awaiting_critic", "security", false], "one role cannot substitute for all reviewers");
+  add("security", "d".repeat(32));
+  eq(deriveRunStatus({ run, pr, comments, commits: [GAUNTLET_SHA_A] }).state, "passed", "all exact-head roles pass");
+  pr.currentHead = GAUNTLET_SHA_B;
+  eq(deriveRunStatus({ run, pr, comments, commits: [GAUNTLET_SHA_A, GAUNTLET_SHA_B] }).nextRequiredRole, "critic", "changed head restarts all required reviews");
+});
+
 // WHY: the frozen bar and run settings must survive restart from the PR alone. Any mutation,
 // missing exact field, or duplicate protocol line invalidates the packet instead of guessing.
 test("Gauntlet PR protocol round-trips a hashed frozen bar and reconstructable repair ceiling", () => {
@@ -5841,10 +5864,71 @@ function gauntletLifecycleRepo() {
   return root;
 }
 
+test("ledgerless implementation recovery preserves known pre-provider stops", async () => {
+  const root = gauntletLifecycleRepo(), { run } = gauntletFixture();
+  try {
+    Object.assign(run, { implementation_provider: "codex", critic_provider: "codex", repair_provider: "codex", environment_id: "fixture-env",
+      created_at: "2026-08-08T12:00:00Z", updated_at: "2026-08-08T12:00:00Z" });
+    const github = { assertAvailable: () => true, viewerLogin: () => run.lead_actor, findPrByRun: () => null };
+    let observations = 0;
+    const opts = { github, authorityStore: memoryAuthorityStore(null), now: () => new Date("2026-08-08T12:01:00Z"),
+      observeCloud: () => { observations++; throw new Error("no task exists"); } };
+    await freezeImplementationAuthority(root, run, { required_review_roles: ["critic"], verification_commands: [],
+      limits: { submissions: 3, concurrency: 2, repairs: 2, attempts_per_submission: 1, launch_deadline: "2026-08-11T12:00:00Z" } }, github, opts);
+    await mutateAuthorization(opts.authorityStore, run.run_id, (state) => ({ state: recordContinuation(state,
+      continuationFixtureReceipt("2026-08-08T12:00:00Z"), { actor: run.lead_actor, confirm: true, now: "2026-08-08T12:00:00Z" }) }));
+    const key = `${run.run_id}:implementation`;
+    const capacity = await reserveImplementationCapacity(root, run, { key, role: "implementation", provider: "codex", expected_head: run.base_sha, round: 0 }, github, opts);
+    await mutateAuthorization(opts.authorityStore, run.run_id, (state) => ({ state: recordLaunchNotSubmitted(state, key, { owner: capacity.owner }) }));
+    const recovered = await runGauntletStatus(root, run.run_id, opts);
+    ok(recovered.state !== "launch_ambiguous");
+    eq(recovered.run.implementationExecution.status, "not_submitted");
+    eq(recovered.executions[0].observation.state, "not_submitted");
+    eq([recovered.limits.submissions_used, recovered.limits.active, observations], [1, 0, 0]);
+    eq(existsSync(join(root, ".roadmap-gauntlet-state.json")), false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("implementation receipt reconciliation survives lost local state without resubmission or budget reset", async () => {
+  const root = gauntletLifecycleRepo(), { run } = gauntletFixture();
+  try {
+    Object.assign(run, { implementation_provider: "codex", critic_provider: "codex", repair_provider: "codex", environment_id: "fixture-env",
+      created_at: "2026-08-08T12:00:00Z", updated_at: "2026-08-08T12:00:00Z" });
+    const github = { assertAvailable: () => true, viewerLogin: () => run.lead_actor, findPrByRun: () => null };
+    const opts = { github, authorityStore: memoryAuthorityStore(null), now: () => new Date("2026-08-08T12:01:00Z"),
+      observeCloud: ({ taskId }) => ({ external_id: taskId, status: "ready", provider_metadata: { environment_id: "fixture-env" } }) };
+    await freezeImplementationAuthority(root, run, { required_review_roles: ["critic"], verification_commands: [],
+      limits: { submissions: 3, concurrency: 2, repairs: 2, attempts_per_submission: 1, launch_deadline: "2026-08-11T12:00:00Z" } }, github, opts);
+    await mutateAuthorization(opts.authorityStore, run.run_id, (state) => ({ state: recordContinuation(state,
+      continuationFixtureReceipt("2026-08-08T12:00:00Z"), { actor: run.lead_actor, confirm: true, now: "2026-08-08T12:00:00Z" }) }));
+    const key = `${run.run_id}:implementation`;
+    const capacity = await reserveImplementationCapacity(root, run, { key, role: "implementation", provider: "codex", expected_head: run.base_sha, round: 0 }, github, opts);
+    await mutateAuthorization(opts.authorityStore, run.run_id, (state) => ({ state: recordLaunchOutcome(state, key, { owner: capacity.owner, ambiguous: true }) }));
+    run.launches = [{ key, role: "implementation", provider: "codex", expected_head: run.base_sha, round: 0, status: "ambiguous" }];
+    mutateGauntletLedger(root, (ledger) => { ledger.runs[run.run_id] = run; });
+    const input = { ...opts, launchKey: key, taskId: "task_recovered_exact", taskUrl: "https://chatgpt.com/codex/tasks/task_recovered_exact",
+      reason: "Inspected exact task instructions against the frozen implementation packet", confirm: true };
+    await runGauntletReconcile(root, run.run_id, { ...input, confirm: false }).then(
+      () => { throw new Error("uninspected recovery should fail"); }, (error) => ok(error.message.includes("inspection"), "real lead inspection required"));
+    await runGauntletReconcile(root, run.run_id, { ...input, observeCloud: () => null }).then(
+      () => { throw new Error("missing task should fail"); }, (error) => ok(error.message.includes("observable"), "missing task cannot release capacity"));
+    const reconciled = await runGauntletReconcile(root, run.run_id, input);
+    eq([reconciled.limits.submissions_used, reconciled.limits.active], [1, 0], "spent capacity remains spent after exact completion");
+    eq(readGauntletLedger(root).runs[run.run_id].launches[0].external_id, input.taskId, "existing ambiguous local receipt is reconciled");
+    rmSync(join(root, ".roadmap-gauntlet-state.json"));
+    const repeated = await runGauntletReconcile(root, run.run_id, input);
+    eq(repeated.limits.submissions_used, 1, "ledgerless retry is idempotent");
+    eq(existsSync(join(root, ".roadmap-gauntlet-state.json")), false, "reconciliation does not invent a new ledger");
+    const different = { ...input, taskId: "task_other", taskUrl: "https://chatgpt.com/codex/tasks/task_other" };
+    await runGauntletReconcile(root, run.run_id, different).then(
+      () => { throw new Error("receipt replacement should fail"); }, (error) => ok(error.message.includes("replace"), "recorded receipt cannot be replaced"));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 // WHY: this is the whole conducted lifecycle, with the actual ledger and I/O orchestration but
 // a deterministic GitHub/Routine boundary. It proves one PR advances A->B, stale feedback is
 // ignored, fresh criticism is required, and another machine can recover PASS from GitHub alone.
-test("Gauntlet lifecycle: implement -> REVISE -> same-PR repair -> fresh PASS -> GitHub-only recovery", async () => {
+for (const bounded of [false, true]) test(`Gauntlet lifecycle${bounded ? " with protected launch budget" : ""}: implement -> REVISE -> same-PR repair -> fresh PASS -> GitHub-only recovery`, async () => {
   const root = gauntletLifecycleRepo();
   let currentPr = null;
   const remoteClaims = new Map();
@@ -5885,8 +5969,33 @@ test("Gauntlet lifecycle: implement -> REVISE -> same-PR repair -> fresh PASS ->
   const opts = { github, fireRoutine, profiles, accountEmail: "a@b.c", repoSlug: null, nonce: GAUNTLET_NONCE,
     criticTier: "Opus-4.1", repairTier: "critic/high",
     allowLocalBase: true, now: () => new Date("2026-08-08T12:00:00Z"), random: () => "abc123" };
+  if (bounded) {
+    opts.authorityStore = memoryAuthorityStore(null);
+    opts.authorizationPolicy = { required_review_roles: ["critic"], verification_commands: ["npm test"],
+      model_preferences: { lead: { model: "gpt-6-astra", reasoning_effort: "high" }, cloud: { model: "gpt-6-astra", reasoning_effort: "medium" } },
+      limits: { submissions: 10, concurrency: 6, repairs: 2, attempts_per_submission: 1, launch_deadline: "2026-08-11T12:00:00Z" } };
+  }
 
+  if (bounded) {
+    const handoff = await runGauntletStart(root, "auth-login", opts);
+    eq(handoff.state, "awaiting_continuation", "bounded entrypoint establishes monitoring before submission");
+    eq(launched.length, 0, "monitoring handoff spends no provider submission");
+    opts.continuationRecord = continuationFixtureReceipt("2026-08-08T12:00:00Z"); opts.confirmContinuation = true;
+  }
   const started = await runGauntletStart(root, "auth-login", opts);
+  if (bounded) {
+    eq((await opts.authorityStore.read()).state.reservations.length, 1, "protected implementation capacity is spent before response caching");
+    eq(started.modelPolicy.actual.verification, "unverified", "Routine model is not established by a prompt");
+    ok(launched[0].prompt.includes("Only these executable verification commands"), "bounded verification commands reach the worker");
+    const cached = readFileSync(join(root, ".roadmap-gauntlet-state.json"), "utf8");
+    rmSync(join(root, ".roadmap-gauntlet-state.json"));
+    const beforePublication = await runGauntletStatus(root, started.runId, opts);
+    eq(beforePublication.authority_status, "protected", "pre-PR identity survives ledger loss");
+    eq(beforePublication.limits.submissions_used, 1, "lost local state never resets the budget");
+    eq((await runGauntletStart(root, "auth-login", opts)).duplicate, true, "ledgerless start cannot resubmit reserved implementation");
+    eq(launched.length, 1, "exact protected reservation prevents a second worker");
+    writeFileSync(join(root, ".roadmap-gauntlet-state.json"), cached, "utf8");
+  }
   eq(started.state, "awaiting_pr", "implementation launch starts the run");
   eq(launched.length, 1, "one builder launched");
   const localRun = readGauntletLedger(root).runs[started.runId];
@@ -6731,6 +6840,8 @@ registerEvaluationReviewTests(test);
 registerEvaluationLifecycleTests(test);
 registerAuthorizationIoTests(test);
 registerModelPolicyTests(test);
+registerPortfolioTests(test);
+registerDecisionTests(test);
 await Promise.all(pending);
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

@@ -17,7 +17,7 @@ import { linearState, linearStatusLine, normalizeLinearConfig } from "./lib/line
 import { platedKeys } from "./lib/plate-core.mjs";
 import { runSync, runNote, runNotes, runProjectUpdate } from "./linear.mjs";
 import { runDispatch, runFanCloud } from "./dispatch.mjs";
-import { runGauntletStart, runGauntletStatus, runGauntletAcknowledge, runGauntletCritic, runGauntletRepair, runGauntletCancel } from "./gauntlet.mjs";
+import { runGauntletStart, runGauntletStatus, runGauntletObserve, runGauntletContinuation, runGauntletReconcile, runGauntletDecision, runGauntletAcknowledge, runGauntletCritic, runGauntletRepair, runGauntletCancel } from "./gauntlet.mjs";
 import { runEvaluation } from "./evaluate.mjs";
 import { runEstimate, runTimeline, runLog } from "./estimate.mjs";
 import { LOG_STATUSES } from "./lib/estimate-core.mjs";
@@ -49,17 +49,31 @@ const CLOUD_TOOLS = [
 // Conducted cloud work: deterministic senses/actuators only. The lead model remains the
 // executive function that judges critic materiality, synthesizes repairs, and decides stops.
 const GAUNTLET_TOOLS = [
+  { name: "gauntlet_continuation", description: "After inspecting the supported desktop scheduling tool result, record the exact heartbeat ID, target lead task and ACTIVE/PAUSED status in protected authorization. Requires a fresh observation. This is lead-attested registration, not verified proof a scheduled wake ran. Paused or stale registration blocks new bounded launches, not observation or collection.",
+    inputSchema: { type: "object", required: ["run", "record", "confirm"], properties: { run: { type: "string" }, record: { type: "object" }, confirm: { const: true } } } },
+  { name: "gauntlet_decision", description: "Record a lead-inspected finding decision, regression or human intervention against an immutable comment on the exact implementation PR head. Reporting only: does not accept packets, acknowledge critics, authorize repairs or prove a claim. Corrections must name the superseded record fingerprint.",
+    inputSchema: { type: "object", required: ["run", "expected_head", "record", "confirm"], properties: { run: { type: "string" }, expected_head: { type: "string" }, record: { type: "object" }, confirm: { const: true } } } },
+  { name: "gauntlet_reconcile", description: "After frozen-lead inspection, associate an exact observable Codex task ID/URL with an unresolved protected implementation launch. Records the lead reason, cannot replace receipts or replenish budgets, and never launches or guesses by recency.",
+    inputSchema: { type: "object", required: ["run", "launch_key", "task_id", "task_url", "reason", "confirm"], properties: {
+      run: { type: "string" }, launch_key: { type: "string" }, task_id: { type: "string" }, task_url: { type: "string" }, reason: { type: "string" }, confirm: { const: true } } } },
+  { name: "gauntlet_observe", description: "Refresh exact provider receipts for a bounded implementation run into protected accounting. Releases concurrency on terminal provider observations but never replenishes spent submissions. Failed queries remain explicit and cannot authorize retries.",
+    inputSchema: { type: "object", required: ["run"], properties: { run: { type: "string" } } } },
   { name: "gauntlet_start", description: "Freeze the current quality bar, create a run, and launch one provider-selected implementation execution. GitHub remains the durable artifact; the local ledger records generic provider receipts. Codex implementation may await artifact publication rather than claiming a PR.",
     inputSchema: { type: "object", required: ["key"], properties: {
       key: { type: "string", description: "slice invoke key or backlog id" },
       max_rounds: { type: "integer", minimum: 0, maximum: 20, description: "maximum repair launches (default meta.gauntlet.max_rounds or 3)" },
       bar: { type: "string", description: "additional immutable acceptance criteria/references appended to the roadmap-derived bar" },
+      authorization: { type: "object", description: "Approved bounded policy: required_review_roles, verification_commands, model_preferences, limits (submissions, concurrency, repairs, attempts_per_submission=1, launch_deadline). Scope, actor and providers are frozen from this launch." },
+      model_preference: { type: "object", description: "Explicit recorded model/reasoning_effort/strict override for this submission" },
+      continuation_record: { type: "object", description: "Optional fresh inspected desktop heartbeat receipt; otherwise a new bounded run returns a monitoring handoff before submission" },
+      confirm_continuation: { type: "boolean", description: "Explicit lead inspection of the supplied desktop continuation receipt" },
       implementation_tier: { type: "string" }, critic_tier: { type: "string" }, repair_tier: { type: "string" },
       implementation_provider: { enum: ["claude", "codex"] }, critic_provider: { enum: ["claude", "codex"] }, repair_provider: { enum: ["claude", "codex"] },
       force: { type: "boolean", description: "explicitly override the roadmap cycle lock for this run" },
       critic_profile: { type: "string", description: "optional machine-local Routine profile label for critics" } } } },
   { name: "gauntlet_status", description: "Reconstruct a Gauntlet run from the local launch ledger plus GitHub PR/body/head/checks/comments and protected claim refs. Strictly read-only, including when exposing a different winning protocol to a distributed loser. Reports stale or unacknowledged worker verdicts as non-authoritative, detects claim/attestation and repair-history gaps, and returns the safe next actuator(s).",
-    inputSchema: { type: "object", required: ["run"], properties: { run: { type: "string", description: "run id or roadmap subject key" } } } },
+    inputSchema: { type: "object", anyOf: [{ required: ["run"] }, { required: ["all"], properties: { all: { const: true } } }], properties: {
+      run: { type: "string", description: "run id or roadmap subject key" }, all: { type: "boolean", description: "Read implementation and evaluation portfolio, including protected runs after local ledger loss. Reports partial discovery explicitly." } } } },
   { name: "gauntlet_ack", description: "After the frozen lead independently inspects one exact critic comment from gauntlet_status, post a lead-authored acknowledgment bound to both its immutable body digest and exact GitHub comment-URL digest. A worker verdict cannot drive PASS/REVISE until acknowledged. Requires the exact comment URL and explicit confirmation.",
     inputSchema: { type: "object", required: ["run", "comment_url", "confirm"], properties: {
       run: { type: "string" }, comment_url: { type: "string", minLength: 1 }, confirm: { const: true } } } },
@@ -80,6 +94,10 @@ const GAUNTLET_TOOLS = [
 ];
 
 const EVALUATION_TOOLS = [
+  { name: "gauntlet_eval_continuation", description: "Record a fresh inspected supported-desktop heartbeat receipt for this bounded evaluation. The fixed lead task and automation ID must match; PAUSED or stale state blocks new launches. Registration does not prove a scheduled wake or provider model. Does not start its own scheduler.",
+    inputSchema: { type: "object", required: ["run", "record", "confirm"], properties: { run: { type: "string" }, record: { type: "object" }, confirm: { const: true } } } },
+  { name: "gauntlet_eval_decision", description: "Append an inspected lead reporting decision for a finding, regression or human intervention on the exact evidence PR head. Binds an immutable comment digest and preserves attributable corrections. Does not replace packet admission, critic acknowledgment, scoped repair approval or sealing.",
+    inputSchema: { type: "object", required: ["run", "expected_head", "record", "confirm"], properties: { run: { type: "string" }, expected_head: { type: "string" }, record: { type: "object" }, confirm: { const: true } } } },
   { name: "gauntlet_eval_launch", description: "Launch the specified frozen evaluation wave using protected authorization and durable capacity reservations. Exactly one attempt per submission; duplicate or ambiguous reservations never cause a blind resubmission. Does not authorize new scope.",
     inputSchema: { type: "object", required: ["run", "wave"], properties: { run: { type: "string" }, wave: { type: "string" } } } },
   { name: "gauntlet_eval_reconcile", description: "After the frozen lead inspects an exact cloud task and verifies its association with an unresolved launch, bind its exact ID/URL to the protected reservation. Records an attributable reason and observes that same task. Never guesses by recency, replaces an existing receipt or replenishes spent submissions.",
@@ -93,8 +111,8 @@ const EVALUATION_TOOLS = [
     inputSchema: { type: "object", required: ["run", "assignment", "packet_digest", "expected_head", "decision", "reason", "redaction_inspected", "confirm"], properties: {
       run: { type: "string" }, assignment: { type: "string" }, packet_digest: { type: "string" }, expected_head: { type: "string" },
       decision: { enum: ["accepted", "rejected"] }, reason: { type: "string" }, redaction_inspected: { const: true }, confirm: { const: true } } } },
-  { name: "gauntlet_eval_critic", description: "Launch the next required independent corpus critic within frozen authority. Requires all expected packets adjudicated, an exact evidence PR head, stable checks and available durable submission/concurrency budget. Mandatory reviewer roles execute sequentially. No local/API/provider fallback.",
-    inputSchema: { type: "object", required: ["run", "expected_head"], properties: { run: { type: "string" }, expected_head: { type: "string" }, critic_role: { type: "string" } } } },
+  { name: "gauntlet_eval_critic", description: "Launch the next required independent corpus critic within frozen authority. Requires all expected packets adjudicated unless allow_incomplete explicitly requests diagnostic review; unresolved evidence cannot receive acknowledged PASS or seal. Requires an exact evidence PR head, stable checks and available durable capacity. Required roles run sequentially. No fallback.",
+    inputSchema: { type: "object", required: ["run", "expected_head"], properties: { run: { type: "string" }, expected_head: { type: "string" }, critic_role: { type: "string" }, allow_incomplete: { type: "boolean", description: "Explicitly review missing/invalid evidence to obtain independent findings for acknowledged scoped repair; never bypass admission or sealing." } } } },
   { name: "gauntlet_eval_repair", description: "Launch a fresh documentation-only repair worker using a versioned lead-synthesized packet file. Every finding must name an acknowledged current-head REVISE comment and explicit permitted documentation paths. Reserves frozen submission/concurrency/repair capacity. The worker commits locally; only the lead publishes.",
     inputSchema: { type: "object", required: ["run", "expected_head", "packet"], properties: { run: { type: "string" }, expected_head: { type: "string" }, packet: { type: "string", description: "Path to the inspected lead repair YAML/JSON packet" } } } },
   { name: "gauntlet_eval_collect_repair", description: "Preview an exact repair receipt diff against its frozen expected head and lead-approved file list, validating all packets. apply=true applies that exact patch and invalidates changed packet admissions by digest. Refuses moved heads or local conflicts; never rebases or force-pushes a repair.",
@@ -116,6 +134,14 @@ const EVALUATION_TOOLS = [
   { name: "gauntlet_eval_migrate", description: "Preview explicit legacy evidence-run migration. confirm=true preserves the original manifest and packets but removes inferred sealing/acceptance. Historical receipts remain attributable and unverified; nothing is launched.",
     inputSchema: { type: "object", required: ["run"], properties: { run: { type: "string" }, confirm: { type: "boolean" } } } },
 ];
+
+// plate_list is a read that needs the backlog too (in_progress items), so it's handled inline here
+for (const tool of [...GAUNTLET_TOOLS, ...EVALUATION_TOOLS]) {
+  if (!["gauntlet_start", "gauntlet_critic", "gauntlet_repair", "gauntlet_eval_launch", "gauntlet_eval_critic", "gauntlet_eval_repair"].includes(tool.name)) continue;
+  tool.inputSchema.properties.model_preference = { type: "object", additionalProperties: false,
+    description: "Explicit recorded model/effort override. Unsupported preferences warn; strict requests fail, without fallback.",
+    properties: { model: { type: "string" }, reasoning_effort: { type: "string" }, strict: { type: "boolean" } } };
+}
 
 // plate_list is a read that needs the backlog too (in_progress items), so it's handled inline here
 // rather than in mcp-core's graph-only READ_HANDLERS. The plate_set/add/remove mutations live in TOOLS.
@@ -163,7 +189,8 @@ function callTool(name, args) {
     if (args.apply === true) argv.push("--apply");
     if (args.confirm === true) argv.push("--confirm");
     if (args.redaction_inspected === true) argv.push("--redaction-inspected");
-    return runEvaluation(repoRoot(), argv);
+    if (args.allow_incomplete === true) argv.push("--allow-incomplete");
+    return runEvaluation(repoRoot(), argv, { modelPreference: args.model_preference || null, decisionRecord: args.record || null, continuationRecord: args.record || null });
   }
   if (READ_HANDLERS[name]) {
     const graph = loadGraph(roadmapPaths(repoRoot()).yaml);
@@ -213,21 +240,30 @@ function callTool(name, args) {
       repairTier: args.repair_tier, implementationProvider: args.implementation_provider,
       criticProvider: args.critic_provider, repairProvider: args.repair_provider,
       criticProfile: args.critic_profile, force: !!args.force,
+      authorizationPolicy: args.authorization, modelPreference: args.model_preference,
+      continuationRecord: args.continuation_record, confirmContinuation: args.confirm_continuation === true,
     });
   }
-  if (name === "gauntlet_status") return runGauntletStatus(repoRoot(), args.run);
+  if (name === "gauntlet_status") return runGauntletStatus(repoRoot(), args.run, { all: args.all === true });
+  if (name === "gauntlet_observe") return runGauntletObserve(repoRoot(), args.run);
+  if (name === "gauntlet_continuation") return runGauntletContinuation(repoRoot(), args.run, { record: args.record, confirm: args.confirm === true });
+  if (name === "gauntlet_decision") return runGauntletDecision(repoRoot(), args.run, { expectedHead: args.expected_head, record: args.record, confirm: args.confirm === true });
+  if (name === "gauntlet_reconcile") return runGauntletReconcile(repoRoot(), args.run, { launchKey: args.launch_key,
+    taskId: args.task_id, taskUrl: args.task_url, reason: args.reason, confirm: args.confirm === true });
   if (name === "gauntlet_ack") return runGauntletAcknowledge(repoRoot(), args.run,
     { commentUrl: args.comment_url, confirm: args.confirm === true });
   if (name === "gauntlet_critic") {
     return runGauntletCritic(repoRoot(), args.run, {
       expectedHead: args.expected_head,
-      criticRole: args.critic_role || "critic", tier: args.tier, profile: args.profile, provider: args.provider, forceChecks: !!args.force_checks,
+      criticRole: args.critic_role, tier: args.tier, profile: args.profile, provider: args.provider, forceChecks: !!args.force_checks,
+      modelPreference: args.model_preference,
       confirmRecoveredBar: !!args.confirm_recovered_bar,
     });
   }
   if (name === "gauntlet_repair") {
     return runGauntletRepair(repoRoot(), args.run, {
       expectedHead: args.expected_head, packet: args.packet, tier: args.tier, profile: args.profile, provider: args.provider,
+      modelPreference: args.model_preference,
     });
   }
   if (name === "gauntlet_cancel") return runGauntletCancel(repoRoot(), args.run, { reason: args.reason, confirm: args.confirm === true });

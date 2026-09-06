@@ -15,7 +15,7 @@ function fixture() {
   const failure = () => ({ status: 1, stdout: "", stderr: "HTTP 422" });
   const github = { assertAvailable: () => true, viewerLogin: () => control.actor,
     assertClaimProtection: () => ({ unsafe: control.unsafe }),
-    claimRef: (key, id) => `refs/heads/roadmap-gauntlet-locks/${id}-authority`,
+    claimRef: (key, id) => `refs/heads/roadmap-gauntlet-locks/${createHash("sha256").update(id).digest("hex").slice(0, 16)}-authority-${createHash("sha256").update(key).digest("hex")}`,
     getLaunchClaim(key, id) { const ref = this.claimRef(key, id); return refs.has(ref) ? { ref, sha: refs.get(ref) } : null; } };
   const execImpl = (command, args, opts) => {
     assert.equal(command, "gh");
@@ -24,6 +24,7 @@ function fixture() {
     const method = args.includes("--method") ? args[args.indexOf("--method") + 1] : "GET";
     const payload = opts.input ? JSON.parse(opts.input) : null;
     if (method === "GET") {
+      if (endpoint.startsWith("matching-refs/")) return ok([...refs].map(([ref, sha]) => ({ ref, object: { sha } })));
       const [type, id] = endpoint.split("/");
       const found = ({ blobs, trees, commits })[type]?.get(id);
       return found ? ok(found) : failure();
@@ -57,6 +58,15 @@ function fixture() {
 }
 
 export function registerAuthorizationIoTests(test) {
+  test("protected authority discovery survives local-ledger loss and reports unprotected records", async () => {
+    const f = fixture(); await f.store.compareAndSwap(f.state.authorization.run_id, null, f.state);
+    const discovered = await f.store.list();
+    assert.equal(discovered.snapshots.length, 1); assert.deepEqual(discovered.failures, []);
+    assert.equal(discovered.snapshots[0].state.authorization.run_id, f.state.authorization.run_id);
+    f.control.unsafe = true;
+    const refused = await f.store.list();
+    assert.equal(refused.snapshots.length, 0); assert.equal(refused.failures.length, 1);
+  });
   test("GitHub authority journal creates a protected ref then only fast-forwards from its exact prior state", async () => {
     const f = fixture(), id = f.state.authorization.run_id;
     assert.equal(await f.store.read(id), null);

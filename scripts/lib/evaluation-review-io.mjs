@@ -3,7 +3,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { assignmentDirectory, evaluationDirectory } from "./evaluation-core.mjs";
 import { inspectLocalEvaluationPacket, evaluationCommand, evaluationFilesAtCommit, frozenSourceLookup } from "./evaluation-io.mjs";
 import { prohibitedDataFindings, validateEvaluationPacket } from "./evaluation-packet.mjs";
-import { authorizationDigest, reserveAuthorizedLaunch, recordLaunchOutcome, authorizationStatus } from "./gauntlet-authorization.mjs";
+import { authorizationDigest, reserveAuthorizedLaunch, recordLaunchOutcome, recordLaunchNotSubmitted, authorizationStatus, continuationStatus } from "./gauntlet-authorization.mjs";
 import { mutateAuthorization } from "./gauntlet-authorization-io.mjs";
 import { evaluationReviewRun, evaluationReviewStatus, assertNextEvaluationReviewer, evaluationAttestation,
   findEvaluationAttestation, evaluationAdmissionTotals, sealEvaluationPayload } from "./evaluation-review-core.mjs";
@@ -62,7 +62,7 @@ async function postAttestation(github, pr, kind, payload, lead) {
 
 export async function runEvaluationReviewAction(root, action, { manifest, store, github, expectedHead,
   prNumber, assignmentId, decision = "accepted", packetDigest, reason, redactionInspected = false,
-  commentUrl, criticRole, repairPacket, confirm = false, opts = {} } = {}) {
+  commentUrl, criticRole, repairPacket, allowIncomplete = false, confirm = false, opts = {} } = {}) {
   let snapshot = await store.read(manifest.run_id);
   if (!snapshot) throw new Error("evaluation review requires protected authorization");
   let state = snapshot.state;
@@ -96,6 +96,7 @@ export async function runEvaluationReviewAction(root, action, { manifest, store,
     if (!manifest.assignments.some((a) => a.id === assignmentId)) throw new Error("unknown adjudication assignment");
     const corpus = inspectCommittedEvaluationCorpus(root, manifest, state, pr);
     const packet = corpus.packets.find((p) => p.assignment === assignmentId);
+    if (packet?.digest !== packetDigest) throw new Error("adjudication digest must match the current committed packet, including rejections");
     if (decision === "accepted" && (!packet?.ok || packet.digest !== packetDigest)) throw new Error("accepted digest must match a valid packet committed at the evidence PR head");
     const payload = { run_id: manifest.run_id, authority_digest: state.authorization_digest, source_sha: manifest.base_sha,
       assignment: assignmentId, packet_digest: packetDigest, decision, reason: reason.trim(), redaction_inspected: true };
@@ -112,11 +113,11 @@ export async function runEvaluationReviewAction(root, action, { manifest, store,
       comment_url: attestation.url, corpus: inspectCommittedEvaluationCorpus(root, manifest, updated.state, await github.getPr(pr.number)) };
   }
   const corpus = inspectCommittedEvaluationCorpus(root, manifest, state, pr);
-  const review = evaluationReviewStatus(state, pr);
+  const review = evaluationReviewStatus(state, pr, { corpusDigest: corpus.corpus_digest });
   if (action === "repair") {
     const packet = validateEvaluationRepairPacket(repairPacket, { state, pr, review });
     if (state.authorization.providers.repair !== "codex") throw new Error("evaluation repair transport currently supports Codex Cloud only; no fallback was made");
-    const modelPolicy = qualifyModelPreference({ provider: "codex", preference: roleModelPreference(state.authorization.model_preferences, "repair") });
+    const modelPolicy = qualifyModelPreference({ provider: "codex", preference: roleModelPreference(state.authorization.model_preferences, "repair", opts.modelPreference) });
     const diagnostic = (opts.diagnoseCloud || diagnoseCodexCloud)({ environmentId: manifest.environment_id });
     if (!diagnostic.ok) throw new Error("Codex Cloud repair is unavailable; no submission reserved");
     const round = state.reservations.filter((r) => r.role === "repair").length + 1;
@@ -128,69 +129,83 @@ export async function runEvaluationReviewAction(root, action, { manifest, store,
       model_policy: modelPolicy,
     }, { owner, now: opts.now || new Date().toISOString() }));
     if (!reserved.reserved) return { action, duplicate: true, reservation: reserved.reservation };
+    let submissionAttempted = false;
     try {
       pr = await github.getPr(pr.number); assertHead(pr, expectedHead);
-      const currentReview = evaluationReviewStatus((await store.read(manifest.run_id)).state, pr);
+      const currentReview = evaluationReviewStatus((await store.read(manifest.run_id)).state, pr, { corpusDigest: corpus.corpus_digest });
       validateEvaluationRepairPacket(repairPacket, { state, pr, review: currentReview });
       await github.addComment(pr.number, renderGauntletLaunchMarker({ run: review.run, role: "repair", round, expectedHead, packetSha256: packet.digest }));
       const prompt = `You are a fresh documentation-only REPAIR worker for evaluation ${manifest.run_id}.\n`
         + `Evidence PR: #${pr.number}; exact expected evidence head: ${expectedHead}. Frozen product source: ${manifest.base_sha}. These SHAs have different meanings.\n`
+        + `Frozen assignment evidence-type limits: ${JSON.stringify(manifest.assignments.map(({ id, evidence_types }) => ({ id, evidence_types: evidence_types || null })))}. Never relax these limits or use process self-description as unsupported source proof.\n`
         + `First verify the current PR head using gh. If it differs, stop without changes. Only repair the lead-accepted findings below. Do not implement product changes or expand scope.\n`
         + `The ONLY writable files are:\n${packet.paths.map((path) => `- ${path}`).join("\n")}\n`
         + `Do not change run/assignment/receipt control files. Preserve attributable earlier packet revisions in Git history. Any changed packet must still satisfy version 1 evidence.yaml, REPORT.md links and frozen source references.\n`
         + `No production authentication, deployed-system interaction, customer data, credentials in artifacts, deployments or package publication. Do not run tests/builds/installers except these approved verification commands: ${JSON.stringify(state.authorization.verification_commands)}.\n`
         + `Do not push, open a PR, merge or post a verdict. The lead owns publication. Make a local Git commit containing only permitted paths so cloud diff includes the repair. Report the commit and tests actually run; distinguish checks not run.\n`
         + `Lead-synthesized repair packet (digest ${packet.digest}):\n${JSON.stringify(repairPacket, null, 2)}`;
-      if (!authorizationStatus(reserved.state, { now: Date.parse(opts.now || new Date().toISOString()) }).launch_window_open) throw new Error("launch window expired");
+      const currentAuthority = (await store.read(manifest.run_id)).state, now = Date.parse(opts.now || new Date().toISOString());
+      if (!authorizationStatus(currentAuthority, { now }).launch_window_open || !continuationStatus(currentAuthority, { now }).launch_ready) throw new Error("launch window or desktop continuation expired");
+      submissionAttempted = true;
       const receipt = { ...await (opts.launchCloud || launchCodexCloud)({ environmentId: manifest.environment_id, branch: expectedHead, attempts: 1, prompt }), model_policy: modelPolicy };
       await mutateAuthorization(store, manifest.run_id, (current) => ({ state: recordLaunchOutcome(current, key, { owner, receipt }) }));
       return { action, run_id: manifest.run_id, round, head: expectedHead, launch_key: key, allowed_paths: packet.paths, receipt, model_policy: modelPolicy };
     } catch {
-      try { await mutateAuthorization(store, manifest.run_id, (current) => ({ state: recordLaunchOutcome(current, key, { owner, ambiguous: true }) })); } catch { /* reservation remains occupied */ }
+      try { await mutateAuthorization(store, manifest.run_id, (current) => ({ state: submissionAttempted
+        ? recordLaunchOutcome(current, key, { owner, ambiguous: true }) : recordLaunchNotSubmitted(current, key, { owner }) })); } catch { /* reservation remains occupied */ }
+      if (!submissionAttempted) throw new Error("repair stopped before provider submission; spent reservation retained, no provider receipt exists to reconcile");
       throw new Error("repair reservation is unresolved; inspect its exact receipt before any further submission");
     }
   }
   if (action === "ack") {
     if (!confirm || !commentUrl) throw new Error("ack requires explicit lead inspection and the exact critic comment URL");
     const candidate = review.results.find((r) => r.comment.url === commentUrl);
+    if (candidate?.verdict === "PASS" && corpus.totals.unresolved) throw new Error("cannot acknowledge PASS while expected evidence remains unresolved");
     if (candidate?.valid) return { action, duplicate: true, comment_url: commentUrl, verdict: candidate.verdict };
     if (candidate?.invalidReason !== "unacknowledged_result") throw new Error("critic artifact is not safe to acknowledge at this head");
     pr = await github.getPr(pr.number); assertHead(pr, expectedHead);
-    const refreshed = evaluationReviewStatus(state, pr).results.find((r) => r.comment.url === commentUrl);
+    const refreshed = evaluationReviewStatus(state, pr, { corpusDigest: corpus.corpus_digest }).results.find((r) => r.comment.url === commentUrl);
     if (refreshed?.commentSha256 !== candidate.commentSha256 || refreshed?.invalidReason !== "unacknowledged_result") throw new Error("critic artifact changed during acknowledgment");
     await github.addComment(pr.number, renderGauntletVerdictAck({ run: review.run, comment: pr.comments.find((c) => c.url === commentUrl) }));
     const current = await github.getPr(pr.number); assertHead(current, expectedHead);
-    if (!evaluationReviewStatus(state, current).results.some((r) => r.comment.url === commentUrl && r.acknowledged)) throw new Error("lead acknowledgment could not be verified");
+    if (!evaluationReviewStatus(state, current, { corpusDigest: corpus.corpus_digest }).results.some((r) => r.comment.url === commentUrl && r.acknowledged)) throw new Error("lead acknowledgment could not be verified");
     return { action, run_id: manifest.run_id, comment_url: commentUrl, verdict: candidate.verdict, head: expectedHead };
   }
   if (action === "critic") {
-    if (corpus.totals.unresolved) throw new Error("adjudicate every expected packet before independent corpus review");
+    if (corpus.totals.unresolved && !allowIncomplete) throw new Error("adjudicate every expected packet before independent corpus review, or explicitly use --allow-incomplete for diagnostic review");
     const role = criticRole || review.next_role;
     assertNextEvaluationReviewer(review, role);
     if (!["none", "passing"].includes(pr.checks)) throw new Error("evidence PR checks are not stable/passing");
     if (state.authorization.providers.critic !== "codex") throw new Error("evaluation critic transport currently supports Codex Cloud only; no fallback was made");
-    const modelPolicy = qualifyModelPreference({ provider: "codex", preference: roleModelPreference(state.authorization.model_preferences, "critic") });
+    const modelPolicy = qualifyModelPreference({ provider: "codex", preference: roleModelPreference(state.authorization.model_preferences, "critic", opts.modelPreference) });
     const diagnostic = (opts.diagnoseCloud || diagnoseCodexCloud)({ environmentId: manifest.environment_id });
     if (!diagnostic.ok) throw new Error("Codex Cloud critic is unavailable; no submission reserved");
     const round = state.reservations.filter((r) => r.role === "repair").length + 1;
     const nonce = randomBytes(16).toString("hex"), owner = randomUUID();
-    const key = `evaluation:${manifest.run_id}:critic:${role}:${expectedHead}:${round}`;
+    const key = `evaluation:${manifest.run_id}:critic:${role}:${expectedHead}:${round}:${corpus.corpus_digest}`;
     const reserved = await mutateAuthorization(store, manifest.run_id, (current) => reserveAuthorizedLaunch(current, {
-      key, role: "critic", provider: "codex", expected_head: expectedHead, critic_role: role, round, nonce_sha256: sha256(nonce),
+      key, role: "critic", provider: "codex", expected_head: expectedHead, critic_role: role, round, nonce_sha256: sha256(nonce), corpus_digest: corpus.corpus_digest,
+      incomplete_corpus_review: !!corpus.totals.unresolved,
       model_policy: modelPolicy,
     }, { owner, now: opts.now || new Date().toISOString() }));
     if (!reserved.reserved) return { action, duplicate: true, reservation: reserved.reservation };
+    let submissionAttempted = false;
     try {
       pr = await github.getPr(pr.number); assertHead(pr, expectedHead);
       await github.addComment(pr.number, renderGauntletLaunchMarker({ run: review.run, role: "critic", criticRole: role, round, expectedHead, nonce }));
       const prompt = buildCriticPrompt({ run: review.run, pr, expectedHead, criticRole: role, round, nonce })
-        + `\n\nLead-adjudicated packet digest register (verify against actual committed files):\n${JSON.stringify(corpus.records.map(({ assignment, digest, status }) => ({ assignment, digest, status })), null, 2)}`;
-      if (!authorizationStatus(reserved.state, { now: Date.parse(opts.now || new Date().toISOString()) }).launch_window_open) throw new Error("launch window expired");
+        + `\n\nPacket digest/admission register (verify against actual committed files):\n${JSON.stringify(corpus.records.map(({ assignment, digest, status }) => ({ assignment, digest, status })), null, 2)}`
+        + (corpus.totals.unresolved ? "\nThis is an explicitly requested diagnostic review of an incomplete corpus. Independently inspect missing/invalid evidence and identify documentation repairs; do not invent a packet or treat unresolved coverage as PASS. A PASS cannot be acknowledged or sealed until every expected packet is adjudicated. The normal exact-head REVISE, lead inspection/acknowledgment and scoped repair protocol still applies." : "");
+      const currentAuthority = (await store.read(manifest.run_id)).state, now = Date.parse(opts.now || new Date().toISOString());
+      if (!authorizationStatus(currentAuthority, { now }).launch_window_open || !continuationStatus(currentAuthority, { now }).launch_ready) throw new Error("launch window or desktop continuation expired");
+      submissionAttempted = true;
       const receipt = { ...await (opts.launchCloud || launchCodexCloud)({ environmentId: manifest.environment_id, branch: expectedHead, attempts: 1, prompt }), model_policy: modelPolicy };
       await mutateAuthorization(store, manifest.run_id, (current) => ({ state: recordLaunchOutcome(current, key, { owner, receipt }) }));
       return { action, run_id: manifest.run_id, role, round, head: expectedHead, receipt, model_policy: modelPolicy };
     } catch {
-      try { await mutateAuthorization(store, manifest.run_id, (current) => ({ state: recordLaunchOutcome(current, key, { owner, ambiguous: true }) })); } catch { /* reservation remains occupied */ }
+      try { await mutateAuthorization(store, manifest.run_id, (current) => ({ state: submissionAttempted
+        ? recordLaunchOutcome(current, key, { owner, ambiguous: true }) : recordLaunchNotSubmitted(current, key, { owner }) })); } catch { /* reservation remains occupied */ }
+      if (!submissionAttempted) throw new Error("critic stopped before provider submission; spent reservation retained, no provider receipt exists to reconcile");
       throw new Error("critic reservation is unresolved; inspect its exact GitHub attestation/receipt before any further submission");
     }
   }
@@ -199,7 +214,8 @@ export async function runEvaluationReviewAction(root, action, { manifest, store,
     const payload = sealEvaluationPayload(state, pr, corpus, review);
     pr = await github.getPr(pr.number); assertHead(pr, expectedHead);
     // Refresh comment reality as well as head; deleted acknowledgments revoke PASS.
-    sealEvaluationPayload(state, pr, inspectCommittedEvaluationCorpus(root, manifest, state, pr), evaluationReviewStatus(state, pr));
+    const refreshedCorpus = inspectCommittedEvaluationCorpus(root, manifest, state, pr);
+    sealEvaluationPayload(state, pr, refreshedCorpus, evaluationReviewStatus(state, pr, { corpusDigest: refreshedCorpus.corpus_digest }));
     const attestation = await postAttestation(github, pr, "seal", payload, lead);
     await mutateAuthorization(store, manifest.run_id, (current) => {
       if ((current.seals || []).some((seal) => authorizationDigest(seal.payload) === authorizationDigest(payload))) return { state: current };

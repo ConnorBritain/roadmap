@@ -16,7 +16,10 @@ const SECRET_PATTERNS = [
   /\b(?:sk-proj-|sk-ant-)[A-Za-z0-9_-]{16,}/,
   /\bAKIA[A-Z0-9]{16}\b/,
   /\b(?:authorization\s*:\s*bearer|(?:set-)?cookie\s*:)\s*\S{8,}/i,
-  /\b(?:patient_name|patient_email|medical_record_number|social_security_number)\b["']?\s*:\s*["'][^"'\n]{3,}["']/i,
+  // Flag non-empty sensitive-field assignments conservatively, including
+  // short/apostrophe-containing values and YAML block-scalar indicators.
+  // This detects a suspicious field shape, not whether the value is real PHI.
+  /\b(?:patient_name|patient_email|medical_record_number|social_security_number)\b["']?[ \t]*:[ \t]*(?:\S|\r?\n[ \t]+\S)/i,
 ];
 
 export function safePacketPath(path) {

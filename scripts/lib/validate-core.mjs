@@ -8,6 +8,7 @@ import { validatePriority } from "./priority.mjs";
 import { validateLinearConfig } from "./linear-core.mjs";
 import { validateEstimation } from "./estimate-core.mjs";
 import { requiredArtifactRoot } from "./evaluation-core.mjs";
+import { roleModelPreference } from "./model-policy.mjs";
 
 const isDone = (s) => !!(STATUS[s] && STATUS[s].done);
 
@@ -132,6 +133,10 @@ export function validateGraph(graph) {
       err("meta.gauntlet must be a mapping");
     } else {
       const rounds = meta.gauntlet.max_rounds;
+      if (meta.gauntlet.model_preferences != null) {
+        try { roleModelPreference(meta.gauntlet.model_preferences, "lead"); }
+        catch (e) { err(`meta.gauntlet.model_preferences: ${e.message}`); }
+      }
       if (rounds != null && !(Number.isInteger(rounds) && rounds >= 0 && rounds <= 20)) {
         err("meta.gauntlet.max_rounds must be an integer from 0 to 20");
       }

@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import { stringify, parse } from "yaml";
 import { validateEvaluationPacket, packetDigest } from "../lib/evaluation-packet.mjs";
 import { inspectEvaluationPatch } from "../lib/evaluation-io.mjs";
-import { buildEvaluationRun, assertEvaluationDiffPaths, sealableWave } from "../lib/evaluation-core.mjs";
+import { buildEvaluationRun, buildEvaluationPrompt, assertEvaluationDiffPaths, sealableWave } from "../lib/evaluation-core.mjs";
 import { runEvaluation } from "../evaluate.mjs";
 
 const NOW = Date.parse("2026-09-05T12:00:00Z");
@@ -59,6 +59,12 @@ async function repository() {
 export { repository as evaluationRepositoryFixture };
 
 export function registerEvaluationTests(test) {
+  test("evaluator prompts expose frozen assignment type limits without widening them", () => {
+    const f = fixture();
+    const prompt = buildEvaluationPrompt({ run: f.run, assignment: { ...assignment, evidence_types: ["source_code", "documentation", "test"] } });
+    assert.ok(prompt.includes("Frozen allowed evidence types for this assignment: source_code, documentation, test."));
+    assert.ok(prompt.includes("overrides the general schema types"));
+  });
   test("evidence admission accepts source-backed identity and linked claims without asserting truth", () => {
     const f = fixture(); const result = validate(f);
     assert.equal(result.ok, true); assert.equal(result.counts.records, 1);
@@ -101,6 +107,20 @@ export function registerEvaluationTests(test) {
     f.files["REPORT.md"] += record;
     const result = validate(f); code(result, "prohibited_data");
     assert.ok(!JSON.stringify(result).includes("SYNTHETIC PERSON"));
+  });
+  test("unquoted YAML patient fields fail admission without echoing values", () => {
+    for (const record of ["patient_name: SYNTHETIC PERSON", "medical_record_number: SYNTHETIC-00001", "patient_email: synthetic@example.test"]) {
+      const f = fixture(); f.files["REPORT.md"] += "\n" + record + "\n";
+      const result = validate(f); code(result, "prohibited_data");
+      assert.ok(!JSON.stringify(result).includes(record));
+    }
+  });
+  test("apostrophes, short values and multiline patient scalars cannot evade scanning", () => {
+    for (const record of ["patient_name: A'Bcd", "patient_name: X", "patient_name: |\n  SYNTHETIC PERSON", "patient_name: >-\n  SYNTHETIC\n  PERSON", "patient_name:\n  SYNTHETIC PERSON"]) {
+      const f = fixture(); f.files["REPORT.md"] += "\n" + record + "\n";
+      const result = validate(f); code(result, "prohibited_data");
+      assert.ok(!JSON.stringify(result).includes(record));
+    }
   });
   test("evidence source must be a regular frozen-tree file with valid line bounds", () => {
     for (const found of [null, { type: "tree", mode: "040000" }, { type: "blob", mode: "120000" }]) {
