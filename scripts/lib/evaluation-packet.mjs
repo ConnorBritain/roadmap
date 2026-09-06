@@ -19,7 +19,7 @@ const SECRET_PATTERNS = [
   // Flag non-empty sensitive-field assignments conservatively, including
   // short/apostrophe-containing values and YAML block-scalar indicators.
   // This detects a suspicious field shape, not whether the value is real PHI.
-  /\b(?:patient_name|patient_email|medical_record_number|social_security_number)\b["']?[ \t]*:[ \t]*(?:\S|\r?\n[ \t]+\S)/i,
+  /\b(?:patient_name|patient_email|medical_record_number|social_security_number)\b["']?[ \t]*:[ \t]*(?:\S|\r?\n(?:[ \t]*\r?\n)*[ \t]+\S)/i,
 ];
 
 export function safePacketPath(path) {

@@ -2,6 +2,15 @@
 
 Status: implementation in progress. This document records the approved scope, not a claim of qualification.
 
+Current delivery checkpoint (2026-09-06): Roadmap PRs #52–#54 contain the tested
+implementation; phase-four PR #55 records live receipts. The bounded Pidgeon run
+has collected and admitted all five repaired packets after independent REVISE and
+lead acknowledgment. Fresh exact-head PASS and sealing are still pending. See
+[the qualification receipt index](../qualification/2026-09-06-pidgeon.md) for
+current evidence and limits. The implementation ledger below is chronological;
+earlier preparation and pending statements describe their recorded stage, not
+the current state. No merge, npm publication or full-program launch is authorized.
+
 ## Goal
 
 Upgrade Roadmap so an authorized Codex desktop lead can conduct implementation and documentation-evaluation Gauntlets through independently reviewed PRs, with enforceable evidence admission, bounded execution, restart-safe continuation, and durable results. Prove the workflow with a documentation-only Pidgeon qualification.
