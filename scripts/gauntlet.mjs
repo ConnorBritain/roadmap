@@ -6,7 +6,7 @@
 // .roadmap-gauntlet-state.json is a minimal launch ledger, while GitHub carries the work.
 
 import { createHash, randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync, realpathSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1505,7 +1505,8 @@ export function formatGauntletLaunchResult(result, role) {
 }
 
 // ── CLI ──────────────────────────────────────────────────────────────────────
-const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isMain = process.argv[1] && existsSync(process.argv[1])
+  && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
 async function main() {
   const args = process.argv.slice(2);
   if (args[0] === "eval") {
