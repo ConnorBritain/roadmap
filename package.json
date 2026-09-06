@@ -23,6 +23,8 @@
     "README.md",
     "docs/DEPLOYMENT.md",
     "docs/GAUNTLET.md",
+    "docs/EVIDENCE_PACKETS.md",
+    "docs/specs/trustworthy-gauntlet.md",
     "skills/",
     "LICENSE"
   ],
