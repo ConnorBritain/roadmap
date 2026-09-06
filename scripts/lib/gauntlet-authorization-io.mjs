@@ -30,9 +30,13 @@ export function githubAuthorizationStore(root, { github, execImpl = spawnSync } 
     if (state && await github.viewerLogin() !== state.authorization.lead_actor) throw new Error("authority mutation requires the frozen lead GitHub actor");
   }
   async function read(runId) {
-    await check(runId);
+    await github.assertAvailable();
     const claim = await github.getLaunchClaim(authorizationClaimKey(runId), runId);
     if (!claim) return null;
+    await check(runId);
+    return readClaim(claim, runId);
+  }
+  function readClaim(claim, runId = null) {
     const commit = api(`repos/${repository()}/git/commits/${claim.sha}`);
     const tree = api(`repos/${repository()}/git/trees/${commit.tree.sha}`);
     if (tree.truncated) throw new Error("authority tree response truncated");
@@ -41,8 +45,25 @@ export function githubAuthorizationStore(root, { github, execImpl = spawnSync } 
     const blob = api(`repos/${repository()}/git/blobs/${entry.sha}`);
     if (blob.encoding !== "base64" || blob.size > MAX_BYTES) throw new Error("unsupported authority blob encoding/size");
     const state = assertAuthorizationState(JSON.parse(Buffer.from(blob.content, "base64").toString("utf8")));
-    if (state.authorization.run_id !== runId) throw new Error("protected authority run identity mismatch");
+    const actualRunId = state.authorization.run_id;
+    if ((runId && actualRunId !== runId) || claim.ref !== github.claimRef(authorizationClaimKey(actualRunId), actualRunId)) {
+      throw new Error("protected authority run identity mismatch");
+    }
     return { sha: claim.sha, tree: commit.tree.sha, state, ref: claim.ref };
+  }
+  async function list() {
+    await github.assertAvailable();
+    const refs = api(`repos/${repository()}/git/matching-refs/heads/roadmap-gauntlet-locks/`);
+    if (!Array.isArray(refs)) throw new Error("invalid authority discovery response");
+    const snapshots = [], failures = [];
+    for (const entry of refs.filter((entry) => /^refs\/heads\/roadmap-gauntlet-locks\/[a-f0-9]{16}-authority-[a-f0-9]{64}$/.test(entry.ref || ""))) {
+      try {
+        const snapshot = readClaim({ ref: entry.ref, sha: entry.object?.sha });
+        await check(snapshot.state.authorization.run_id);
+        snapshots.push(snapshot);
+      } catch { failures.push({ ref: entry.ref, error_code: "authority_unreadable_or_unprotected" }); }
+    }
+    return { snapshots, failures };
   }
   async function compareAndSwap(runId, expected, state) {
     assertAuthorizationState(state); await check(runId, state);
@@ -68,7 +89,7 @@ export function githubAuthorizationStore(root, { github, execImpl = spawnSync } 
     const observed = await read(runId);
     return { written: observed?.sha === commit.sha, current: observed };
   }
-  return { read, compareAndSwap };
+  return { read, list, compareAndSwap };
 }
 
 // Retries only the local transition over refreshed durable state. Never put a

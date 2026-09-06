@@ -96,6 +96,7 @@ export async function runEvaluationReviewAction(root, action, { manifest, store,
     if (!manifest.assignments.some((a) => a.id === assignmentId)) throw new Error("unknown adjudication assignment");
     const corpus = inspectCommittedEvaluationCorpus(root, manifest, state, pr);
     const packet = corpus.packets.find((p) => p.assignment === assignmentId);
+    if (packet?.digest !== packetDigest) throw new Error("adjudication digest must match the current committed packet, including rejections");
     if (decision === "accepted" && (!packet?.ok || packet.digest !== packetDigest)) throw new Error("accepted digest must match a valid packet committed at the evidence PR head");
     const payload = { run_id: manifest.run_id, authority_digest: state.authorization_digest, source_sha: manifest.base_sha,
       assignment: assignmentId, packet_digest: packetDigest, decision, reason: reason.trim(), redaction_inspected: true };
@@ -112,11 +113,11 @@ export async function runEvaluationReviewAction(root, action, { manifest, store,
       comment_url: attestation.url, corpus: inspectCommittedEvaluationCorpus(root, manifest, updated.state, await github.getPr(pr.number)) };
   }
   const corpus = inspectCommittedEvaluationCorpus(root, manifest, state, pr);
-  const review = evaluationReviewStatus(state, pr);
+  const review = evaluationReviewStatus(state, pr, { corpusDigest: corpus.corpus_digest });
   if (action === "repair") {
     const packet = validateEvaluationRepairPacket(repairPacket, { state, pr, review });
     if (state.authorization.providers.repair !== "codex") throw new Error("evaluation repair transport currently supports Codex Cloud only; no fallback was made");
-    const modelPolicy = qualifyModelPreference({ provider: "codex", preference: roleModelPreference(state.authorization.model_preferences, "repair") });
+    const modelPolicy = qualifyModelPreference({ provider: "codex", preference: roleModelPreference(state.authorization.model_preferences, "repair", opts.modelPreference) });
     const diagnostic = (opts.diagnoseCloud || diagnoseCodexCloud)({ environmentId: manifest.environment_id });
     if (!diagnostic.ok) throw new Error("Codex Cloud repair is unavailable; no submission reserved");
     const round = state.reservations.filter((r) => r.role === "repair").length + 1;
@@ -130,7 +131,7 @@ export async function runEvaluationReviewAction(root, action, { manifest, store,
     if (!reserved.reserved) return { action, duplicate: true, reservation: reserved.reservation };
     try {
       pr = await github.getPr(pr.number); assertHead(pr, expectedHead);
-      const currentReview = evaluationReviewStatus((await store.read(manifest.run_id)).state, pr);
+      const currentReview = evaluationReviewStatus((await store.read(manifest.run_id)).state, pr, { corpusDigest: corpus.corpus_digest });
       validateEvaluationRepairPacket(repairPacket, { state, pr, review: currentReview });
       await github.addComment(pr.number, renderGauntletLaunchMarker({ run: review.run, role: "repair", round, expectedHead, packetSha256: packet.digest }));
       const prompt = `You are a fresh documentation-only REPAIR worker for evaluation ${manifest.run_id}.\n`
@@ -156,11 +157,11 @@ export async function runEvaluationReviewAction(root, action, { manifest, store,
     if (candidate?.valid) return { action, duplicate: true, comment_url: commentUrl, verdict: candidate.verdict };
     if (candidate?.invalidReason !== "unacknowledged_result") throw new Error("critic artifact is not safe to acknowledge at this head");
     pr = await github.getPr(pr.number); assertHead(pr, expectedHead);
-    const refreshed = evaluationReviewStatus(state, pr).results.find((r) => r.comment.url === commentUrl);
+    const refreshed = evaluationReviewStatus(state, pr, { corpusDigest: corpus.corpus_digest }).results.find((r) => r.comment.url === commentUrl);
     if (refreshed?.commentSha256 !== candidate.commentSha256 || refreshed?.invalidReason !== "unacknowledged_result") throw new Error("critic artifact changed during acknowledgment");
     await github.addComment(pr.number, renderGauntletVerdictAck({ run: review.run, comment: pr.comments.find((c) => c.url === commentUrl) }));
     const current = await github.getPr(pr.number); assertHead(current, expectedHead);
-    if (!evaluationReviewStatus(state, current).results.some((r) => r.comment.url === commentUrl && r.acknowledged)) throw new Error("lead acknowledgment could not be verified");
+    if (!evaluationReviewStatus(state, current, { corpusDigest: corpus.corpus_digest }).results.some((r) => r.comment.url === commentUrl && r.acknowledged)) throw new Error("lead acknowledgment could not be verified");
     return { action, run_id: manifest.run_id, comment_url: commentUrl, verdict: candidate.verdict, head: expectedHead };
   }
   if (action === "critic") {
@@ -169,14 +170,14 @@ export async function runEvaluationReviewAction(root, action, { manifest, store,
     assertNextEvaluationReviewer(review, role);
     if (!["none", "passing"].includes(pr.checks)) throw new Error("evidence PR checks are not stable/passing");
     if (state.authorization.providers.critic !== "codex") throw new Error("evaluation critic transport currently supports Codex Cloud only; no fallback was made");
-    const modelPolicy = qualifyModelPreference({ provider: "codex", preference: roleModelPreference(state.authorization.model_preferences, "critic") });
+    const modelPolicy = qualifyModelPreference({ provider: "codex", preference: roleModelPreference(state.authorization.model_preferences, "critic", opts.modelPreference) });
     const diagnostic = (opts.diagnoseCloud || diagnoseCodexCloud)({ environmentId: manifest.environment_id });
     if (!diagnostic.ok) throw new Error("Codex Cloud critic is unavailable; no submission reserved");
     const round = state.reservations.filter((r) => r.role === "repair").length + 1;
     const nonce = randomBytes(16).toString("hex"), owner = randomUUID();
     const key = `evaluation:${manifest.run_id}:critic:${role}:${expectedHead}:${round}`;
     const reserved = await mutateAuthorization(store, manifest.run_id, (current) => reserveAuthorizedLaunch(current, {
-      key, role: "critic", provider: "codex", expected_head: expectedHead, critic_role: role, round, nonce_sha256: sha256(nonce),
+      key, role: "critic", provider: "codex", expected_head: expectedHead, critic_role: role, round, nonce_sha256: sha256(nonce), corpus_digest: corpus.corpus_digest,
       model_policy: modelPolicy,
     }, { owner, now: opts.now || new Date().toISOString() }));
     if (!reserved.reserved) return { action, duplicate: true, reservation: reserved.reservation };
@@ -199,7 +200,8 @@ export async function runEvaluationReviewAction(root, action, { manifest, store,
     const payload = sealEvaluationPayload(state, pr, corpus, review);
     pr = await github.getPr(pr.number); assertHead(pr, expectedHead);
     // Refresh comment reality as well as head; deleted acknowledgments revoke PASS.
-    sealEvaluationPayload(state, pr, inspectCommittedEvaluationCorpus(root, manifest, state, pr), evaluationReviewStatus(state, pr));
+    const refreshedCorpus = inspectCommittedEvaluationCorpus(root, manifest, state, pr);
+    sealEvaluationPayload(state, pr, refreshedCorpus, evaluationReviewStatus(state, pr, { corpusDigest: refreshedCorpus.corpus_digest }));
     const attestation = await postAttestation(github, pr, "seal", payload, lead);
     await mutateAuthorization(store, manifest.run_id, (current) => {
       if ((current.seals || []).some((seal) => authorizationDigest(seal.payload) === authorizationDigest(payload))) return { state: current };

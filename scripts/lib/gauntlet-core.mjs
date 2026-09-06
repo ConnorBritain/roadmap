@@ -1170,8 +1170,15 @@ export function deriveRunStatus({ run = {}, pr = null, comments = [], commits = 
       result.invalidReason = "round_mismatch";
     }
   }
-  const latestValidCritic = criticResults.filter((result) => result.valid)
-    .sort((a, b) => resultTime(b) - resultTime(a))[0] || null;
+  const requiredRoles = run.required_review_roles || ["critic"];
+  if (!Array.isArray(requiredRoles) || !requiredRoles.includes("critic") || new Set(requiredRoles).size !== requiredRoles.length
+    || requiredRoles.some((role) => !ROLE_SLUG_RE.test(role))) fail("invalid frozen reviewer roles");
+  const requiredReviews = requiredRoles.map((role) => ({ role, result: criticResults.filter((result) => result.valid && result.criticRole === role)
+    .sort((a, b) => resultTime(b) - resultTime(a))[0] || null }));
+  const nextRequiredRole = requiredReviews.find(({ result }) => result?.verdict !== "PASS")?.role || null;
+  const latestValidCritic = requiredReviews.find(({ result }) => result?.verdict === "HUMAN_REQUIRED")?.result
+    || requiredReviews.find(({ result }) => result?.verdict === "REVISE")?.result
+    || (nextRequiredRole ? null : requiredReviews.at(-1)?.result) || null;
   const unresolvedLaunch = [...launches].reverse().find((launch) => {
     const launchState = String((launch && (launch.status || launch.state)) || "").toLowerCase();
     if (!new Set(["failed", "ambiguous"]).has(launchState)) return false;
@@ -1186,6 +1193,8 @@ export function deriveRunStatus({ run = {}, pr = null, comments = [], commits = 
     runId,
     currentHead: SHA_RE.test(currentHead || "") ? currentHead : null,
     latestValidCritic,
+    requiredReviews,
+    nextRequiredRole,
     criticResults,
     repairsUsed,
     advisoryRepairsUsed,

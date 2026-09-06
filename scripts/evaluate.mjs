@@ -117,6 +117,11 @@ function observeExecution(receipt, environmentId, opts) {
 
 export async function runEvaluation(root, args, opts = {}) {
   args = [...args];
+  const modelPreference = value(args, "--model") || value(args, "--reasoning-effort") || flag(args, "--strict-model")
+    ? { ...(value(args, "--model") ? { model: value(args, "--model") } : {}),
+      ...(value(args, "--reasoning-effort") ? { reasoning_effort: value(args, "--reasoning-effort") } : {}),
+      ...(flag(args, "--strict-model") ? { strict: true } : {}) } : opts.modelPreference || null;
+  opts = { ...opts, modelPreference };
   const action = args.shift() || "status";
   const graph = loadGraph(join(root, "docs", "roadmap", "roadmap.yaml"));
   const artifactRoot = configuredArtifactRoot(graph);
@@ -171,7 +176,10 @@ export async function runEvaluation(root, args, opts = {}) {
     writeRun(root, recovered);
     return { action, run_id: runId, applied: true, authorization: recovered.authorization, limits: authorizationStatus(snapshot.state) };
   }
-  const manifest = readRun(root, runId, artifactRoot);
+  // Portfolio reads can use the protected snapshot after local-ledger loss.
+  // No actuator may use this shortcut or silently restore a local manifest.
+  const manifest = action === "status" && opts.readOnlyManifest
+    ? opts.readOnlyManifest : readRun(root, runId, artifactRoot);
   if (action === "migrate") {
     if (manifest.version === EVALUATION_VERSION) return { action, run_id: runId, migrated: false, reason: "already_current" };
     if (![1, 2].includes(manifest.version)) throw new Error("unsupported legacy evaluation version");
@@ -214,9 +222,11 @@ export async function runEvaluation(root, args, opts = {}) {
         const pr = await (opts.github || githubClient(root)).getPr(authority.state.evidence_pr.number);
         publication = { ...authority.state.evidence_pr, current_head: pr.currentHead, state: pr.state };
         review = evaluationReviewStatus(authority.state, pr);
-        corpus = inspectCommittedEvaluationCorpus(root, manifest, authority.state, pr);
+        try { corpus = inspectCommittedEvaluationCorpus(root, manifest, authority.state, pr); }
+        catch { corpus = { state: "observation_failed", error_code: "exact_evidence_checkout_unavailable" }; }
+        if (corpus.corpus_digest) review = evaluationReviewStatus(authority.state, pr, { corpusDigest: corpus.corpus_digest });
         let seal = null;
-        if (review.pass && !corpus.totals.unresolved && pr.state === "OPEN") {
+        if (review.pass && corpus.totals && !corpus.totals.unresolved && pr.state === "OPEN") {
           const payload = sealEvaluationPayload(authority.state, pr, corpus, review);
           seal = findEvaluationAttestation(pr.comments, "seal", payload, authority.state.authorization.lead_actor, pr.url);
         }
@@ -225,7 +235,11 @@ export async function runEvaluation(root, args, opts = {}) {
     }
     return { run_id: runId, base_sha: manifest.base_sha, version: manifest.version,
       verification: manifest.version === EVALUATION_VERSION ? "requires_admission" : "legacy_unverified", state: manifest.state, assignments,
-      authority_status: authorityStatus, limits: authority ? authorizationStatus(authority.state) : null, publication, corpus, review };
+      authority_status: authorityStatus, limits: authority ? authorizationStatus(authority.state) : null, publication, corpus, review,
+      executions: (authority?.state.reservations || []).map((reservation) => ({ key: reservation.key, role: reservation.role,
+        receipt: reservation.receipt, state: reservation.state, model_policy: reservation.request.model_policy || null,
+        observation: reservation.receipt ? observeExecution(reservation.receipt, manifest.environment_id, opts)
+          : { state: "reserved_without_receipt" } })) };
   }
   if (manifest.version !== EVALUATION_VERSION) throw new Error("legacy evaluation is unverified; use eval migrate --run <id> --confirm before mutation or admission");
   const authorityStore = () => opts.authorityStore || githubAuthorizationStore(root, { github: opts.github || githubClient(root) });
@@ -347,7 +361,7 @@ export async function runEvaluation(root, args, opts = {}) {
     const authorized = await store.read(runId);
     if (!authorized) throw new Error("evaluation requires protected authorization before launch; use eval authorize");
     await verifyAuthority(authorized.state);
-    const modelPolicy = qualifyModelPreference({ provider: "codex", preference: roleModelPreference(authorized.state.authorization.model_preferences, "evaluator") });
+    const modelPolicy = qualifyModelPreference({ provider: "codex", preference: roleModelPreference(authorized.state.authorization.model_preferences, "evaluator", opts.modelPreference) });
     const wave = value(args, "--wave");
     const diagnostic = (opts.diagnoseCloud || diagnoseCodexCloud)({ environmentId: manifest.environment_id });
     if (!diagnostic.ok) throw new Error(`Codex Cloud provider unavailable: ${diagnostic.reason}`);

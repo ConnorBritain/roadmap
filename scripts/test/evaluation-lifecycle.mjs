@@ -176,7 +176,7 @@ export function registerEvaluationLifecycleTests(test) {
     try {
       await r.action("attach", "--pr", "42", "--confirm");
       await assert.rejects(() => r.action("accept", "--assignment", "packet-one", "--packet-digest", "0".repeat(64),
-        "--reason", "Inspected", "--redaction-inspected", "--confirm"), /valid packet/);
+        "--reason", "Inspected", "--redaction-inspected", "--confirm"), /digest must match/);
       const other = { ...r.opts, github: { ...r.github, getPr: () => ({ ...structuredClone(r.pr), number: 43, url: "https://github.com/owner/repo/pull/43" }) } };
       await assert.rejects(() => runEvaluation(r.root, ["attach", "--run", r.manifest.run_id, "--pr", "43", "--expected-head", r.pr.currentHead, "--confirm"], other), /different evidence PR/);
       writeFileSync(join(r.root, "src/example.js"), "export const example = 2;\n");

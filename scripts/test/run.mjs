@@ -78,10 +78,12 @@ import { runEvaluation } from "../evaluate.mjs";
 import { buildEvaluationPrompt } from "../lib/evaluation-core.mjs";
 import { registerEvaluationTests } from "./evaluation.mjs";
 import { registerAuthorizationTests } from "./authorization.mjs";
+import { memoryAuthorityStore } from "./authorization.mjs";
 import { registerEvaluationReviewTests } from "./evaluation-review.mjs";
 import { registerEvaluationLifecycleTests } from "./evaluation-lifecycle.mjs";
 import { registerAuthorizationIoTests } from "./authorization-io.mjs";
 import { registerModelPolicyTests } from "./model-policy.mjs";
+import { registerPortfolioTests } from "./portfolio.mjs";
 import { graphDiff, backlogDiff, reviewDigest, pisInFlight } from "../lib/review-core.mjs";
 import { doctorReport } from "../lib/doctor-core.mjs";
 import { auditBacklog, collectEntries, AUDIT_CODES, signatureOf, knownDamageOf } from "../lib/backlog-audit.mjs";
@@ -5560,6 +5562,23 @@ function acknowledgedCriticComments(run, body, { url = "https://github.test/comm
   return [critic, ack];
 }
 
+test("implementation mandatory reviewer roles are sequential and all must pass the exact head", () => {
+  const { run } = gauntletFixture(); run.required_review_roles = ["critic", "security"];
+  const pr = { state: "OPEN", currentHead: GAUNTLET_SHA_A, checks: "passing" }, comments = [];
+  const add = (role, nonce) => {
+    run.launches.push({ role: "critic", critic_role: role, round: 1, expected_head: GAUNTLET_SHA_A, nonce, status: "launched" });
+    comments.push(...acknowledgedCriticComments(run, renderCriticMarker({ run, criticRole: role, round: 1,
+      head: GAUNTLET_SHA_A, nonce, verdict: "PASS" }), { url: `https://github.test/comment/${role}` }));
+  };
+  add("critic", GAUNTLET_NONCE);
+  const partial = deriveRunStatus({ run, pr, comments, commits: [GAUNTLET_SHA_A] });
+  eq([partial.state, partial.nextRequiredRole, partial.canMerge], ["awaiting_critic", "security", false], "one role cannot substitute for all reviewers");
+  add("security", "d".repeat(32));
+  eq(deriveRunStatus({ run, pr, comments, commits: [GAUNTLET_SHA_A] }).state, "passed", "all exact-head roles pass");
+  pr.currentHead = GAUNTLET_SHA_B;
+  eq(deriveRunStatus({ run, pr, comments, commits: [GAUNTLET_SHA_A, GAUNTLET_SHA_B] }).nextRequiredRole, "critic", "changed head restarts all required reviews");
+});
+
 // WHY: the frozen bar and run settings must survive restart from the PR alone. Any mutation,
 // missing exact field, or duplicate protocol line invalidates the packet instead of guessing.
 test("Gauntlet PR protocol round-trips a hashed frozen bar and reconstructable repair ceiling", () => {
@@ -5844,7 +5863,7 @@ function gauntletLifecycleRepo() {
 // WHY: this is the whole conducted lifecycle, with the actual ledger and I/O orchestration but
 // a deterministic GitHub/Routine boundary. It proves one PR advances A->B, stale feedback is
 // ignored, fresh criticism is required, and another machine can recover PASS from GitHub alone.
-test("Gauntlet lifecycle: implement -> REVISE -> same-PR repair -> fresh PASS -> GitHub-only recovery", async () => {
+for (const bounded of [false, true]) test(`Gauntlet lifecycle${bounded ? " with protected launch budget" : ""}: implement -> REVISE -> same-PR repair -> fresh PASS -> GitHub-only recovery`, async () => {
   const root = gauntletLifecycleRepo();
   let currentPr = null;
   const remoteClaims = new Map();
@@ -5885,8 +5904,27 @@ test("Gauntlet lifecycle: implement -> REVISE -> same-PR repair -> fresh PASS ->
   const opts = { github, fireRoutine, profiles, accountEmail: "a@b.c", repoSlug: null, nonce: GAUNTLET_NONCE,
     criticTier: "Opus-4.1", repairTier: "critic/high",
     allowLocalBase: true, now: () => new Date("2026-08-08T12:00:00Z"), random: () => "abc123" };
+  if (bounded) {
+    opts.authorityStore = memoryAuthorityStore(null);
+    opts.authorizationPolicy = { required_review_roles: ["critic"], verification_commands: ["npm test"],
+      model_preferences: { lead: { model: "gpt-6-astra", reasoning_effort: "high" }, cloud: { model: "gpt-6-astra", reasoning_effort: "medium" } },
+      limits: { submissions: 10, concurrency: 6, repairs: 2, attempts_per_submission: 1, launch_deadline: "2026-08-11T12:00:00Z" } };
+  }
 
   const started = await runGauntletStart(root, "auth-login", opts);
+  if (bounded) {
+    eq((await opts.authorityStore.read()).state.reservations.length, 1, "protected implementation capacity is spent before response caching");
+    eq(started.modelPolicy.actual.verification, "unverified", "Routine model is not established by a prompt");
+    ok(launched[0].prompt.includes("Only these executable verification commands"), "bounded verification commands reach the worker");
+    const cached = readFileSync(join(root, ".roadmap-gauntlet-state.json"), "utf8");
+    rmSync(join(root, ".roadmap-gauntlet-state.json"));
+    const beforePublication = await runGauntletStatus(root, started.runId, opts);
+    eq(beforePublication.authority_status, "protected", "pre-PR identity survives ledger loss");
+    eq(beforePublication.limits.submissions_used, 1, "lost local state never resets the budget");
+    eq((await runGauntletStart(root, "auth-login", opts)).duplicate, true, "ledgerless start cannot resubmit reserved implementation");
+    eq(launched.length, 1, "exact protected reservation prevents a second worker");
+    writeFileSync(join(root, ".roadmap-gauntlet-state.json"), cached, "utf8");
+  }
   eq(started.state, "awaiting_pr", "implementation launch starts the run");
   eq(launched.length, 1, "one builder launched");
   const localRun = readGauntletLedger(root).runs[started.runId];
@@ -6731,6 +6769,7 @@ registerEvaluationReviewTests(test);
 registerEvaluationLifecycleTests(test);
 registerAuthorizationIoTests(test);
 registerModelPolicyTests(test);
+registerPortfolioTests(test);
 await Promise.all(pending);
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

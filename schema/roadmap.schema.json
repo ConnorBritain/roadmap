@@ -79,6 +79,8 @@
           "description": "Conducted implementation/critic/repair policy. Run history stays in GitHub plus the gitignored local launch ledger, never on slices.",
           "properties": {
             "max_rounds": { "type": "integer", "minimum": 0, "maximum": 20, "default": 3, "description": "Maximum repair launches in one run. The lead may stop earlier for diminishing returns or human judgment." },
+            "model_preferences": { "type": "object", "description": "Optional provider-neutral role preferences. Unsupported preferences warn; strict requests fail. Actual Cloud settings remain unverified without provider metadata.", "additionalProperties": false,
+              "properties": { "lead": { "$ref": "#/$defs/modelPreference" }, "cloud": { "$ref": "#/$defs/modelPreference" }, "implementation": { "$ref": "#/$defs/modelPreference" }, "evaluator": { "$ref": "#/$defs/modelPreference" }, "critic": { "$ref": "#/$defs/modelPreference" }, "repair": { "$ref": "#/$defs/modelPreference" } } },
             "implementation_tier": { "type": "string", "minLength": 1, "maxLength": 512, "description": "Optional Routine tier for initial implementation. A slice/item dispatch_tier takes precedence." },
             "critic_tier": { "type": "string", "minLength": 1, "maxLength": 512, "description": "Optional Routine tier for independent criticism. Missing requested tiers fail; they never silently downgrade." },
             "repair_tier": { "type": "string", "minLength": 1, "maxLength": 512, "description": "Optional Routine tier for fresh repair workers. A slice/item dispatch_tier takes precedence." }
@@ -170,6 +172,10 @@
     }
   },
   "$defs": {
+    "modelPreference": { "type": "object", "additionalProperties": false, "properties": {
+      "model": { "type": ["string", "null"], "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$" },
+      "reasoning_effort": { "type": ["string", "null"], "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$" },
+      "strict": { "type": "boolean" } } },
     "cost": {
       "type": "object",
       "additionalProperties": false,

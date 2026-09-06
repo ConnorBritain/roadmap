@@ -17,7 +17,7 @@ import { linearState, linearStatusLine, normalizeLinearConfig } from "./lib/line
 import { platedKeys } from "./lib/plate-core.mjs";
 import { runSync, runNote, runNotes, runProjectUpdate } from "./linear.mjs";
 import { runDispatch, runFanCloud } from "./dispatch.mjs";
-import { runGauntletStart, runGauntletStatus, runGauntletAcknowledge, runGauntletCritic, runGauntletRepair, runGauntletCancel } from "./gauntlet.mjs";
+import { runGauntletStart, runGauntletStatus, runGauntletObserve, runGauntletAcknowledge, runGauntletCritic, runGauntletRepair, runGauntletCancel } from "./gauntlet.mjs";
 import { runEvaluation } from "./evaluate.mjs";
 import { runEstimate, runTimeline, runLog } from "./estimate.mjs";
 import { LOG_STATUSES } from "./lib/estimate-core.mjs";
@@ -49,17 +49,22 @@ const CLOUD_TOOLS = [
 // Conducted cloud work: deterministic senses/actuators only. The lead model remains the
 // executive function that judges critic materiality, synthesizes repairs, and decides stops.
 const GAUNTLET_TOOLS = [
+  { name: "gauntlet_observe", description: "Refresh exact provider receipts for a bounded implementation run into protected accounting. Releases concurrency on terminal provider observations but never replenishes spent submissions. Failed queries remain explicit and cannot authorize retries.",
+    inputSchema: { type: "object", required: ["run"], properties: { run: { type: "string" } } } },
   { name: "gauntlet_start", description: "Freeze the current quality bar, create a run, and launch one provider-selected implementation execution. GitHub remains the durable artifact; the local ledger records generic provider receipts. Codex implementation may await artifact publication rather than claiming a PR.",
     inputSchema: { type: "object", required: ["key"], properties: {
       key: { type: "string", description: "slice invoke key or backlog id" },
       max_rounds: { type: "integer", minimum: 0, maximum: 20, description: "maximum repair launches (default meta.gauntlet.max_rounds or 3)" },
       bar: { type: "string", description: "additional immutable acceptance criteria/references appended to the roadmap-derived bar" },
+      authorization: { type: "object", description: "Approved bounded policy: required_review_roles, verification_commands, model_preferences, limits (submissions, concurrency, repairs, attempts_per_submission=1, launch_deadline). Scope, actor and providers are frozen from this launch." },
+      model_preference: { type: "object", description: "Explicit recorded model/reasoning_effort/strict override for this submission" },
       implementation_tier: { type: "string" }, critic_tier: { type: "string" }, repair_tier: { type: "string" },
       implementation_provider: { enum: ["claude", "codex"] }, critic_provider: { enum: ["claude", "codex"] }, repair_provider: { enum: ["claude", "codex"] },
       force: { type: "boolean", description: "explicitly override the roadmap cycle lock for this run" },
       critic_profile: { type: "string", description: "optional machine-local Routine profile label for critics" } } } },
   { name: "gauntlet_status", description: "Reconstruct a Gauntlet run from the local launch ledger plus GitHub PR/body/head/checks/comments and protected claim refs. Strictly read-only, including when exposing a different winning protocol to a distributed loser. Reports stale or unacknowledged worker verdicts as non-authoritative, detects claim/attestation and repair-history gaps, and returns the safe next actuator(s).",
-    inputSchema: { type: "object", required: ["run"], properties: { run: { type: "string", description: "run id or roadmap subject key" } } } },
+    inputSchema: { type: "object", anyOf: [{ required: ["run"] }, { required: ["all"], properties: { all: { const: true } } }], properties: {
+      run: { type: "string", description: "run id or roadmap subject key" }, all: { type: "boolean", description: "Read implementation and evaluation portfolio, including protected runs after local ledger loss. Reports partial discovery explicitly." } } } },
   { name: "gauntlet_ack", description: "After the frozen lead independently inspects one exact critic comment from gauntlet_status, post a lead-authored acknowledgment bound to both its immutable body digest and exact GitHub comment-URL digest. A worker verdict cannot drive PASS/REVISE until acknowledged. Requires the exact comment URL and explicit confirmation.",
     inputSchema: { type: "object", required: ["run", "comment_url", "confirm"], properties: {
       run: { type: "string" }, comment_url: { type: "string", minLength: 1 }, confirm: { const: true } } } },
@@ -118,6 +123,14 @@ const EVALUATION_TOOLS = [
 ];
 
 // plate_list is a read that needs the backlog too (in_progress items), so it's handled inline here
+for (const tool of [...GAUNTLET_TOOLS, ...EVALUATION_TOOLS]) {
+  if (!["gauntlet_start", "gauntlet_critic", "gauntlet_repair", "gauntlet_eval_launch", "gauntlet_eval_critic", "gauntlet_eval_repair"].includes(tool.name)) continue;
+  tool.inputSchema.properties.model_preference = { type: "object", additionalProperties: false,
+    description: "Explicit recorded model/effort override. Unsupported preferences warn; strict requests fail, without fallback.",
+    properties: { model: { type: "string" }, reasoning_effort: { type: "string" }, strict: { type: "boolean" } } };
+}
+
+// plate_list is a read that needs the backlog too (in_progress items), so it's handled inline here
 // rather than in mcp-core's graph-only READ_HANDLERS. The plate_set/add/remove mutations live in TOOLS.
 const PLATE_TOOLS = [
   { name: "plate_list", description: "The current plate — the curated batch projected to Linear's My Issues (assignee=you): explicit meta.plate entries plus auto-included active/in_progress work. Returns { enabled, explicit, plate, plate_max }. Read-only.",
@@ -163,7 +176,7 @@ function callTool(name, args) {
     if (args.apply === true) argv.push("--apply");
     if (args.confirm === true) argv.push("--confirm");
     if (args.redaction_inspected === true) argv.push("--redaction-inspected");
-    return runEvaluation(repoRoot(), argv);
+    return runEvaluation(repoRoot(), argv, { modelPreference: args.model_preference || null });
   }
   if (READ_HANDLERS[name]) {
     const graph = loadGraph(roadmapPaths(repoRoot()).yaml);
@@ -213,21 +226,25 @@ function callTool(name, args) {
       repairTier: args.repair_tier, implementationProvider: args.implementation_provider,
       criticProvider: args.critic_provider, repairProvider: args.repair_provider,
       criticProfile: args.critic_profile, force: !!args.force,
+      authorizationPolicy: args.authorization, modelPreference: args.model_preference,
     });
   }
-  if (name === "gauntlet_status") return runGauntletStatus(repoRoot(), args.run);
+  if (name === "gauntlet_status") return runGauntletStatus(repoRoot(), args.run, { all: args.all === true });
+  if (name === "gauntlet_observe") return runGauntletObserve(repoRoot(), args.run);
   if (name === "gauntlet_ack") return runGauntletAcknowledge(repoRoot(), args.run,
     { commentUrl: args.comment_url, confirm: args.confirm === true });
   if (name === "gauntlet_critic") {
     return runGauntletCritic(repoRoot(), args.run, {
       expectedHead: args.expected_head,
-      criticRole: args.critic_role || "critic", tier: args.tier, profile: args.profile, provider: args.provider, forceChecks: !!args.force_checks,
+      criticRole: args.critic_role, tier: args.tier, profile: args.profile, provider: args.provider, forceChecks: !!args.force_checks,
+      modelPreference: args.model_preference,
       confirmRecoveredBar: !!args.confirm_recovered_bar,
     });
   }
   if (name === "gauntlet_repair") {
     return runGauntletRepair(repoRoot(), args.run, {
       expectedHead: args.expected_head, packet: args.packet, tier: args.tier, profile: args.profile, provider: args.provider,
+      modelPreference: args.model_preference,
     });
   }
   if (name === "gauntlet_cancel") return runGauntletCancel(repoRoot(), args.run, { reason: args.reason, confirm: args.confirm === true });

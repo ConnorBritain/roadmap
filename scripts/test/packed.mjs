@@ -49,11 +49,14 @@ try {
   const replies = execute(process.execPath, [mcp], requests.map((request) => JSON.stringify(request)).join("\n") + "\n")
     .trim().split("\n").map((line) => JSON.parse(line));
   const listed = replies.find((reply) => reply.id === 1).result.tools;
-  for (const name of ["gauntlet_start", "gauntlet_status", "gauntlet_eval_validate", "gauntlet_eval_collect", "gauntlet_eval_migrate"]) {
+  for (const name of ["gauntlet_start", "gauntlet_status", "gauntlet_observe", "gauntlet_eval_validate", "gauntlet_eval_collect", "gauntlet_eval_migrate",
+    "gauntlet_eval_authorize", "gauntlet_eval_critic", "gauntlet_eval_ack", "gauntlet_eval_repair", "gauntlet_eval_reconcile"]) {
     assert.ok(listed.some((tool) => tool.name === name), name);
   }
   const result = replies.find((reply) => reply.id === 2).result;
   assert.ok(!result.isError); assert.equal(JSON.parse(result.content[0].text).digest, validation.digest);
-  for (const name of ["EVIDENCE_PACKETS.md", "specs/trustworthy-gauntlet.md"]) assert.ok(readFileSync(join(installed, "docs", name)).length);
+  assert.equal(listed.find((tool) => tool.name === "gauntlet_status").inputSchema.properties.all.type, "boolean");
+  assert.ok(listed.find((tool) => tool.name === "gauntlet_eval_critic").inputSchema.properties.model_preference);
+  for (const name of ["EVIDENCE_PACKETS.md", "EVALUATION_RUNBOOK.md", "GAUNTLET_CONTINUATION.md", "specs/trustworthy-gauntlet.md"]) assert.ok(readFileSync(join(installed, "docs", name)).length);
   console.log("Packed artifact: CLI roadmap validation, evaluation init/admission, MCP registry and admission parity passed. No remote submissions.");
 } finally { rmSync(root, { recursive: true, force: true }); }

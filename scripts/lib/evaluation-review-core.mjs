@@ -29,7 +29,7 @@ export function evaluationReviewRun(state) {
     frozen_bar_markdown: bar, bar_sha256: createHash("sha256").update(bar).digest("hex"), launches: [] };
 }
 
-export function evaluationReviewStatus(state, pr) {
+export function evaluationReviewStatus(state, pr, { corpusDigest = null } = {}) {
   const run = evaluationReviewRun(state);
   if (pr.number !== state.evidence_pr.number || pr.url !== state.evidence_pr.url || pr.baseRefName !== state.evidence_pr.base_ref) {
     throw new Error("evidence PR identity or base branch changed");
@@ -38,6 +38,7 @@ export function evaluationReviewStatus(state, pr) {
   const missingAttestations = [];
   for (const reservation of state.reservations.filter((r) => r.role === "critic")) {
     const request = reservation.request;
+    if (corpusDigest && request.corpus_digest !== corpusDigest) continue;
     const attestation = attestations.find((launch) => launch.role === "critic" && launch.expected_head === reservation.expected_head
       && launch.critic_role === request.critic_role && launch.round === request.round && launch.nonce_sha256 === request.nonce_sha256);
     if (!attestation) { missingAttestations.push(reservation.key); continue; }

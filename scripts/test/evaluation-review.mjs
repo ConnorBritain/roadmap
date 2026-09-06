@@ -63,6 +63,8 @@ export function registerEvaluationReviewTests(test) {
   test("edited or replayed critic evidence cannot reuse an earlier acknowledgment", () => {
     const f = fixture(); const result = review(f, "PASS");
     assert.equal(evaluationReviewStatus(f.state, f.pr).pass, true);
+    assert.equal(evaluationReviewStatus(f.state, f.pr, { corpusDigest: "f".repeat(64) }).pass, false,
+      "a head-bound PASS does not cover a changed admission corpus");
     result.body += "\nChanged claim";
     assert.equal(evaluationReviewStatus(f.state, f.pr).pass, false);
     result.updatedAt = "2026-09-05T10:02:00Z";

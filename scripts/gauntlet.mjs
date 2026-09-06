@@ -45,6 +45,12 @@ import {
 import {
   diagnoseCodexCloud, launchCodexCloud, normalizeCloudProvider, observeCodexCloudTask, resolveCodexEnvironment,
 } from "./lib/cloud-agent-providers.mjs";
+import { freezeImplementationAuthority, readImplementationAuthority, reserveImplementationCapacity,
+  submitWithImplementationCapacity, authorizedVerificationPrompt, implementationAuthorityStore } from "./lib/implementation-authorization.mjs";
+import { authorizationStatus, recordLaunchObservation } from "./lib/gauntlet-authorization.mjs";
+import { mutateAuthorization } from "./lib/gauntlet-authorization-io.mjs";
+import { observeAuthorizedExecution } from "./lib/gauntlet-observation.mjs";
+import { roleModelPreference, qualifyModelPreference } from "./lib/model-policy.mjs";
 
 const FULL_SHA = /^[a-f0-9]{40}$/;
 const DEFAULT_MAX_ROUNDS = 3;
@@ -148,6 +154,7 @@ export function githubClient(root, { execImpl = spawnSync, remote = "origin" } =
   };
 
   return {
+    supportsProtectedAuthority: true,
     assertAvailable() {
       const remoteUrl = execOrThrow(execImpl, "git", ["remote", "get-url", remote],
         { cwd: root, encoding: "utf8" }, `cannot read git remote ${remote}` ).trim();
@@ -237,6 +244,10 @@ export function githubClient(root, { execImpl = spawnSync, remote = "origin" } =
       return claimDescriptor(claimKey, runId).ref;
     },
     getPr,
+    listGauntletPrs() {
+      const prs = candidates('"roadmap-gauntlet" in:body');
+      return { prs: prs.filter((pr) => parseGauntletPrMarkers(pr.body || "")), possibly_truncated: prs.length >= 100 };
+    },
     findPrByRun(runId) {
       const exact = candidates(`in:body \"roadmap-gauntlet: run=${runId}\"`)
         .filter((pr) => {
@@ -331,6 +342,7 @@ function gauntletProvider(metaCfg, opts, role, run = null) {
 }
 
 async function launchGauntletAgent(root, opts, { graph, run, role, tier = null, profile = null, provider, prompt, branch = null } = {}) {
+  const modelPolicy = qualifyModelPreference({ provider, preference: roleModelPreference(run.model_preferences || {}, role, opts.modelPreference || null) });
   if (provider === "claude") {
     const routine = routineContext(root, opts, { role, tier, profile });
     const fired = await (opts.fireRoutine || dispatchFireRoutine)(routine, prompt, opts.fetchImpl || fetch);
@@ -339,17 +351,19 @@ async function launchGauntletAgent(root, opts, { graph, run, role, tier = null, 
       throw new Error("Claude Routine returned a malformed success payload (missing session id/url); POST outcome is ambiguous");
     }
     return {
-      provider, external_id: fired.claude_code_session_id, external_url: fired.claude_code_session_url,
+      provider, external_id: fired.claude_code_session_id, external_url: fired.claude_code_session_url, model_policy: modelPolicy,
       provider_metadata: { routine: routine.source, tier: tier || null },
       session_id: fired.claude_code_session_id, session_url: fired.claude_code_session_url, routine: routine.source,
     };
   }
-  const environmentId = resolveCodexEnvironment({ meta: graph.meta || {}, override: opts.environmentId });
+  const environmentId = run.authorization_digest ? run.environment_id
+    : resolveCodexEnvironment({ meta: graph.meta || {}, override: opts.environmentId });
+  if (run.authorization_digest && opts.environmentId && opts.environmentId !== environmentId) throw new Error("environment override differs from frozen implementation authorization");
   const diagnostic = diagnoseCodexCloud({ environmentId, execImpl: opts.execImpl || spawnSync });
   if (!diagnostic.ok) throw new Error(`Codex Cloud provider unavailable: ${diagnostic.reason}`);
-  const receipt = launchCodexCloud({ environmentId, prompt, attempts: opts.attempts || 1, branch,
+  const receipt = launchCodexCloud({ environmentId, prompt, attempts: run.authorization_digest ? 1 : opts.attempts || 1, branch,
     model: opts.model || null, execImpl: opts.execImpl || spawnSync });
-  return { ...receipt, provider, provider_metadata: receipt.provider_metadata };
+  return { ...receipt, provider, provider_metadata: receipt.provider_metadata, model_policy: modelPolicy };
 }
 
 function nowIso(opts) {
@@ -468,6 +482,9 @@ function publicRun(run) {
     criticSessions: (run.launches || []).filter((l) => l.role === "critic").map(publicLaunch),
     repairSessions: (run.launches || []).filter((l) => l.role === "repair").map(publicLaunch),
     reconstructed: !!run.reconstructed,
+    authorizationDigest: run.authorization_digest || null,
+    requiredReviewRoles: run.required_review_roles || ["critic"],
+    modelPreferences: run.model_preferences || {},
     recoveredBarConfirmedAt: run.recovered_bar_confirmed_at || null,
     recoveryActorMismatch: run.recovery_actor_mismatch || null,
     cancelledAt: run.cancelled_at || null,
@@ -544,6 +561,20 @@ async function observeGauntlet(root, idOrKey, opts = {}) {
     pr = await github.findPrBySubject(subject.type, subject.key);
   }
   if (!run && pr) run = reconstructRunFromPr(pr);
+  if (!run && String(idOrKey).startsWith("gnt_")) {
+    const durable = await implementationAuthorityStore(root, github, opts)?.read(idOrKey);
+    if (durable?.state.authorization.mode === "implementation") {
+      run = structuredClone(durable.state.authorization.scope.snapshot.run);
+      run.authorization_digest = durable.state.authorization_digest;
+      run.launches = durable.state.reservations.map((reservation) => ({ ...reservation.request,
+        key: reservation.request.key.replace(/:attempt:\d+$/, ""),
+        nonce_sha256: reservation.request.nonce_sha256,
+        status: reservation.receipt ? "launched" : "ambiguous",
+        external_id: reservation.receipt?.external_id, external_url: reservation.receipt?.external_url,
+        provider_metadata: reservation.receipt?.provider_metadata, model_policy: reservation.request.model_policy,
+      }));
+    }
+  }
   if (!run) throw new Error(`no Gauntlet run found for "${idOrKey}" in the local ledger or GitHub`);
   let recoveryActorMismatch = null;
   let cancellationRecordMissing = null;
@@ -714,6 +745,7 @@ async function observeGauntlet(root, idOrKey, opts = {}) {
       }
     }
   }
+  const authority = await readImplementationAuthority(root, run, github, opts);
   const status = deriveRunStatus({ run, pr, comments: pr ? pr.comments : [], commits: pr ? pr.commits : [] });
   if (recoveryActorMismatch) {
     status.safeActions = ["authenticate_frozen_lead"];
@@ -756,7 +788,7 @@ async function observeGauntlet(root, idOrKey, opts = {}) {
   if (run.cancelled_via_github && baseAncestryFailure) {
     status.priorBaseAncestryFailure = baseAncestryFailure;
   }
-  return { ledger, run, pr, status, github };
+  return { ledger, run, pr, status, github, authority };
 }
 
 function persistReconstructedRun(root, run) {
@@ -897,13 +929,22 @@ export async function runGauntletStart(root, key, opts = {}) {
     critic_provider: criticProvider,
     repair_tier: repairTier,
     repair_provider: repairProvider,
+    model_preferences: opts.authorizationPolicy?.model_preferences || metaCfg.model_preferences || {},
+    ...(opts.authorizationPolicy && [implementationProvider, criticProvider, repairProvider].includes("codex")
+      ? { environment_id: resolveCodexEnvironment({ meta: subject.graph.meta || {}, override: opts.environmentId }) } : {}),
     launches: [],
     created_at: createdAt,
     updated_at: createdAt,
     last_state: "awaiting_pr",
   };
-  const prompt = buildImplementationPrompt({ run, frozenBar: frozen, subject: subject.node || subject.item });
+  if (opts.authorizationPolicy) await freezeImplementationAuthority(root, run, opts.authorizationPolicy, github, opts);
+  else await readImplementationAuthority(root, run, github, opts);
+  const prompt = authorizedVerificationPrompt(run, buildImplementationPrompt({ run, frozenBar: frozen, subject: subject.node || subject.item }));
   const launchKey = gauntletLaunchKey({ runId, role: "implementation", round: 0, expectedHead: baseSha, provider: implementationProvider });
+
+  const capacity = await reserveImplementationCapacity(root, run, { key: launchKey, role: "implementation", provider: implementationProvider,
+    expected_head: baseSha, round: 0, prompt_digest: createHash("sha256").update(prompt).digest("hex") }, github, opts);
+  if (capacity && !capacity.reserved) return { duplicate: true, runId, state: capacity.reservation.state, reservation: capacity.reservation };
 
   const reservation = mutateGauntletLedger(root, (next) => {
     const active = findLedgerRun(next, key, { activeOnly: true });
@@ -932,18 +973,19 @@ export async function runGauntletStart(root, key, opts = {}) {
   updateLaunch(root, runId, launchKey, { status: "claimed", claim_ref: claim.ref, updated_at: nowIso(opts) });
 
   try {
-    const receipt = await launchGauntletAgent(root, opts, { graph: subject.graph, run, role: "implementation",
+    const receipt = await submitWithImplementationCapacity(capacity, () => launchGauntletAgent(root, opts, { graph: subject.graph, run, role: "implementation",
       tier: implementationTier, profile: opts.implementationProfile || null, provider: implementationProvider,
-      prompt, branch: baseRef });
+      prompt, branch: capacity ? baseSha : baseRef }), { now: Date.parse(nowIso(opts)) });
     const awaitingPublication = implementationProvider === "codex";
     updateLaunch(root, runId, launchKey, {
       status: awaitingPublication ? "awaiting_artifact_publication" : "launched", provider: implementationProvider,
       external_id: receipt.external_id, external_url: receipt.external_url, provider_metadata: receipt.provider_metadata,
+      model_policy: receipt.model_policy || null,
       ...(receipt.session_id ? { session_id: receipt.session_id, session_url: receipt.session_url, routine: receipt.routine } : {}),
       updated_at: nowIso(opts),
     });
     return { runId, subject: key, state: awaitingPublication ? "awaiting_artifact_publication" : "awaiting_pr", barSha256: frozen.sha256,
-      provider: implementationProvider, externalId: receipt.external_id, externalUrl: receipt.external_url,
+      provider: implementationProvider, externalId: receipt.external_id, externalUrl: receipt.external_url, modelPolicy: receipt.model_policy || null,
       ...(receipt.session_id ? { sessionId: receipt.session_id, sessionUrl: receipt.session_url, routine: receipt.routine } : {}) };
   } catch (e) {
     updateLaunch(root, runId, launchKey, { status: "ambiguous", maybe_accepted: true, error: e.message, updated_at: nowIso(opts) });
@@ -952,15 +994,44 @@ export async function runGauntletStart(root, key, opts = {}) {
 }
 
 export async function runGauntletStatus(root, idOrKey, opts = {}) {
+  if (opts.all) {
+    const { runGauntletPortfolio } = await import("./lib/gauntlet-portfolio.mjs");
+    return runGauntletPortfolio(root, opts);
+  }
   const observed = await observeGauntlet(root, idOrKey, opts);
   const { pr, status } = observed;
   const run = observeProviderExecutions(observed.run, opts);
+  const limits = observed.authority.snapshot ? authorizationStatus(observed.authority.snapshot.state, { now: Date.parse(nowIso(opts)) }) : null;
+  if (limits && (!limits.launch_window_open || limits.submissions_remaining === 0 || limits.concurrency_remaining === 0)) {
+    status.safeActions = [...status.safeActions.filter((action) => !["launch_critic", "launch_repair"].includes(action)), "observe_existing_work"];
+    status.canLaunchCritic = false; status.canLaunchRepair = false;
+  }
   return {
     ...status,
+    authority_status: observed.authority.snapshot ? "protected" : "legacy_unverified",
+    limits,
+    executions: (observed.authority.snapshot?.state.reservations || []).map((reservation) => ({ key: reservation.key, role: reservation.role,
+      receipt: reservation.receipt, state: reservation.state, model_policy: reservation.request.model_policy,
+      observation: reservation.receipt ? observeAuthorizedExecution(reservation.receipt, reservation.request.environment_id, opts)
+        : { state: "reserved_without_receipt" } })),
     run: publicRun(run),
     pr: pr ? { number: pr.number, url: pr.url, title: pr.title, state: pr.state,
       headRefName: pr.headRefName, currentHead: pr.currentHead, checks: pr.checks } : null,
   };
+}
+
+export async function runGauntletObserve(root, idOrKey, opts = {}) {
+  const { run, github, authority } = await observeGauntlet(root, idOrKey, opts);
+  if (!authority.snapshot) throw new Error("legacy implementation has no protected launch accounting to observe");
+  await assertFrozenLeadActor(github, run);
+  const observations = [];
+  for (const reservation of authority.snapshot.state.reservations) {
+    if (!reservation.receipt) { observations.push({ key: reservation.key, state: "reserved_without_receipt" }); continue; }
+    const observation = observeAuthorizedExecution(reservation.receipt, reservation.request.environment_id, opts);
+    await mutateAuthorization(authority.store, run.run_id, (state) => ({ state: recordLaunchObservation(state, reservation.key, observation) }));
+    observations.push({ key: reservation.key, ...observation });
+  }
+  return { run_id: run.run_id, observations, limits: authorizationStatus((await authority.store.read(run.run_id)).state) };
 }
 
 export async function runGauntletAcknowledge(root, idOrKey, opts = {}) {
@@ -1082,7 +1153,7 @@ export async function runGauntletCritic(root, idOrKey, opts = {}) {
   if (["awaiting_checks", "checks_failing"].includes(status.state) && !opts.forceChecks) {
     throw new Error(`PR #${pr.number} is ${status.state.replaceAll("_", " ")} at ${expectedHead}; wait for stable checks or pass forceChecks=true explicitly`);
   }
-  const criticRole = opts.criticRole || "critic";
+  const criticRole = opts.criticRole || status.nextRequiredRole || "critic";
   const round = Number(status.round || ((status.repairsUsed || 0) + 1));
   const completedInvalidResults = status.criticResults.filter((result) => result.launchMatched
     && result.head === expectedHead && result.round === round
@@ -1105,6 +1176,7 @@ export async function runGauntletCritic(root, idOrKey, opts = {}) {
     persistReconstructedRun(root, run);
     return { duplicate: true, runId: run.run_id, launch: publicLaunch(existing) };
   }
+  if (run.authorization_digest && criticRole !== status.nextRequiredRole) throw new Error("critic must be the next frozen required role; specialist roles cannot substitute for one another");
   if (status.state !== "awaiting_critic"
     && !(opts.forceChecks && ["awaiting_checks", "checks_failing"].includes(status.state))) {
     throw new Error(`run ${run.run_id} is ${status.state}; a critic launch is not currently safe`);
@@ -1119,7 +1191,7 @@ export async function runGauntletCritic(root, idOrKey, opts = {}) {
   const tier = opts.tier || run.critic_tier || null;
   const profile = opts.profile || run.critic_profile || null;
   const nonce = opts.nonce || randomBytes(16).toString("hex");
-  const prompt = buildCriticPrompt({ run, pr, expectedHead, round, criticRole, nonce });
+  const prompt = authorizedVerificationPrompt(run, buildCriticPrompt({ run, pr, expectedHead, round, criticRole, nonce }));
   const launchKey = gauntletLaunchKey({ runId: run.run_id, role: "critic", round, expectedHead, criticRole, provider });
   const createdAt = nowIso(opts);
   const launchRecord = { key: launchKey, role: "critic", provider, critic_role: criticRole, round, attempt, nonce,
@@ -1163,6 +1235,15 @@ export async function runGauntletCritic(root, idOrKey, opts = {}) {
     updateLaunch(root, run.run_id, launchRecord, { status: "preflight_failed", error: e.message, updated_at: nowIso(opts) });
     throw new Error(`critic claim-protection preflight failed; no GitHub lock or Routine was created and retry is safe after configuration: ${e.message}`);
   }
+  let capacity;
+  try {
+    capacity = await reserveImplementationCapacity(root, run, { key: `${launchKey}:attempt:${attempt}`, role: "critic", provider,
+      expected_head: expectedHead, round, critic_role: criticRole, nonce_sha256: createHash("sha256").update(nonce).digest("hex") }, github, opts);
+  } catch (e) { updateLaunch(root, run.run_id, launchRecord, { status: "preflight_failed", updated_at: nowIso(opts) }); throw e; }
+  if (capacity && !capacity.reserved) {
+    updateLaunch(root, run.run_id, launchRecord, { status: "ambiguous", updated_at: nowIso(opts) });
+    return { duplicate: true, runId: run.run_id, reservation: capacity.reservation };
+  }
   let claim;
   try {
     claim = await github.claimLaunch(providerClaimKey(launchKey, provider, attempt), expectedHead, run.run_id);
@@ -1184,14 +1265,15 @@ export async function runGauntletCritic(root, idOrKey, opts = {}) {
     throw new Error(`critic launch attestation could not be recorded on PR #${pr.number}; the GitHub lock was claimed, so retry is unsafe: ${e.message}`);
   }
   try {
-    const receipt = await launchGauntletAgent(root, opts, { graph, run, role: "critic", tier, profile, provider,
-      prompt, branch: pr.headRefName || null });
+    const receipt = await submitWithImplementationCapacity(capacity, () => launchGauntletAgent(root, opts, { graph, run, role: "critic", tier, profile, provider,
+      prompt, branch: capacity ? expectedHead : pr.headRefName || null }), { now: Date.parse(nowIso(opts)) });
     updateLaunch(root, run.run_id, launchRecord, { status: "launched", provider, external_id: receipt.external_id,
       external_url: receipt.external_url, provider_metadata: receipt.provider_metadata,
+      model_policy: receipt.model_policy || null,
       ...(receipt.session_id ? { session_id: receipt.session_id, session_url: receipt.session_url, routine: receipt.routine } : {}),
       updated_at: nowIso(opts) });
     return { runId: run.run_id, role: criticRole, round, expectedHead, provider,
-      externalId: receipt.external_id, externalUrl: receipt.external_url,
+      externalId: receipt.external_id, externalUrl: receipt.external_url, modelPolicy: receipt.model_policy || null,
       ...(receipt.session_id ? { sessionId: receipt.session_id, sessionUrl: receipt.session_url, routine: receipt.routine } : {}) };
   } catch (e) {
     updateLaunch(root, run.run_id, launchRecord, { status: "ambiguous", maybe_accepted: true, error: e.message, updated_at: nowIso(opts) });
@@ -1222,7 +1304,7 @@ export async function runGauntletRepair(root, idOrKey, opts = {}) {
   if (existing) return { duplicate: true, runId: run.run_id, launch: publicLaunch(existing) };
   const tier = opts.tier || run.repair_tier || null;
   const packetSha256 = createHash("sha256").update(packet).digest("hex");
-  const prompt = buildRepairPrompt({ run, pr, expectedHead, round, packet, packetSha256 });
+  const prompt = authorizedVerificationPrompt(run, buildRepairPrompt({ run, pr, expectedHead, round, packet, packetSha256 }));
   const launchKey = gauntletLaunchKey({ runId: run.run_id, role: "repair", round, expectedHead, provider });
   const createdAt = nowIso(opts);
   const reservation = mutateGauntletLedger(root, (ledger) => {
@@ -1264,6 +1346,15 @@ export async function runGauntletRepair(root, idOrKey, opts = {}) {
     updateLaunch(root, run.run_id, launchKey, { status: "preflight_failed", error: e.message, updated_at: nowIso(opts) });
     throw new Error(`repair claim-protection preflight failed; no GitHub lock or Routine was created and retry is safe after configuration: ${e.message}`);
   }
+  let capacity;
+  try {
+    capacity = await reserveImplementationCapacity(root, run, { key: launchKey, role: "repair", provider,
+      expected_head: expectedHead, round, packet_sha256: packetSha256 }, github, opts);
+  } catch (e) { updateLaunch(root, run.run_id, launchKey, { status: "preflight_failed", updated_at: nowIso(opts) }); throw e; }
+  if (capacity && !capacity.reserved) {
+    updateLaunch(root, run.run_id, launchKey, { status: "ambiguous", updated_at: nowIso(opts) });
+    return { duplicate: true, runId: run.run_id, reservation: capacity.reservation };
+  }
   let claim;
   try {
     claim = await github.claimLaunch(providerClaimKey(launchKey, provider, attempt), expectedHead, run.run_id);
@@ -1285,14 +1376,15 @@ export async function runGauntletRepair(root, idOrKey, opts = {}) {
     throw new Error(`repair launch attestation could not be recorded on PR #${pr.number}; the GitHub lock was claimed, so retry is unsafe: ${e.message}`);
   }
   try {
-    const receipt = await launchGauntletAgent(root, opts, { graph, run, role: "repair", tier,
-      profile: opts.profile || null, provider, prompt, branch: pr.headRefName || null });
+    const receipt = await submitWithImplementationCapacity(capacity, () => launchGauntletAgent(root, opts, { graph, run, role: "repair", tier,
+      profile: opts.profile || null, provider, prompt, branch: capacity ? expectedHead : pr.headRefName || null }), { now: Date.parse(nowIso(opts)) });
     updateLaunch(root, run.run_id, launchKey, { status: "launched", provider, external_id: receipt.external_id,
       external_url: receipt.external_url, provider_metadata: receipt.provider_metadata,
+      model_policy: receipt.model_policy || null,
       ...(receipt.session_id ? { session_id: receipt.session_id, session_url: receipt.session_url, routine: receipt.routine } : {}),
       updated_at: nowIso(opts) });
     return { runId: run.run_id, round, expectedHead, packetSha256, provider,
-      externalId: receipt.external_id, externalUrl: receipt.external_url,
+      externalId: receipt.external_id, externalUrl: receipt.external_url, modelPolicy: receipt.model_policy || null,
       ...(receipt.session_id ? { sessionId: receipt.session_id, sessionUrl: receipt.session_url, routine: receipt.routine } : {}) };
   } catch (e) {
     updateLaunch(root, run.run_id, launchKey, { status: "ambiguous", maybe_accepted: true, error: e.message, updated_at: nowIso(opts) });
@@ -1370,14 +1462,17 @@ if (isMain) {
     });
     process.exit(result.status ?? 1);
   }
-  const known = new Set(["start", "status", "ack", "critic", "repair", "cancel"]);
+  const known = new Set(["start", "status", "observe", "ack", "critic", "repair", "cancel"]);
   const action = known.has(args[0]) ? args.shift() : "start";
   const val = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
+  const modelPreference = val("--model") || val("--reasoning-effort") || args.includes("--strict-model")
+    ? { ...(val("--model") ? { model: val("--model") } : {}), ...(val("--reasoning-effort") ? { reasoning_effort: val("--reasoning-effort") } : {}),
+      ...(args.includes("--strict-model") ? { strict: true } : {}) } : null;
   const positional = args.find((arg, index) => !arg.startsWith("-") && (index === 0 || !args[index - 1].startsWith("--")));
-  if (!positional) {
+  if (!positional && !(action === "status" && args.includes("--all"))) {
     console.error(`usage:
   roadmap gauntlet start <key> [--bar-file <path>] [--max-rounds <0..20>] [--implementation-provider claude|codex] [--critic-provider claude|codex] [--repair-provider claude|codex] [--implementation-tier <tier>] [--critic-tier <tier>] [--critic-profile <name>] [--repair-tier <tier>] [--force]
-  roadmap gauntlet status <run|key> [--json]
+  roadmap gauntlet status <run|key> [--json] | status --all --json
   roadmap gauntlet ack <run|key> --comment-url <exact-url> --confirm
   roadmap gauntlet critic <run|key> --expected-head <full-sha> [--provider claude|codex] [--critic-role <slug>] [--tier <tier>] [--profile <name>] [--force-checks] [--confirm-recovered-bar]
   roadmap gauntlet repair <run|key> --expected-head <full-sha> --packet-file <path> [--provider claude|codex] [--tier <tier>] [--profile <name>]
@@ -1394,14 +1489,19 @@ if (isMain) {
         implementationTier: val("--implementation-tier"), repairTier: val("--repair-tier"),
         implementationProvider: val("--implementation-provider"), criticProvider: val("--critic-provider"), repairProvider: val("--repair-provider"),
         force: args.includes("--force"),
+        authorizationPolicy: val("--authorization-file") ? JSON.parse(readFileSync(resolve(val("--authorization-file")), "utf8")) : null,
+        modelPreference,
         additionalBar: barFile ? readFileSync(resolve(barFile), "utf8") : null,
       });
       console.log(result.duplicate
         ? `Gauntlet ${result.runId} already active for ${positional} (${result.state}).`
         : `Gauntlet ${result.runId} started for ${positional}.\nimplementation (${result.provider || "claude"}): ${result.externalUrl || result.sessionUrl}\nstate: ${result.state}`);
     } else if (action === "status") {
-      result = await runGauntletStatus(process.cwd(), positional);
-      console.log(args.includes("--json") ? JSON.stringify(result, null, 2) : formatGauntletStatus(result));
+      result = await runGauntletStatus(process.cwd(), positional, { all: args.includes("--all") });
+      console.log(args.includes("--json") || args.includes("--all") ? JSON.stringify(result, null, 2) : formatGauntletStatus(result));
+    } else if (action === "observe") {
+      result = await runGauntletObserve(process.cwd(), positional);
+      console.log(JSON.stringify(result, null, 2));
     } else if (action === "ack") {
       result = await runGauntletAcknowledge(process.cwd(), positional, {
         commentUrl: val("--comment-url"), confirm: args.includes("--confirm"),
@@ -1411,6 +1511,7 @@ if (isMain) {
         : `Gauntlet ${result.runId} acknowledged ${result.verdict} @ ${result.head}.`);
     } else if (action === "critic") {
       result = await runGauntletCritic(process.cwd(), positional, {
+        modelPreference,
         expectedHead: val("--expected-head"), tier: val("--tier"),
         profile: val("--profile"), provider: val("--provider"), criticRole: val("--critic-role") || "critic",
         forceChecks: args.includes("--force-checks"),
@@ -1421,6 +1522,7 @@ if (isMain) {
       const packetFile = val("--packet-file");
       const packet = packetFile ? readFileSync(resolve(packetFile), "utf8") : val("--packet");
       result = await runGauntletRepair(process.cwd(), positional, {
+        modelPreference,
         expectedHead: val("--expected-head"), packet, tier: val("--tier"), profile: val("--profile"), provider: val("--provider"),
       });
       console.log(formatGauntletLaunchResult(result, "repair"));
@@ -1430,6 +1532,7 @@ if (isMain) {
       });
       console.log(`Gauntlet ${result.runId} cancelled: ${result.reason}`);
     }
+    for (const warning of result?.modelPolicy?.warnings || []) console.error(`warning: ${warning}`);
   } catch (e) {
     console.error(`roadmap gauntlet: ${e.message}`);
     process.exit(1);
