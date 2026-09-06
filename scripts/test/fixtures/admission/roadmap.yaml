@@ -1,0 +1,10 @@
+meta:
+  schema_version: 1
+  program: Evidence admission fixture
+  dispatch:
+    evaluation:
+      artifact_root: docs/gauntlets/fixture/evaluation/runs
+    providers:
+      codex:
+        environment_id: fixture-never-launch
+pis: []

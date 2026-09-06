@@ -18,6 +18,7 @@ import { platedKeys } from "./lib/plate-core.mjs";
 import { runSync, runNote, runNotes, runProjectUpdate } from "./linear.mjs";
 import { runDispatch, runFanCloud } from "./dispatch.mjs";
 import { runGauntletStart, runGauntletStatus, runGauntletAcknowledge, runGauntletCritic, runGauntletRepair, runGauntletCancel } from "./gauntlet.mjs";
+import { runEvaluation } from "./evaluate.mjs";
 import { runEstimate, runTimeline, runLog } from "./estimate.mjs";
 import { LOG_STATUSES } from "./lib/estimate-core.mjs";
 
@@ -78,6 +79,15 @@ const GAUNTLET_TOOLS = [
       run: { type: "string" }, reason: { type: "string", minLength: 1, maxLength: 2000 }, confirm: { const: true } } } },
 ];
 
+const EVALUATION_TOOLS = [
+  { name: "gauntlet_eval_validate", description: "Read-only validation of a local versioned evidence packet against its frozen source Git tree. Checks identity, evidence links, artifacts and detected prohibited data. Does not accept claims, attest redaction, launch agents or seal a run.",
+    inputSchema: { type: "object", required: ["run", "assignment"], properties: { run: { type: "string" }, assignment: { type: "string" } } } },
+  { name: "gauntlet_eval_collect", description: "Inspect an exact Codex task's packet patch. Defaults to read-only preview. apply=true revalidates then applies only that same patch, refusing dirty packet files or unsafe artifacts. A validated packet is not yet lead-accepted. Never launches a replacement worker.",
+    inputSchema: { type: "object", required: ["run", "assignment"], properties: { run: { type: "string" }, assignment: { type: "string" }, apply: { type: "boolean" } } } },
+  { name: "gauntlet_eval_migrate", description: "Preview explicit legacy evidence-run migration. confirm=true preserves the original manifest and packets but removes inferred sealing/acceptance. Historical receipts remain attributable and unverified; nothing is launched.",
+    inputSchema: { type: "object", required: ["run"], properties: { run: { type: "string" }, confirm: { type: "boolean" } } } },
+];
+
 // plate_list is a read that needs the backlog too (in_progress items), so it's handled inline here
 // rather than in mcp-core's graph-only READ_HANDLERS. The plate_set/add/remove mutations live in TOOLS.
 const PLATE_TOOLS = [
@@ -115,6 +125,14 @@ function repoRoot() {
 }
 
 function callTool(name, args) {
+  if (EVALUATION_TOOLS.some((tool) => tool.name === name)) {
+    const action = name.slice("gauntlet_eval_".length);
+    const argv = [action, "--run", args.run];
+    if (args.assignment) argv.push("--assignment", args.assignment);
+    if (args.apply === true) argv.push("--apply");
+    if (args.confirm === true) argv.push("--confirm");
+    return runEvaluation(repoRoot(), argv);
+  }
   if (READ_HANDLERS[name]) {
     const graph = loadGraph(roadmapPaths(repoRoot()).yaml);
     return READ_HANDLERS[name](graph, args || {});
@@ -218,14 +236,14 @@ function handle(msg) {
   if (method === "notifications/initialized" || method === "initialized") return; // notification: no reply
   if (method === "ping") return out({ jsonrpc: "2.0", id, result: {} });
   if (method === "tools/list") {
-    return out({ jsonrpc: "2.0", id, result: { tools: [...TOOLS, ...BACKLOG_TOOLS, ...LINEAR_TOOLS, ...CLOUD_TOOLS, ...GAUNTLET_TOOLS, ...PLATE_TOOLS, ...JOURNAL_TOOLS, ...ESTIMATE_TOOLS] } });
+    return out({ jsonrpc: "2.0", id, result: { tools: [...TOOLS, ...BACKLOG_TOOLS, ...LINEAR_TOOLS, ...CLOUD_TOOLS, ...GAUNTLET_TOOLS, ...EVALUATION_TOOLS, ...PLATE_TOOLS, ...JOURNAL_TOOLS, ...ESTIMATE_TOOLS] } });
   }
   if (method === "tools/call") {
     const name = params && params.name;
     const args = (params && params.arguments) || {};
     // Promise-wrapped so async tools (linear_sync) work; sync tools resolve immediately.
     return Promise.resolve().then(() => callTool(name, args)).then(
-      (result) => out({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] } }),
+      (result) => out({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], ...(result?.ok === false ? { isError: true } : {}) } }),
       // MCP convention: tool failures come back as a result with isError, so the model sees why.
       (e) => out({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true } }),
     );

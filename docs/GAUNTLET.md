@@ -52,14 +52,36 @@ ephemeral checkout.
 ```text
 roadmap gauntlet eval init --run <id> --base-sha <40-sha> --assignments assignments.yaml
 roadmap gauntlet eval launch --run <id> --wave <wave> --confirm
+roadmap gauntlet eval collect --run <id> --assignment <id>
 roadmap gauntlet eval collect --run <id> --assignment <id> --apply
-roadmap gauntlet eval seal --run <id> --wave <wave> --confirm
+roadmap gauntlet eval validate --run <id> --assignment <id>
 ```
 
 An assignment file is a YAML sequence (or an `assignments:` mapping) of `id`, `wave`, and
 `prompt`. Launch records the exact task receipt after every submission. Collection validates the
 task's unified diff before applying it and rejects every path outside that assignment's inbox. A
-lead must review and commit the resulting documentation separately.
+lead must review and commit the resulting documentation separately. Workers must commit their
+local packet; the lead, not the worker, publishes the consolidated PR.
+
+Version 3 manifests require [version 1 evidence packets](EVIDENCE_PACKETS.md). Preview and
+validation do not update the manifest or working tree. Collection applies the exact diff it
+validated in an isolated Git index, records patch and packet digests only after successful
+application, and refuses local packet changes, symlinks and unsupported modes. It does not
+establish the truth of a claim or substitute for lead inspection and redaction.
+
+Legacy manifests remain readable and explicitly unverified. `eval migrate --run <id>` previews
+migration; add `--confirm` to preserve the original `LEGACY_RUN.vN.yaml` and receipts, clear
+inferred acceptance/sealing, and retain packet files untouched. Migration does not make old
+packet schemas valid. Corrections must preserve earlier evidence in Git history.
+
+The admission delivery intentionally blocks `eval seal`: collection timestamps cannot create
+a PASS. Authenticated current-head review, lead adjudication and GitHub seal attestations are
+the next dependency in the [implementation plan](specs/trustworthy-gauntlet.md). Do not use this
+intermediate delivery as a qualified autonomous evaluation service.
+
+Matching MCP tools: `gauntlet_eval_validate`, `gauntlet_eval_collect` (preview unless `apply`),
+and `gauntlet_eval_migrate` (preview unless `confirm`). Validation failures return nonzero CLI
+exit status and MCP `isError`; the diagnostic JSON contains error codes, not worker claims.
 
 The default `artifact_root` is `docs/audits/dimensional-coherence-matrix`. A repository may set a
 durable, repository-relative override in its canonical roadmap configuration:
