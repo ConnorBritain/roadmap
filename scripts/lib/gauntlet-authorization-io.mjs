@@ -1,7 +1,7 @@
 // Protected GitHub Git objects form a compare-and-swap authority journal.
 // There is no local authoritative counter and no force update or ref deletion.
 import { spawnSync } from "node:child_process";
-import { assertAuthorizationState, assertAuthorizationTransition, authorizationDigest } from "./gauntlet-authorization.mjs";
+import { assertAuthorizationState, assertAuthorizationTransition, authorizationDigest, recordContinuation, continuationStatus } from "./gauntlet-authorization.mjs";
 import { prohibitedDataFindings } from "./evaluation-packet.mjs";
 
 const STATE_PATH = ".roadmap-gauntlet-authority.json";
@@ -105,4 +105,10 @@ export async function mutateAuthorization(store, runId, transition, { retries = 
     if (updated.written) return { ...result, snapshot: updated.current };
   }
   throw new Error("authority changed concurrently; no new provider submission was made by this operation");
+}
+
+export async function recordRunContinuation({ store, runId, github, record, confirm, now = new Date().toISOString() }) {
+  const actor = await github.viewerLogin();
+  const result = await mutateAuthorization(store, runId, (state) => ({ state: recordContinuation(state, record, { actor, confirm, now }) }));
+  return { action: "continuation", run_id: runId, continuation: continuationStatus(result.state, { now: Date.parse(now) }) };
 }

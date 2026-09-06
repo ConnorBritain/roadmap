@@ -47,8 +47,8 @@ import {
 } from "./lib/cloud-agent-providers.mjs";
 import { freezeImplementationAuthority, readImplementationAuthority, reserveImplementationCapacity,
   submitWithImplementationCapacity, authorizedVerificationPrompt, implementationAuthorityStore } from "./lib/implementation-authorization.mjs";
-import { authorizationStatus, recordLaunchObservation, reconcileLaunchReceipt } from "./lib/gauntlet-authorization.mjs";
-import { mutateAuthorization } from "./lib/gauntlet-authorization-io.mjs";
+import { authorizationStatus, recordLaunchObservation, reconcileLaunchReceipt, continuationStatus } from "./lib/gauntlet-authorization.mjs";
+import { mutateAuthorization, recordRunContinuation } from "./lib/gauntlet-authorization-io.mjs";
 import { observeAuthorizedExecution } from "./lib/gauntlet-observation.mjs";
 import { roleModelPreference, qualifyModelPreference } from "./lib/model-policy.mjs";
 import { recordDecisionForPr, decisionReport, readDecisionFile } from "./lib/gauntlet-decisions.mjs";
@@ -939,7 +939,16 @@ export async function runGauntletStart(root, key, opts = {}) {
     last_state: "awaiting_pr",
   };
   if (opts.authorizationPolicy) await freezeImplementationAuthority(root, run, opts.authorizationPolicy, github, opts);
-  else await readImplementationAuthority(root, run, github, opts);
+  const authorized = await readImplementationAuthority(root, run, github, opts);
+  if (authorized.snapshot) {
+    if (opts.continuationRecord) {
+      await recordRunContinuation({ store: authorized.store, runId, github, record: opts.continuationRecord, confirm: opts.confirmContinuation, now: nowIso(opts) });
+      authorized.snapshot = await authorized.store.read(runId);
+    }
+    const continuation = continuationStatus(authorized.snapshot.state, { now: Date.parse(nowIso(opts)) });
+    if (!continuation.launch_ready) return { runId, subject: key, state: "awaiting_continuation", launched: false, continuation,
+      authorizationDigest: authorized.snapshot.state.authorization_digest };
+  }
   const prompt = authorizedVerificationPrompt(run, buildImplementationPrompt({ run, frozenBar: frozen, subject: subject.node || subject.item }));
   const launchKey = gauntletLaunchKey({ runId, role: "implementation", round: 0, expectedHead: baseSha, provider: implementationProvider });
 
@@ -1003,7 +1012,7 @@ export async function runGauntletStatus(root, idOrKey, opts = {}) {
   const { pr, status } = observed;
   const run = observeProviderExecutions(observed.run, opts);
   const limits = observed.authority.snapshot ? authorizationStatus(observed.authority.snapshot.state, { now: Date.parse(nowIso(opts)) }) : null;
-  if (limits && (!limits.launch_window_open || limits.submissions_remaining === 0 || limits.concurrency_remaining === 0)) {
+  if (limits && (!limits.launch_window_open || !limits.continuation.launch_ready || limits.submissions_remaining === 0 || limits.concurrency_remaining === 0)) {
     status.safeActions = [...status.safeActions.filter((action) => !["launch_critic", "launch_repair"].includes(action)), "observe_existing_work"];
     status.canLaunchCritic = false; status.canLaunchRepair = false;
   }
@@ -1034,6 +1043,12 @@ export async function runGauntletObserve(root, idOrKey, opts = {}) {
     observations.push({ key: reservation.key, ...observation });
   }
   return { run_id: run.run_id, observations, limits: authorizationStatus((await authority.store.read(run.run_id)).state) };
+}
+
+export async function runGauntletContinuation(root, idOrKey, opts = {}) {
+  const { run, github, authority } = await observeGauntlet(root, idOrKey, opts);
+  if (!authority.snapshot) throw new Error("continuation receipt requires protected implementation authorization");
+  return recordRunContinuation({ store: authority.store, runId: run.run_id, github, record: opts.record, confirm: opts.confirm, now: nowIso(opts) });
 }
 
 export async function runGauntletReconcile(root, idOrKey, opts = {}) {
@@ -1499,7 +1514,7 @@ if (isMain) {
     });
     process.exit(result.status ?? 1);
   }
-  const known = new Set(["start", "status", "observe", "reconcile", "decision", "ack", "critic", "repair", "cancel"]);
+  const known = new Set(["start", "status", "observe", "continuation", "reconcile", "decision", "ack", "critic", "repair", "cancel"]);
   const action = known.has(args[0]) ? args.shift() : "start";
   const val = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
   const modelPreference = val("--model") || val("--reasoning-effort") || args.includes("--strict-model")
@@ -1512,6 +1527,7 @@ if (isMain) {
   roadmap gauntlet status <run|key> [--json] | status --all --json
   roadmap gauntlet reconcile <run> --launch-key <key> --task-id <exact-id> --task-url <exact-url> --reason <text> --confirm
   roadmap gauntlet decision <run> --expected-head <sha> --record-file <decision.json> --confirm
+  roadmap gauntlet continuation <run> --receipt-file <desktop-receipt.json> --confirm
   roadmap gauntlet ack <run|key> --comment-url <exact-url> --confirm
   roadmap gauntlet critic <run|key> --expected-head <full-sha> [--provider claude|codex] [--critic-role <slug>] [--tier <tier>] [--profile <name>] [--force-checks] [--confirm-recovered-bar]
   roadmap gauntlet repair <run|key> --expected-head <full-sha> --packet-file <path> [--provider claude|codex] [--tier <tier>] [--profile <name>]
@@ -1529,10 +1545,12 @@ if (isMain) {
         implementationProvider: val("--implementation-provider"), criticProvider: val("--critic-provider"), repairProvider: val("--repair-provider"),
         force: args.includes("--force"),
         authorizationPolicy: val("--authorization-file") ? JSON.parse(readFileSync(resolve(val("--authorization-file")), "utf8")) : null,
+        continuationRecord: val("--continuation-file") ? readDecisionFile(val("--continuation-file")) : null,
+        confirmContinuation: args.includes("--confirm-continuation"),
         modelPreference,
         additionalBar: barFile ? readFileSync(resolve(barFile), "utf8") : null,
       });
-      console.log(result.duplicate
+      console.log(result.launched === false ? `Gauntlet ${result.runId} is awaiting desktop continuation; no worker was launched.\n${result.continuation.handoff}` : result.duplicate
         ? `Gauntlet ${result.runId} already active for ${positional} (${result.state}).`
         : `Gauntlet ${result.runId} started for ${positional}.\nimplementation (${result.provider || "claude"}): ${result.externalUrl || result.sessionUrl}\nstate: ${result.state}`);
     } else if (action === "status") {
@@ -1540,6 +1558,9 @@ if (isMain) {
       console.log(args.includes("--json") || args.includes("--all") ? JSON.stringify(result, null, 2) : formatGauntletStatus(result));
     } else if (action === "observe") {
       result = await runGauntletObserve(process.cwd(), positional);
+      console.log(JSON.stringify(result, null, 2));
+    } else if (action === "continuation") {
+      result = await runGauntletContinuation(process.cwd(), positional, { record: readDecisionFile(val("--receipt-file")), confirm: args.includes("--confirm") });
       console.log(JSON.stringify(result, null, 2));
     } else if (action === "reconcile") {
       result = await runGauntletReconcile(process.cwd(), positional, { launchKey: val("--launch-key"), taskId: val("--task-id"), taskUrl: val("--task-url"),

@@ -17,7 +17,7 @@ import { linearState, linearStatusLine, normalizeLinearConfig } from "./lib/line
 import { platedKeys } from "./lib/plate-core.mjs";
 import { runSync, runNote, runNotes, runProjectUpdate } from "./linear.mjs";
 import { runDispatch, runFanCloud } from "./dispatch.mjs";
-import { runGauntletStart, runGauntletStatus, runGauntletObserve, runGauntletReconcile, runGauntletDecision, runGauntletAcknowledge, runGauntletCritic, runGauntletRepair, runGauntletCancel } from "./gauntlet.mjs";
+import { runGauntletStart, runGauntletStatus, runGauntletObserve, runGauntletContinuation, runGauntletReconcile, runGauntletDecision, runGauntletAcknowledge, runGauntletCritic, runGauntletRepair, runGauntletCancel } from "./gauntlet.mjs";
 import { runEvaluation } from "./evaluate.mjs";
 import { runEstimate, runTimeline, runLog } from "./estimate.mjs";
 import { LOG_STATUSES } from "./lib/estimate-core.mjs";
@@ -49,6 +49,8 @@ const CLOUD_TOOLS = [
 // Conducted cloud work: deterministic senses/actuators only. The lead model remains the
 // executive function that judges critic materiality, synthesizes repairs, and decides stops.
 const GAUNTLET_TOOLS = [
+  { name: "gauntlet_continuation", description: "After inspecting the supported desktop scheduling tool result, record the exact heartbeat ID, target lead task and ACTIVE/PAUSED status in protected authorization. Requires a fresh observation. This is lead-attested registration, not verified proof a scheduled wake ran. Paused or stale registration blocks new bounded launches, not observation or collection.",
+    inputSchema: { type: "object", required: ["run", "record", "confirm"], properties: { run: { type: "string" }, record: { type: "object" }, confirm: { const: true } } } },
   { name: "gauntlet_decision", description: "Record a lead-inspected finding decision, regression or human intervention against an immutable comment on the exact implementation PR head. Reporting only: does not accept packets, acknowledge critics, authorize repairs or prove a claim. Corrections must name the superseded record fingerprint.",
     inputSchema: { type: "object", required: ["run", "expected_head", "record", "confirm"], properties: { run: { type: "string" }, expected_head: { type: "string" }, record: { type: "object" }, confirm: { const: true } } } },
   { name: "gauntlet_reconcile", description: "After frozen-lead inspection, associate an exact observable Codex task ID/URL with an unresolved protected implementation launch. Records the lead reason, cannot replace receipts or replenish budgets, and never launches or guesses by recency.",
@@ -63,6 +65,8 @@ const GAUNTLET_TOOLS = [
       bar: { type: "string", description: "additional immutable acceptance criteria/references appended to the roadmap-derived bar" },
       authorization: { type: "object", description: "Approved bounded policy: required_review_roles, verification_commands, model_preferences, limits (submissions, concurrency, repairs, attempts_per_submission=1, launch_deadline). Scope, actor and providers are frozen from this launch." },
       model_preference: { type: "object", description: "Explicit recorded model/reasoning_effort/strict override for this submission" },
+      continuation_record: { type: "object", description: "Optional fresh inspected desktop heartbeat receipt; otherwise a new bounded run returns a monitoring handoff before submission" },
+      confirm_continuation: { type: "boolean", description: "Explicit lead inspection of the supplied desktop continuation receipt" },
       implementation_tier: { type: "string" }, critic_tier: { type: "string" }, repair_tier: { type: "string" },
       implementation_provider: { enum: ["claude", "codex"] }, critic_provider: { enum: ["claude", "codex"] }, repair_provider: { enum: ["claude", "codex"] },
       force: { type: "boolean", description: "explicitly override the roadmap cycle lock for this run" },
@@ -90,6 +94,8 @@ const GAUNTLET_TOOLS = [
 ];
 
 const EVALUATION_TOOLS = [
+  { name: "gauntlet_eval_continuation", description: "Record a fresh inspected supported-desktop heartbeat receipt for this bounded evaluation. The fixed lead task and automation ID must match; PAUSED or stale state blocks new launches. Registration does not prove a scheduled wake or provider model. Does not start its own scheduler.",
+    inputSchema: { type: "object", required: ["run", "record", "confirm"], properties: { run: { type: "string" }, record: { type: "object" }, confirm: { const: true } } } },
   { name: "gauntlet_eval_decision", description: "Append an inspected lead reporting decision for a finding, regression or human intervention on the exact evidence PR head. Binds an immutable comment digest and preserves attributable corrections. Does not replace packet admission, critic acknowledgment, scoped repair approval or sealing.",
     inputSchema: { type: "object", required: ["run", "expected_head", "record", "confirm"], properties: { run: { type: "string" }, expected_head: { type: "string" }, record: { type: "object" }, confirm: { const: true } } } },
   { name: "gauntlet_eval_launch", description: "Launch the specified frozen evaluation wave using protected authorization and durable capacity reservations. Exactly one attempt per submission; duplicate or ambiguous reservations never cause a blind resubmission. Does not authorize new scope.",
@@ -183,7 +189,7 @@ function callTool(name, args) {
     if (args.apply === true) argv.push("--apply");
     if (args.confirm === true) argv.push("--confirm");
     if (args.redaction_inspected === true) argv.push("--redaction-inspected");
-    return runEvaluation(repoRoot(), argv, { modelPreference: args.model_preference || null, decisionRecord: args.record || null });
+    return runEvaluation(repoRoot(), argv, { modelPreference: args.model_preference || null, decisionRecord: args.record || null, continuationRecord: args.record || null });
   }
   if (READ_HANDLERS[name]) {
     const graph = loadGraph(roadmapPaths(repoRoot()).yaml);
@@ -234,10 +240,12 @@ function callTool(name, args) {
       criticProvider: args.critic_provider, repairProvider: args.repair_provider,
       criticProfile: args.critic_profile, force: !!args.force,
       authorizationPolicy: args.authorization, modelPreference: args.model_preference,
+      continuationRecord: args.continuation_record, confirmContinuation: args.confirm_continuation === true,
     });
   }
   if (name === "gauntlet_status") return runGauntletStatus(repoRoot(), args.run, { all: args.all === true });
   if (name === "gauntlet_observe") return runGauntletObserve(repoRoot(), args.run);
+  if (name === "gauntlet_continuation") return runGauntletContinuation(repoRoot(), args.run, { record: args.record, confirm: args.confirm === true });
   if (name === "gauntlet_decision") return runGauntletDecision(repoRoot(), args.run, { expectedHead: args.expected_head, record: args.record, confirm: args.confirm === true });
   if (name === "gauntlet_reconcile") return runGauntletReconcile(repoRoot(), args.run, { launchKey: args.launch_key,
     taskId: args.task_id, taskUrl: args.task_url, reason: args.reason, confirm: args.confirm === true });

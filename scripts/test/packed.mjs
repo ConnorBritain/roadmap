@@ -50,7 +50,7 @@ try {
     .trim().split("\n").map((line) => JSON.parse(line));
   const listed = replies.find((reply) => reply.id === 1).result.tools;
   for (const name of ["gauntlet_start", "gauntlet_status", "gauntlet_observe", "gauntlet_reconcile", "gauntlet_decision", "gauntlet_eval_decision", "gauntlet_eval_validate", "gauntlet_eval_collect", "gauntlet_eval_migrate",
-    "gauntlet_eval_authorize", "gauntlet_eval_critic", "gauntlet_eval_ack", "gauntlet_eval_repair", "gauntlet_eval_reconcile"]) {
+    "gauntlet_continuation", "gauntlet_eval_continuation", "gauntlet_eval_authorize", "gauntlet_eval_critic", "gauntlet_eval_ack", "gauntlet_eval_repair", "gauntlet_eval_reconcile"]) {
     assert.ok(listed.some((tool) => tool.name === name), name);
   }
   const result = replies.find((reply) => reply.id === 2).result;

@@ -1,7 +1,7 @@
 // Optional bounded execution contract for implementation Gauntlets. Legacy
 // runs remain readable; they cannot acquire a fresh budget after launching.
 import { randomUUID } from "node:crypto";
-import { freezeAuthorization, authorizationDigest, reserveAuthorizedLaunch, recordLaunchOutcome, authorizationStatus } from "./gauntlet-authorization.mjs";
+import { freezeAuthorization, authorizationDigest, reserveAuthorizedLaunch, recordLaunchOutcome, authorizationStatus, continuationStatus } from "./gauntlet-authorization.mjs";
 import { githubAuthorizationStore, mutateAuthorization } from "./gauntlet-authorization-io.mjs";
 import { gauntletProtocolDigest } from "./gauntlet-core.mjs";
 import { qualifyModelPreference, roleModelPreference } from "./model-policy.mjs";
@@ -15,10 +15,12 @@ export async function freezeImplementationAuthority(root, run, policy, github, o
   const store = implementationAuthorityStore(root, github, opts);
   if (!store) throw new Error("bounded implementation requires a protected-authority-capable GitHub adapter");
   const prior = await store.read(run.run_id);
+  const runSnapshot = structuredClone(run);
+  if (prior) for (const field of ["created_at", "updated_at"]) runSnapshot[field] = prior.state.authorization.scope.snapshot.run[field];
   const initial = freezeAuthorization({ ...policy, version: 1, run_id: run.run_id, mode: "implementation",
     source_sha: run.base_sha, lead_actor: run.lead_actor,
     scope: { description: policy?.scope?.description || run.frozen_bar_markdown,
-      snapshot: { protocol_digest: gauntletProtocolDigest(run), run: structuredClone(run) } },
+      snapshot: { protocol_digest: gauntletProtocolDigest(run), run: runSnapshot } },
     providers: { implementation: run.implementation_provider, critic: run.critic_provider, repair: run.repair_provider },
   }, { now: prior?.state.authorization.created_at || run.created_at });
   if (initial.authorization.limits.repairs !== run.max_rounds) throw new Error("authorized repair limit must equal frozen Gauntlet max_rounds");
@@ -65,6 +67,7 @@ export async function submitWithImplementationCapacity(reservation, submit, { no
   try {
     const state = (await reservation.store.read(reservation.runId)).state;
     if (!authorizationStatus(state, { now }).launch_window_open) throw new Error("launch window expired");
+    if (!continuationStatus(state, { now }).launch_ready) throw new Error("desktop continuation paused or expired before submission");
     const receipt = { ...await submit(), model_policy: reservation.modelPolicy };
     await mutateAuthorization(reservation.store, reservation.runId, (current) => ({ state: recordLaunchOutcome(current,
       reservation.key, { owner: reservation.owner, receipt }) }));

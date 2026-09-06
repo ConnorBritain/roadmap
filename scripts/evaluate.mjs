@@ -17,8 +17,8 @@ import {
 import { applyEvaluationPatch, inspectEvaluationPatch, inspectLocalEvaluationPacket, assertNoSymlinkAncestors, evaluationCommand,
   inspectEvaluationRepairPatch, applyEvaluationRepairPatch } from "./lib/evaluation-io.mjs";
 import { githubClient } from "./gauntlet.mjs";
-import { freezeAuthorization, authorizationDigest, reserveAuthorizedLaunch, recordLaunchOutcome, recordLaunchObservation, authorizationStatus, reconcileLaunchReceipt } from "./lib/gauntlet-authorization.mjs";
-import { githubAuthorizationStore, mutateAuthorization } from "./lib/gauntlet-authorization-io.mjs";
+import { freezeAuthorization, authorizationDigest, reserveAuthorizedLaunch, recordLaunchOutcome, recordLaunchObservation, authorizationStatus, reconcileLaunchReceipt, continuationStatus } from "./lib/gauntlet-authorization.mjs";
+import { githubAuthorizationStore, mutateAuthorization, recordRunContinuation } from "./lib/gauntlet-authorization-io.mjs";
 import { runEvaluationReviewAction, inspectCommittedEvaluationCorpus } from "./lib/evaluation-review-io.mjs";
 import { evaluationReviewStatus, findEvaluationAttestation, sealEvaluationPayload } from "./lib/evaluation-review-core.mjs";
 import { roleModelPreference, qualifyModelPreference } from "./lib/model-policy.mjs";
@@ -127,7 +127,7 @@ export async function runEvaluation(root, args, opts = {}) {
   const graph = loadGraph(join(root, "docs", "roadmap", "roadmap.yaml"));
   const artifactRoot = configuredArtifactRoot(graph);
   const runIdForLock = requiredRunId(value(args, "--run") || args.find((arg) => !arg.startsWith("-")));
-  const mutating = ["init", "launch", "accept", "repair", "critic", "ack", "seal", "authorize", "observe", "attach", "reconcile", "decision"].includes(action)
+  const mutating = ["init", "launch", "accept", "repair", "critic", "ack", "seal", "authorize", "observe", "attach", "reconcile", "decision", "continuation"].includes(action)
     || (["collect", "collect-repair"].includes(action) && flag(args, "--apply")) || (["migrate", "recover"].includes(action) && flag(args, "--confirm"));
   if (mutating && !opts.locked) return withRunLock(root, runIdForLock, artifactRoot,
     () => runEvaluation(root, [action, ...args], { ...opts, locked: true }));
@@ -260,6 +260,13 @@ export async function runEvaluation(root, args, opts = {}) {
       expectedHead: value(args, "--expected-head"), input: opts.decisionRecord || readDecisionFile(value(args, "--record-file")),
       confirm: flag(args, "--confirm"), now: opts.now || new Date().toISOString() });
   }
+  if (action === "continuation") {
+    const store = authorityStore(), snapshot = await store.read(runId);
+    if (!snapshot) throw new Error("continuation requires protected evaluation authorization");
+    await verifyAuthority(snapshot.state);
+    return recordRunContinuation({ store, runId, github: opts.github || githubClient(root),
+      record: opts.continuationRecord || readDecisionFile(value(args, "--receipt-file")), confirm: flag(args, "--confirm"), now: opts.now || new Date().toISOString() });
+  }
   if (["attach", "accept", "critic", "ack", "seal", "repair"].includes(action)) {
     const store = authorityStore(); const snapshot = await store.read(runId);
     if (!snapshot) throw new Error("evaluation review requires protected authorization");
@@ -316,7 +323,8 @@ export async function runEvaluation(root, args, opts = {}) {
     }
     manifest.authorization = { digest: initial.authorization_digest, ref: result.current.ref, lead_actor: initial.authorization.lead_actor };
     writeRun(root, manifest);
-    return { action, run_id: runId, authorization: manifest.authorization, duplicate: !result.written, limits: authorizationStatus(result.current.state) };
+    return { action, run_id: runId, authorization: manifest.authorization, duplicate: !result.written, limits: authorizationStatus(result.current.state),
+      continuation: continuationStatus(result.current.state, { now: Date.parse(opts.now || new Date().toISOString()) }) };
   }
   if (action === "observe") {
     const store = authorityStore();
@@ -371,6 +379,8 @@ export async function runEvaluation(root, args, opts = {}) {
     const authorized = await store.read(runId);
     if (!authorized) throw new Error("evaluation requires protected authorization before launch; use eval authorize");
     await verifyAuthority(authorized.state);
+    const continuation = continuationStatus(authorized.state, { now: Date.parse(opts.now || new Date().toISOString()) });
+    if (!continuation.launch_ready) return { action, run_id: runId, state: "awaiting_continuation", launched: [], continuation };
     const modelPolicy = qualifyModelPreference({ provider: "codex", preference: roleModelPreference(authorized.state.authorization.model_preferences, "evaluator", opts.modelPreference) });
     const wave = value(args, "--wave");
     const diagnostic = (opts.diagnoseCloud || diagnoseCodexCloud)({ environmentId: manifest.environment_id });
@@ -393,7 +403,9 @@ export async function runEvaluation(root, args, opts = {}) {
         writeRun(root, manifest); continue;
       }
       try {
-        if (!authorizationStatus(reservation.state, { now: Date.parse(opts.now || new Date().toISOString()) }).launch_window_open) {
+        const currentAuthority = (await store.read(runId)).state;
+        if (!continuationStatus(currentAuthority, { now: Date.parse(opts.now || new Date().toISOString()) }).launch_ready) throw new Error("desktop continuation paused or expired before submission");
+        if (!authorizationStatus(currentAuthority, { now: Date.parse(opts.now || new Date().toISOString()) }).launch_window_open) {
           throw new Error("launch deadline passed after reservation");
         }
         const launchedReceipt = await (opts.launchCloud || launchCodexCloud)({ environmentId: manifest.environment_id,

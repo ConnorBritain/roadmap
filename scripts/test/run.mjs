@@ -74,14 +74,14 @@ import { formatGauntletLaunchResult, formatGauntletStatus, githubClient,
   runGauntletAcknowledge, runGauntletCancel, runGauntletCritic, runGauntletRepair,
   runGauntletStart, runGauntletStatus, runGauntletReconcile } from "../gauntlet.mjs";
 import { freezeImplementationAuthority, reserveImplementationCapacity } from "../lib/implementation-authorization.mjs";
-import { recordLaunchOutcome } from "../lib/gauntlet-authorization.mjs";
+import { recordLaunchOutcome, recordContinuation } from "../lib/gauntlet-authorization.mjs";
 import { mutateAuthorization } from "../lib/gauntlet-authorization-io.mjs";
 import { loadGraph } from "../lib/graph.mjs";
 import { runEvaluation } from "../evaluate.mjs";
 import { buildEvaluationPrompt } from "../lib/evaluation-core.mjs";
 import { registerEvaluationTests } from "./evaluation.mjs";
 import { registerAuthorizationTests } from "./authorization.mjs";
-import { memoryAuthorityStore } from "./authorization.mjs";
+import { memoryAuthorityStore, continuationFixtureReceipt } from "./authorization.mjs";
 import { registerEvaluationReviewTests } from "./evaluation-review.mjs";
 import { registerEvaluationLifecycleTests } from "./evaluation-lifecycle.mjs";
 import { registerAuthorizationIoTests } from "./authorization-io.mjs";
@@ -5874,6 +5874,8 @@ test("implementation receipt reconciliation survives lost local state without re
       observeCloud: ({ taskId }) => ({ external_id: taskId, status: "ready", provider_metadata: { environment_id: "fixture-env" } }) };
     await freezeImplementationAuthority(root, run, { required_review_roles: ["critic"], verification_commands: [],
       limits: { submissions: 3, concurrency: 2, repairs: 2, attempts_per_submission: 1, launch_deadline: "2026-08-11T12:00:00Z" } }, github, opts);
+    await mutateAuthorization(opts.authorityStore, run.run_id, (state) => ({ state: recordContinuation(state,
+      continuationFixtureReceipt("2026-08-08T12:00:00Z"), { actor: run.lead_actor, confirm: true, now: "2026-08-08T12:00:00Z" }) }));
     const key = `${run.run_id}:implementation`;
     const capacity = await reserveImplementationCapacity(root, run, { key, role: "implementation", provider: "codex", expected_head: run.base_sha, round: 0 }, github, opts);
     await mutateAuthorization(opts.authorityStore, run.run_id, (state) => ({ state: recordLaunchOutcome(state, key, { owner: capacity.owner, ambiguous: true }) }));
@@ -5949,6 +5951,12 @@ for (const bounded of [false, true]) test(`Gauntlet lifecycle${bounded ? " with 
       limits: { submissions: 10, concurrency: 6, repairs: 2, attempts_per_submission: 1, launch_deadline: "2026-08-11T12:00:00Z" } };
   }
 
+  if (bounded) {
+    const handoff = await runGauntletStart(root, "auth-login", opts);
+    eq(handoff.state, "awaiting_continuation", "bounded entrypoint establishes monitoring before submission");
+    eq(launched.length, 0, "monitoring handoff spends no provider submission");
+    opts.continuationRecord = continuationFixtureReceipt("2026-08-08T12:00:00Z"); opts.confirmContinuation = true;
+  }
   const started = await runGauntletStart(root, "auth-login", opts);
   if (bounded) {
     eq((await opts.authorityStore.read()).state.reservations.length, 1, "protected implementation capacity is spent before response caching");

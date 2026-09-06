@@ -105,6 +105,48 @@ scheduling tool. Do not build cron, shell polling, or a new task per wake; `/fan
 prerequisite. The CLI cannot create a desktop scheduled task itself. The lead must establish
 and verify monitoring when entering a Gauntlet; registration is not proof a wake ran.
 
+New bounded authorizations freeze a 30-minute cadence and a 60-minute freshness bound.
+Implementation `start` and evaluation `launch` return `awaiting_continuation` without
+submitting a worker when no fresh ACTIVE receipt is recorded. Observation, collection and
+adjudication remain available while monitoring is paused or stale. Legacy runs are readable
+but do not acquire verified continuation retroactively.
+
+After inspecting the supported desktop tool result, prepare a receipt record:
+
+```json
+{
+  "version": 1,
+  "kind": "codex_desktop_heartbeat",
+  "interval_minutes": 30,
+  "automation_id": "YOUR-AUTOMATION-ID",
+  "target_thread_id": "YOUR-EXISTING-LEAD-TASK-UUID",
+  "status": "ACTIVE",
+  "observed_at": "CURRENT-ISO-TIMESTAMP",
+  "receipt": { "automationId": "YOUR-AUTOMATION-ID", "status": "ACTIVE" }
+}
+```
+
+Replace placeholders with observed values, not intended settings. `receipt` contains the
+tool-returned automation identity and status; only its digest is persisted, never credentials
+or a raw transcript. The observation must be within five minutes when recorded. Use:
+
+```sh
+roadmap gauntlet continuation RUN --receipt-file desktop-receipt.json --confirm
+roadmap gauntlet eval continuation --run RUN --receipt-file desktop-receipt.json --confirm
+```
+
+These are alternatives for implementation and evaluation respectively. Matching MCP tools
+are `gauntlet_continuation` and `gauntlet_eval_continuation`. A bounded implementation start
+may also supply `--continuation-file desktop-receipt.json --confirm-continuation`. Otherwise,
+record the receipt and retry the same frozen run; do not create a new run to bypass the gate.
+Each wake should inspect the desktop schedule and refresh its receipt before further launches.
+Record PAUSED when pausing. The automation and target task cannot silently change within a run.
+
+The protected record is explicitly **lead-attested**, not independently queried or verified
+by the CLI. It establishes the inspected scheduling handoff, not proof that the host will stay
+online or a future wake will execute. Status always leaves `wake_verified` false for registration;
+the live qualification must retain separate evidence of an actual scheduled wake.
+
 Before launch, record automation ID, target task, state, cadence and model-verification status
 in qualification notes. Test a wake and retain its receipt. The heartbeat must:
 

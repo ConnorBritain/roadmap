@@ -50,6 +50,9 @@ export function freezeAuthorization(input, { now = new Date().toISOString() } = 
   a.model_preferences ??= {};
   required(typeof a.model_preferences === "object" && !Array.isArray(a.model_preferences), "model preferences must be a mapping");
   roleModelPreference(a.model_preferences, "lead");
+  a.continuation ??= { kind: "codex_desktop_heartbeat", interval_minutes: 30, freshness_minutes: 60 };
+  required(a.continuation.kind === "codex_desktop_heartbeat" && a.continuation.interval_minutes === 30
+    && a.continuation.freshness_minutes === 60, "bounded runs require a 30-minute desktop lead heartbeat with a 60-minute observation freshness bound");
   a.created_at = now;
   return { version: 1, authorization: a, authorization_digest: authorizationDigest(a), reservations: [], events: [] };
 }
@@ -80,6 +83,7 @@ export function authorizationStatus(state, { now = Date.now() } = {}) {
   return { submissions_used: used, submissions_remaining: limits.submissions - used,
     active, concurrency_remaining: limits.concurrency - active, repairs_used: repairs, repairs_remaining: limits.repairs - repairs,
     launch_deadline: limits.launch_deadline, launch_window_open: now < Date.parse(limits.launch_deadline),
+    continuation: continuationStatus(state, { now }),
     ambiguous: state.reservations.filter((r) => r.state === "ambiguous" || (r.state === "reserved" && !r.receipt)).map((r) => r.key) };
 }
 
@@ -100,7 +104,7 @@ export function assertAuthorizationTransition(previous, next) {
   required(next.events.length >= previous.events.length && previous.events.every((event, i) => authorizationDigest(event) === authorizationDigest(next.events[i])),
     "observation history is append-only");
   if (previous.evidence_pr) required(authorizationDigest(previous.evidence_pr) === authorizationDigest(next.evidence_pr), "the lead-owned evidence PR cannot be replaced");
-  for (const field of ["admissions", "seals"]) {
+  for (const field of ["admissions", "seals", "continuation_records"]) {
     const earlier = previous[field] || [], later = next[field] || [];
     required(Array.isArray(later) && later.length >= earlier.length && earlier.every((record, i) => authorizationDigest(record) === authorizationDigest(later[i])),
       `${field} history is append-only`);
@@ -127,6 +131,7 @@ export function reserveAuthorizedLaunch(state, request, { owner, now = new Date(
   required(limits.submissions_remaining > 0, "submission ceiling exhausted");
   required(limits.concurrency_remaining > 0, "concurrency ceiling reached; reconcile existing reservations first");
   required(role !== "repair" || limits.repairs_remaining > 0, "repair ceiling exhausted");
+  required(continuationStatus(state, { now: Date.parse(now) }).launch_ready, "desktop lead heartbeat is not active and freshly attested; use the supported scheduling tool, then record its exact receipt before launching");
   const reservation = { key, role, provider, expected_head, request: structuredClone(request), request_digest: digest,
     owner, state: "reserved", reserved_at: now, receipt: null };
   const next = structuredClone(state); next.reservations.push(reservation);
@@ -191,4 +196,41 @@ export function reconcileLaunchReceipt(state, key, { actor, receipt, observation
     next.events.push({ ...association, fingerprint, observed_at: now });
   }
   return recordLaunchObservation(next, key, observation, { now });
+}
+
+export function continuationStatus(state, { now = Date.now() } = {}) {
+  const latest = state.continuation_records?.at(-1);
+  const policy = state.authorization.continuation;
+  if (!policy) return { state: "legacy_unverified", launch_ready: false, verification: "unverified" };
+  const age = latest ? now - Date.parse(latest.observed_at) : null;
+  const fresh = age != null && age >= -5 * 60 * 1000 && age <= policy.freshness_minutes * 60 * 1000;
+  return { state: !latest ? "setup_required" : latest.status !== "ACTIVE" ? "paused" : !fresh ? "refresh_required" : "active_attested",
+    launch_ready: !!latest && latest.status === "ACTIVE" && fresh,
+    automation_id: latest?.automation_id || null, target_thread_id: latest?.target_thread_id || null,
+    interval_minutes: policy.interval_minutes, observed_at: latest?.observed_at || null,
+    verification: latest ? "lead_attested_desktop_receipt" : "unverified",
+    wake_verified: false,
+    handoff: "Use the supported Codex desktop scheduling tool to create or inspect one 30-minute heartbeat in the existing lead task; record its exact tool receipt. The CLI does not create a scheduler, and registration does not prove a scheduled wake." };
+}
+
+export function recordContinuation(state, input, { actor, confirm, now = new Date().toISOString() } = {}) {
+  assertAuthorizationState(state);
+  required(state.authorization.continuation && actor === state.authorization.lead_actor && confirm === true,
+    "continuation requires the frozen lead to inspect the supported desktop tool receipt");
+  required(input?.version === 1 && input.kind === "codex_desktop_heartbeat" && input.interval_minutes === 30
+    && /^[a-zA-Z0-9_-]{1,160}$/.test(input.automation_id || "")
+    && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(input.target_thread_id || "") && ["ACTIVE", "PAUSED"].includes(input.status)
+    && input.receipt?.automationId === input.automation_id && input.receipt.status === input.status
+    && date(input.observed_at) && date(now) && Math.abs(Date.parse(now) - Date.parse(input.observed_at)) <= 5 * 60 * 1000,
+    "continuation receipt needs exact automation/task identity, matching desktop status and a fresh observation time");
+  const previous = state.continuation_records?.at(-1);
+  required(!previous || (previous.automation_id === input.automation_id && previous.target_thread_id === input.target_thread_id),
+    "one frozen lead heartbeat owns this run; do not silently replace its automation or task");
+  required(!previous || Date.parse(input.observed_at) >= Date.parse(previous.observed_at), "continuation observations cannot move backward");
+  const record = { automation_id: input.automation_id, target_thread_id: input.target_thread_id, status: input.status,
+    interval_minutes: 30, observed_at: input.observed_at, actor, receipt_digest: authorizationDigest(input.receipt),
+    verification: "lead_attested_desktop_receipt" };
+  if (previous && authorizationDigest(previous) === authorizationDigest(record)) return state;
+  const next = structuredClone(state); next.continuation_records = [...(next.continuation_records || []), record];
+  return next;
 }

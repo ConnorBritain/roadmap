@@ -3,7 +3,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { assignmentDirectory, evaluationDirectory } from "./evaluation-core.mjs";
 import { inspectLocalEvaluationPacket, evaluationCommand, evaluationFilesAtCommit, frozenSourceLookup } from "./evaluation-io.mjs";
 import { prohibitedDataFindings, validateEvaluationPacket } from "./evaluation-packet.mjs";
-import { authorizationDigest, reserveAuthorizedLaunch, recordLaunchOutcome, authorizationStatus } from "./gauntlet-authorization.mjs";
+import { authorizationDigest, reserveAuthorizedLaunch, recordLaunchOutcome, authorizationStatus, continuationStatus } from "./gauntlet-authorization.mjs";
 import { mutateAuthorization } from "./gauntlet-authorization-io.mjs";
 import { evaluationReviewRun, evaluationReviewStatus, assertNextEvaluationReviewer, evaluationAttestation,
   findEvaluationAttestation, evaluationAdmissionTotals, sealEvaluationPayload } from "./evaluation-review-core.mjs";
@@ -142,7 +142,8 @@ export async function runEvaluationReviewAction(root, action, { manifest, store,
         + `No production authentication, deployed-system interaction, customer data, credentials in artifacts, deployments or package publication. Do not run tests/builds/installers except these approved verification commands: ${JSON.stringify(state.authorization.verification_commands)}.\n`
         + `Do not push, open a PR, merge or post a verdict. The lead owns publication. Make a local Git commit containing only permitted paths so cloud diff includes the repair. Report the commit and tests actually run; distinguish checks not run.\n`
         + `Lead-synthesized repair packet (digest ${packet.digest}):\n${JSON.stringify(repairPacket, null, 2)}`;
-      if (!authorizationStatus(reserved.state, { now: Date.parse(opts.now || new Date().toISOString()) }).launch_window_open) throw new Error("launch window expired");
+      const currentAuthority = (await store.read(manifest.run_id)).state, now = Date.parse(opts.now || new Date().toISOString());
+      if (!authorizationStatus(currentAuthority, { now }).launch_window_open || !continuationStatus(currentAuthority, { now }).launch_ready) throw new Error("launch window or desktop continuation expired");
       const receipt = { ...await (opts.launchCloud || launchCodexCloud)({ environmentId: manifest.environment_id, branch: expectedHead, attempts: 1, prompt }), model_policy: modelPolicy };
       await mutateAuthorization(store, manifest.run_id, (current) => ({ state: recordLaunchOutcome(current, key, { owner, receipt }) }));
       return { action, run_id: manifest.run_id, round, head: expectedHead, launch_key: key, allowed_paths: packet.paths, receipt, model_policy: modelPolicy };
@@ -186,7 +187,8 @@ export async function runEvaluationReviewAction(root, action, { manifest, store,
       await github.addComment(pr.number, renderGauntletLaunchMarker({ run: review.run, role: "critic", criticRole: role, round, expectedHead, nonce }));
       const prompt = buildCriticPrompt({ run: review.run, pr, expectedHead, criticRole: role, round, nonce })
         + `\n\nLead-adjudicated packet digest register (verify against actual committed files):\n${JSON.stringify(corpus.records.map(({ assignment, digest, status }) => ({ assignment, digest, status })), null, 2)}`;
-      if (!authorizationStatus(reserved.state, { now: Date.parse(opts.now || new Date().toISOString()) }).launch_window_open) throw new Error("launch window expired");
+      const currentAuthority = (await store.read(manifest.run_id)).state, now = Date.parse(opts.now || new Date().toISOString());
+      if (!authorizationStatus(currentAuthority, { now }).launch_window_open || !continuationStatus(currentAuthority, { now }).launch_ready) throw new Error("launch window or desktop continuation expired");
       const receipt = { ...await (opts.launchCloud || launchCodexCloud)({ environmentId: manifest.environment_id, branch: expectedHead, attempts: 1, prompt }), model_policy: modelPolicy };
       await mutateAuthorization(store, manifest.run_id, (current) => ({ state: recordLaunchOutcome(current, key, { owner, receipt }) }));
       return { action, run_id: manifest.run_id, role, round, head: expectedHead, receipt, model_policy: modelPolicy };

@@ -42,7 +42,8 @@ export function evaluationSafeActions(result) {
   if (result.corpus?.totals?.unresolved) actions.push("inspect_and_adjudicate_packets");
   if (result.review?.state === "awaiting_lead_ack") actions.push("inspect_critic_before_acknowledgment");
   if (result.review?.pass && result.corpus?.totals?.unresolved === 0) actions.push("inspect_before_sealing");
-  const canLaunch = result.limits?.launch_window_open && result.limits.submissions_remaining > 0 && result.limits.concurrency_remaining > 0;
+  if (!result.limits?.continuation?.launch_ready) actions.push("establish_or_refresh_desktop_heartbeat");
+  const canLaunch = result.limits?.continuation?.launch_ready && result.limits.launch_window_open && result.limits.submissions_remaining > 0 && result.limits.concurrency_remaining > 0;
   if (canLaunch && result.review?.state === "awaiting_critic" && result.corpus?.totals?.unresolved === 0) actions.push("launch_next_required_critic");
   if (canLaunch && result.review?.state === "needs_repair" && result.limits.repairs_remaining > 0) actions.push("synthesize_scoped_repair_packet");
   if (!result.limits?.launch_window_open || result.limits.submissions_remaining === 0) actions.push("no_new_launches_without_new_authority");
