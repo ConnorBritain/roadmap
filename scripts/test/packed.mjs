@@ -31,6 +31,13 @@ try {
   execute("git", ["add", "."]); execute("git", ["commit", "-qm", "fixture source"]);
   const sha = execute("git", ["rev-parse", "HEAD"]).trim();
   execute(process.execPath, [cli, "validate"]);
+  const offlineEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "path"));
+  offlineEnv.PATH = "";
+  const portfolio = spawnSync(process.execPath, [join(installed, "scripts", "gauntlet.mjs"), "status", "--all", "--json"],
+    { cwd: root, env: offlineEnv, encoding: "utf8", timeout: 15000 });
+  assert.equal(portfolio.status, 0, portfolio.stderr);
+  assert.equal(JSON.parse(portfolio.stdout).read_only, true);
+  assert.equal(JSON.parse(portfolio.stdout).observation_complete, false);
   execute(process.execPath, [cli, "gauntlet", "eval", "init", "--run", "package-smoke", "--base-sha", sha, "--assignments", join(root, "assignments.yaml")]);
   const packet = join(root, "docs/gauntlets/fixture/evaluation/runs/package-smoke/inbox/source-map");
   mkdirSync(packet, { recursive: true });
@@ -58,6 +65,6 @@ try {
   assert.equal(listed.find((tool) => tool.name === "gauntlet_status").inputSchema.properties.all.type, "boolean");
   assert.ok(listed.find((tool) => tool.name === "gauntlet_eval_critic").inputSchema.properties.model_preference);
   assert.equal(listed.find((tool) => tool.name === "gauntlet_eval_critic").inputSchema.properties.allow_incomplete.type, "boolean");
-  for (const name of ["EVIDENCE_PACKETS.md", "EVALUATION_RUNBOOK.md", "GAUNTLET_CONTINUATION.md", "specs/trustworthy-gauntlet.md"]) assert.ok(readFileSync(join(installed, "docs", name)).length);
+  for (const name of ["EVIDENCE_PACKETS.md", "EVALUATION_RUNBOOK.md", "GAUNTLET_CONTINUATION.md", "specs/trustworthy-gauntlet.md", "qualification/2026-09-06-pidgeon.md"]) assert.ok(readFileSync(join(installed, "docs", name)).length);
   console.log("Packed artifact: CLI roadmap validation, evaluation init/admission, MCP registry and admission parity passed. No remote submissions.");
 } finally { rmSync(root, { recursive: true, force: true }); }

@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import { stringify, parse } from "yaml";
 import { validateEvaluationPacket, packetDigest } from "../lib/evaluation-packet.mjs";
 import { inspectEvaluationPatch } from "../lib/evaluation-io.mjs";
-import { buildEvaluationRun, buildEvaluationPrompt, assertEvaluationDiffPaths, sealableWave } from "../lib/evaluation-core.mjs";
+import { buildEvaluationRun, buildEvaluationPrompt, normalizeAssignment, assertEvaluationDiffPaths, sealableWave } from "../lib/evaluation-core.mjs";
 import { runEvaluation } from "../evaluate.mjs";
 
 const NOW = Date.parse("2026-09-05T12:00:00Z");
@@ -59,6 +59,14 @@ async function repository() {
 export { repository as evaluationRepositoryFixture };
 
 export function registerEvaluationTests(test) {
+  test("assignment evidence types reject malformed values during normalization", () => {
+    for (const evidence_types of ["source_code", "", false, 0, {}, [null], ["invented"], ["test", "test"]]) {
+      assert.throws(() => normalizeAssignment({ ...assignment, evidence_types }), /evidence_types/);
+    }
+    assert.deepEqual(normalizeAssignment({ ...assignment, evidence_types: ["source_code", "test"] }).evidence_types, ["source_code", "test"]);
+    assert.deepEqual(normalizeAssignment({ ...assignment, evidence_types: [] }).evidence_types, []);
+    assert.equal(Object.hasOwn(normalizeAssignment(assignment), "evidence_types"), false);
+  });
   test("evaluator prompts expose frozen assignment type limits without widening them", () => {
     const f = fixture();
     const prompt = buildEvaluationPrompt({ run: f.run, assignment: { ...assignment, evidence_types: ["source_code", "documentation", "test"] } });
@@ -117,6 +125,13 @@ export function registerEvaluationTests(test) {
   });
   test("apostrophes, short values and multiline patient scalars cannot evade scanning", () => {
     for (const record of ["patient_name: A'Bcd", "patient_name: X", "patient_name: |\n  SYNTHETIC PERSON", "patient_name: >-\n  SYNTHETIC\n  PERSON", "patient_name:\n  SYNTHETIC PERSON"]) {
+      const f = fixture(); f.files["REPORT.md"] += "\n" + record + "\n";
+      const result = validate(f); code(result, "prohibited_data");
+      assert.ok(!JSON.stringify(result).includes(record));
+    }
+  });
+  test("blank lines before sensitive scalars fail admission without echoing values", () => {
+    for (const record of ["patient_name:\n\n  SYNTHETIC PERSON", "patient_email:\r\n \r\n\t synthetic@example.test", "medical_record_number:\n\n\n  SYNTHETIC-00001"]) {
       const f = fixture(); f.files["REPORT.md"] += "\n" + record + "\n";
       const result = validate(f); code(result, "prohibited_data");
       assert.ok(!JSON.stringify(result).includes(record));

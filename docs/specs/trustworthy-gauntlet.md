@@ -1,6 +1,16 @@
 # Trustworthy Gauntlet execution
 
-Status: implementation in progress. This document records the approved scope, not a claim of qualification.
+Status: implemented and source-only live workflow qualified; delivered for human review, not merged or published.
+
+Current delivery checkpoint (2026-09-06): Roadmap PRs #52–#54 contain the tested
+implementation; phase-four PR #55 contains review-driven hardening and live receipts.
+The bounded Pidgeon run has five accepted packets, demonstrated scoped repair,
+independent current-head PASS, lead acknowledgment and a GitHub seal. Its heartbeat
+is paused. The final executable candidate passes 448 tests and packed CLI/MCP smoke. See
+[the qualification receipt index](../qualification/2026-09-06-pidgeon.md) for
+current evidence and limits. The implementation ledger below is chronological;
+earlier preparation and pending statements describe their recorded stage, not
+the current state. No merge, npm publication or full-program launch is authorized.
 
 ## Goal
 

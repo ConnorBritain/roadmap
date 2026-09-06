@@ -63,6 +63,9 @@ async function postAttestation(github, pr, kind, payload, lead) {
 export async function runEvaluationReviewAction(root, action, { manifest, store, github, expectedHead,
   prNumber, assignmentId, decision = "accepted", packetDigest, reason, redactionInspected = false,
   commentUrl, criticRole, repairPacket, allowIncomplete = false, confirm = false, opts = {} } = {}) {
+  // Resolve injected clocks at each boundary, including after reservation; a
+  // function must not be serialized as a timestamp or frozen before submission.
+  const clockNow = () => (typeof opts.now === "function" ? opts.now() : opts.now) || new Date().toISOString();
   let snapshot = await store.read(manifest.run_id);
   if (!snapshot) throw new Error("evaluation review requires protected authorization");
   let state = snapshot.state;
@@ -127,7 +130,7 @@ export async function runEvaluationReviewAction(root, action, { manifest, store,
       key, role: "repair", provider: "codex", expected_head: expectedHead, round, packet_digest: packet.digest,
       allowed_paths: packet.paths, accepted_findings: packet.findings, environment_id: manifest.environment_id,
       model_policy: modelPolicy,
-    }, { owner, now: opts.now || new Date().toISOString() }));
+    }, { owner, now: clockNow() }));
     if (!reserved.reserved) return { action, duplicate: true, reservation: reserved.reservation };
     let submissionAttempted = false;
     try {
@@ -144,7 +147,7 @@ export async function runEvaluationReviewAction(root, action, { manifest, store,
         + `No production authentication, deployed-system interaction, customer data, credentials in artifacts, deployments or package publication. Do not run tests/builds/installers except these approved verification commands: ${JSON.stringify(state.authorization.verification_commands)}.\n`
         + `Do not push, open a PR, merge or post a verdict. The lead owns publication. Make a local Git commit containing only permitted paths so cloud diff includes the repair. Report the commit and tests actually run; distinguish checks not run.\n`
         + `Lead-synthesized repair packet (digest ${packet.digest}):\n${JSON.stringify(repairPacket, null, 2)}`;
-      const currentAuthority = (await store.read(manifest.run_id)).state, now = Date.parse(opts.now || new Date().toISOString());
+      const currentAuthority = (await store.read(manifest.run_id)).state, now = Date.parse(clockNow());
       if (!authorizationStatus(currentAuthority, { now }).launch_window_open || !continuationStatus(currentAuthority, { now }).launch_ready) throw new Error("launch window or desktop continuation expired");
       submissionAttempted = true;
       const receipt = { ...await (opts.launchCloud || launchCodexCloud)({ environmentId: manifest.environment_id, branch: expectedHead, attempts: 1, prompt }), model_policy: modelPolicy };
@@ -187,7 +190,7 @@ export async function runEvaluationReviewAction(root, action, { manifest, store,
       key, role: "critic", provider: "codex", expected_head: expectedHead, critic_role: role, round, nonce_sha256: sha256(nonce), corpus_digest: corpus.corpus_digest,
       incomplete_corpus_review: !!corpus.totals.unresolved,
       model_policy: modelPolicy,
-    }, { owner, now: opts.now || new Date().toISOString() }));
+    }, { owner, now: clockNow() }));
     if (!reserved.reserved) return { action, duplicate: true, reservation: reserved.reservation };
     let submissionAttempted = false;
     try {
@@ -196,7 +199,7 @@ export async function runEvaluationReviewAction(root, action, { manifest, store,
       const prompt = buildCriticPrompt({ run: review.run, pr, expectedHead, criticRole: role, round, nonce })
         + `\n\nPacket digest/admission register (verify against actual committed files):\n${JSON.stringify(corpus.records.map(({ assignment, digest, status }) => ({ assignment, digest, status })), null, 2)}`
         + (corpus.totals.unresolved ? "\nThis is an explicitly requested diagnostic review of an incomplete corpus. Independently inspect missing/invalid evidence and identify documentation repairs; do not invent a packet or treat unresolved coverage as PASS. A PASS cannot be acknowledged or sealed until every expected packet is adjudicated. The normal exact-head REVISE, lead inspection/acknowledgment and scoped repair protocol still applies." : "");
-      const currentAuthority = (await store.read(manifest.run_id)).state, now = Date.parse(opts.now || new Date().toISOString());
+      const currentAuthority = (await store.read(manifest.run_id)).state, now = Date.parse(clockNow());
       if (!authorizationStatus(currentAuthority, { now }).launch_window_open || !continuationStatus(currentAuthority, { now }).launch_ready) throw new Error("launch window or desktop continuation expired");
       submissionAttempted = true;
       const receipt = { ...await (opts.launchCloud || launchCodexCloud)({ environmentId: manifest.environment_id, branch: expectedHead, attempts: 1, prompt }), model_policy: modelPolicy };

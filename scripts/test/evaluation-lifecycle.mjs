@@ -43,6 +43,17 @@ async function fixture() {
 }
 
 export function registerEvaluationLifecycleTests(test) {
+  test("persisted scalar evidence types fail before a launch reservation", async () => {
+    const r = await fixture();
+    try {
+      const manifest = parse(readFileSync(r.manifestPath, "utf8"));
+      manifest.assignments[0].evidence_types = "source_code";
+      writeFileSync(r.manifestPath, stringify(manifest));
+      await assert.rejects(() => r.action("launch", "--wave", "wave-one"), /evidence_types/);
+      assert.equal((await r.store.read()).state.reservations.length, 0);
+      assert.equal(r.prompts.length, 0);
+    } finally { rmSync(r.root, { recursive: true, force: true }); }
+  });
   for (const verdict of ["PASS", "REVISE"]) test(`explicit incomplete-corpus review ${verdict === "PASS" ? "cannot acknowledge PASS" : "repairs missing evidence through inspected REVISE"}`, async () => {
     const r = await fixture();
     try {
@@ -152,6 +163,47 @@ export function registerEvaluationLifecycleTests(test) {
       assert.equal((await store.read()).state.reservations.length, 0); assert.equal(r.prompts.length, 0);
     } finally { rmSync(r.root, { recursive: true, force: true }); }
   });
+  for (const role of ["critic", "repair"]) test(`function clock expiry after ${role} reservation stops submission without refund`, async () => {
+    const r = await fixture();
+    try {
+      let clock = "2026-09-05T10:00:00Z";
+      r.opts.now = () => clock;
+      const initial = structuredClone(r.state);
+      initial.authorization.limits.launch_deadline = "2026-09-05T10:01:00Z";
+      initial.authorization_digest = authorizationDigest(initial.authorization);
+      r.store = memoryAuthorityStore(initial); r.opts.authorityStore = r.store;
+      await r.action("attach", "--pr", "42", "--confirm");
+      await r.action("accept", "--assignment", "packet-one", "--packet-digest", r.collected.digest,
+        "--reason", "Inspected fixture", "--redaction-inspected", "--confirm");
+      const args = [];
+      if (role === "repair") {
+        await r.action("critic");
+        const nonce = /\nnonce=([a-f0-9]{32})\n/.exec(r.prompts[0])[1];
+        await r.github.addComment(42, renderCriticMarker({ run: evaluationReviewRun((await r.store.read()).state),
+          round: 1, nonce, head: r.pr.currentHead, verdict: "REVISE" }) + "\nAdd a source limitation.");
+        const verdict = r.pr.comments.at(-1); verdict.author = "independent-critic";
+        await r.action("ack", "--comment-url", verdict.url, "--confirm");
+        await r.action("observe");
+        const file = join(r.root, "repair-clock.json");
+        writeFileSync(file, JSON.stringify({ version: 1, expected_head: r.pr.currentHead,
+          findings: [{ id: "F1", critic_comment_url: verdict.url, description: "Add limitation", paths: [`${r.packetDir}/REPORT.md`] }],
+          instructions: "Add only the limitation." }));
+        args.push("--packet", file);
+      }
+      const before = r.prompts.length, original = r.store.compareAndSwap;
+      r.store.compareAndSwap = async (...args) => {
+        const result = await original(...args);
+        if (result.current.state.reservations.some((r) => r.role === role)) clock = "2026-09-05T10:02:00Z";
+        return result;
+      };
+      await assert.rejects(() => r.action(role, ...args), /before provider submission/);
+      assert.equal(r.prompts.length, before);
+      const state = (await r.store.read()).state;
+      assert.equal(state.reservations.at(-1).state, "not_submitted");
+      assert.equal(state.reservations.at(-1).receipt, null);
+      assert.equal((await r.action("status")).limits.submissions_used, before + 1);
+    } finally { rmSync(r.root, { recursive: true, force: true }); }
+  });
   for (const ambiguous of [false, true]) test(`authorized evaluator ${ambiguous ? "ambiguous response" : "receipt"} survives manifest loss without another submission`, async () => {
     const r = await evaluationRepositoryFixture();
     try {
@@ -220,8 +272,9 @@ export function registerEvaluationLifecycleTests(test) {
       assert.equal((await r.action("seal", "--confirm")).sealed, true);
     } finally { rmSync(r.root, { recursive: true, force: true }); }
   });
-  test("evaluation REVISE -> inspected ack -> exact-path cloud repair -> re-admission -> fresh PASS", async () => {
+  for (const clockKind of ["timestamp", "function"]) test(`evaluation REVISE -> inspected ack -> exact-path cloud repair -> re-admission -> fresh PASS (${clockKind} clock)`, async () => {
     const r = await fixture();
+    if (clockKind === "function") r.opts.now = () => "2026-09-05T10:00:00Z";
     try {
       await r.action("attach", "--pr", "42", "--confirm");
       await r.action("accept", "--assignment", "packet-one", "--packet-digest", r.collected.digest,
@@ -297,6 +350,8 @@ export function registerEvaluationLifecycleTests(test) {
       assert.equal(seal.sealed, true); assert.equal(seal.evidence_head, beforeSeal);
       assert.equal(git(r.root, ["rev-parse", "HEAD"]), beforeSeal);
       const status = await r.action("status"); assert.equal(status.review.sealed, true);
+      assert.equal(status.review.state, "sealed"); assert.equal(status.state, "sealed");
+      assert.equal(status.verification, "sealed_current_head");
       // Cloud completion frees concurrency only after durable observation;
       // status itself is read-only and cannot replenish submission budget.
       assert.equal(status.limits.active, 1);
@@ -306,7 +361,9 @@ export function registerEvaluationLifecycleTests(test) {
       writeFileSync(join(r.root, r.manifest.artifact_root, r.manifest.run_id, "NOTE.md"), "A later documentation revision.\n");
       git(r.root, ["add", "."]); git(r.root, ["commit", "-qm", "later corpus revision"]);
       r.pr.currentHead = git(r.root, ["rev-parse", "HEAD"]);
-      assert.equal((await r.action("status")).review.sealed, false);
+      const changed = await r.action("status");
+      assert.equal(changed.review.sealed, false); assert.notEqual(changed.state, "sealed");
+      assert.notEqual(changed.verification, "sealed_current_head");
     } finally { rmSync(r.root, { recursive: true, force: true }); }
   });
   test("evaluation acceptance cannot bless changed digests, product changes or a competing PR", async () => {

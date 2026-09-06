@@ -238,11 +238,12 @@ export async function runEvaluation(root, args, opts = {}) {
           const payload = sealEvaluationPayload(authority.state, pr, corpus, review);
           seal = findEvaluationAttestation(pr.comments, "seal", payload, authority.state.authorization.lead_actor, pr.url);
         }
-        review = { ...review, sealed: !!seal, seal_url: seal?.url || null };
+        review = { ...review, state: seal ? "sealed" : review.state, sealed: !!seal, seal_url: seal?.url || null };
       } catch { review = { state: "observation_failed", sealed: false, error_code: "evidence_pr_or_corpus_unavailable" }; }
     }
     return { run_id: runId, base_sha: manifest.base_sha, version: manifest.version,
-      verification: manifest.version === EVALUATION_VERSION ? "requires_admission" : "legacy_unverified", state: manifest.state, assignments,
+      verification: review?.sealed ? "sealed_current_head" : manifest.version === EVALUATION_VERSION ? "requires_admission" : "legacy_unverified",
+      state: review?.sealed ? "sealed" : manifest.state, manifest_state: manifest.state, assignments,
       authority_status: authorityStatus, limits: authority ? authorizationStatus(authority.state) : null, publication, corpus, review,
       decision_report: authority ? decisionReport(authority.state) : null,
       executions: (authority?.state.reservations || []).map((reservation) => ({ key: reservation.key, role: reservation.role,

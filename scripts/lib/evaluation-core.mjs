@@ -1,6 +1,7 @@
 // Pure policy for documentation-only, SHA-pinned evaluation runs.
 // Evaluation is deliberately distinct from an implementation Gauntlet: workers
 // produce isolated evidence packets; a lead chooses what to integrate and merge.
+import { EVIDENCE_TYPES } from "./evaluation-packet.mjs";
 
 export const EVALUATION_VERSION = 3;
 export const EVALUATION_ROOT = "docs/audits/dimensional-coherence-matrix";
@@ -50,6 +51,11 @@ export function normalizeAssignment(value = {}) {
   if (!RUN_ID.test(wave)) throw new Error(`evaluation assignment ${id} requires a valid wave`);
   const prompt = String(value.prompt || "").trim();
   if (!prompt) throw new Error(`evaluation assignment ${id} requires a prompt`);
+  if (value.evidence_types != null && (!Array.isArray(value.evidence_types)
+    || value.evidence_types.some((type) => !EVIDENCE_TYPES.includes(type))
+    || new Set(value.evidence_types).size !== value.evidence_types.length)) {
+    throw new Error(`evaluation assignment ${id} evidence_types must be an array of unique supported types`);
+  }
   return {
     id, wave, prompt,
     state: value.state || "planned",
