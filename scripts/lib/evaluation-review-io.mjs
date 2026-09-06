@@ -137,6 +137,7 @@ export async function runEvaluationReviewAction(root, action, { manifest, store,
       await github.addComment(pr.number, renderGauntletLaunchMarker({ run: review.run, role: "repair", round, expectedHead, packetSha256: packet.digest }));
       const prompt = `You are a fresh documentation-only REPAIR worker for evaluation ${manifest.run_id}.\n`
         + `Evidence PR: #${pr.number}; exact expected evidence head: ${expectedHead}. Frozen product source: ${manifest.base_sha}. These SHAs have different meanings.\n`
+        + `Frozen assignment evidence-type limits: ${JSON.stringify(manifest.assignments.map(({ id, evidence_types }) => ({ id, evidence_types: evidence_types || null })))}. Never relax these limits or use process self-description as unsupported source proof.\n`
         + `First verify the current PR head using gh. If it differs, stop without changes. Only repair the lead-accepted findings below. Do not implement product changes or expand scope.\n`
         + `The ONLY writable files are:\n${packet.paths.map((path) => `- ${path}`).join("\n")}\n`
         + `Do not change run/assignment/receipt control files. Preserve attributable earlier packet revisions in Git history. Any changed packet must still satisfy version 1 evidence.yaml, REPORT.md links and frozen source references.\n`

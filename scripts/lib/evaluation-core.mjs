@@ -117,6 +117,7 @@ export function buildEvaluationPrompt({ run, assignment }) {
   return `You are an isolated, documentation-only evaluator for ${run.title || "this repository"}.\n\n`
     + `Frozen source baseline: ${requiredSha(run.base_sha)}\n`
     + `Assignment: ${assignment.id} (wave ${assignment.wave})\n\n`
+    + (assignment.evidence_types ? `Frozen allowed evidence types for this assignment: ${assignment.evidence_types.join(", ")}. This narrower list overrides the general schema types below. Put process/limitations metadata in the report rather than inventing another evidence type.\n\n` : "")
     + `Hard boundaries:\n`
     + `- Inspect only the checked-out repository at the frozen baseline.\n`
     + `- Do not modify product code, configuration, tests, roadmap files, generated files, or dependencies.\n`

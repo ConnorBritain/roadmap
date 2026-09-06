@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import { stringify, parse } from "yaml";
 import { validateEvaluationPacket, packetDigest } from "../lib/evaluation-packet.mjs";
 import { inspectEvaluationPatch } from "../lib/evaluation-io.mjs";
-import { buildEvaluationRun, assertEvaluationDiffPaths, sealableWave } from "../lib/evaluation-core.mjs";
+import { buildEvaluationRun, buildEvaluationPrompt, assertEvaluationDiffPaths, sealableWave } from "../lib/evaluation-core.mjs";
 import { runEvaluation } from "../evaluate.mjs";
 
 const NOW = Date.parse("2026-09-05T12:00:00Z");
@@ -59,6 +59,12 @@ async function repository() {
 export { repository as evaluationRepositoryFixture };
 
 export function registerEvaluationTests(test) {
+  test("evaluator prompts expose frozen assignment type limits without widening them", () => {
+    const f = fixture();
+    const prompt = buildEvaluationPrompt({ run: f.run, assignment: { ...assignment, evidence_types: ["source_code", "documentation", "test"] } });
+    assert.ok(prompt.includes("Frozen allowed evidence types for this assignment: source_code, documentation, test."));
+    assert.ok(prompt.includes("overrides the general schema types"));
+  });
   test("evidence admission accepts source-backed identity and linked claims without asserting truth", () => {
     const f = fixture(); const result = validate(f);
     assert.equal(result.ok, true); assert.equal(result.counts.records, 1);

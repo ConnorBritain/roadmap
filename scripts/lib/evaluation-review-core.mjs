@@ -19,6 +19,7 @@ export function evaluationReviewRun(state) {
     "Expected packets must have attributable decisions bound to their exact digests. Missing evidence remains unresolved. Check REPORT.md claims against version 1 evidence.yaml and frozen source independently; schema validity is not truth.",
     "Verify report links, limitations, executed versus unexecuted tests, source versus deployed observations, declared attachments, redaction and preserved prior revisions. Do not infer a PASS from collection timestamps.",
     "Synthetic qualification defects must be explicitly labelled and separate from genuine product findings.",
+    `Frozen assignment evidence-type limits: ${JSON.stringify(a.scope.snapshot.assignments.map(({ id, evidence_types }) => ({ id, evidence_types: evidence_types || null })))}. Do not relax these limits to admit a failed packet.`,
     `Required independent reviewer roles (sequential): ${a.required_review_roles.join(", ")}.`,
     `Only these verification commands are approved: ${JSON.stringify(a.verification_commands)}. Do not run other tests, builds or install scripts. Read-only source inspection is allowed.`,
     "Do not read builder/evaluator conversation transcripts or rely on worker self-assessments. Do not change files, push, merge, repair, publish packages or launch additional agents.",
