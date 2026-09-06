@@ -77,6 +77,11 @@ import { loadGraph } from "../lib/graph.mjs";
 import { runEvaluation } from "../evaluate.mjs";
 import { buildEvaluationPrompt } from "../lib/evaluation-core.mjs";
 import { registerEvaluationTests } from "./evaluation.mjs";
+import { registerAuthorizationTests } from "./authorization.mjs";
+import { registerEvaluationReviewTests } from "./evaluation-review.mjs";
+import { registerEvaluationLifecycleTests } from "./evaluation-lifecycle.mjs";
+import { registerAuthorizationIoTests } from "./authorization-io.mjs";
+import { registerModelPolicyTests } from "./model-policy.mjs";
 import { graphDiff, backlogDiff, reviewDigest, pisInFlight } from "../lib/review-core.mjs";
 import { doctorReport } from "../lib/doctor-core.mjs";
 import { auditBacklog, collectEntries, AUDIT_CODES, signatureOf, knownDamageOf } from "../lib/backlog-audit.mjs";
@@ -6721,6 +6726,11 @@ test("Gauntlet ledger lock fails closed with actionable owner metadata", () => {
 });
 
 registerEvaluationTests(test);
+registerAuthorizationTests(test);
+registerEvaluationReviewTests(test);
+registerEvaluationLifecycleTests(test);
+registerAuthorizationIoTests(test);
+registerModelPolicyTests(test);
 await Promise.all(pending);
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

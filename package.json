@@ -24,6 +24,7 @@
     "docs/DEPLOYMENT.md",
     "docs/GAUNTLET.md",
     "docs/EVIDENCE_PACKETS.md",
+    "docs/EVALUATION_RUNBOOK.md",
     "docs/specs/trustworthy-gauntlet.md",
     "skills/",
     "LICENSE"
@@ -42,7 +43,8 @@
     "mcp": "node scripts/mcp.mjs",
     "prepack": "npm test",
     "watch": "node scripts/watch-prs.mjs",
-    "test": "node scripts/test/run.mjs"
+    "test": "node scripts/test/run.mjs",
+    "test:packed": "node scripts/test/packed.mjs"
   },
   "dependencies": {
     "yaml": "^2.5.0"

@@ -16,6 +16,7 @@ const SECRET_PATTERNS = [
   /\b(?:sk-proj-|sk-ant-)[A-Za-z0-9_-]{16,}/,
   /\bAKIA[A-Z0-9]{16}\b/,
   /\b(?:authorization\s*:\s*bearer|(?:set-)?cookie\s*:)\s*\S{8,}/i,
+  /\b(?:patient_name|patient_email|medical_record_number|social_security_number)\b["']?\s*:\s*["'][^"'\n]{3,}["']/i,
 ];
 
 export function safePacketPath(path) {
@@ -36,7 +37,7 @@ export function packetDigest(files) {
 export function prohibitedDataFindings(bytes) {
   const text = Buffer.isBuffer(bytes) ? bytes.toString("utf8") : String(bytes);
   // Never include matched values in errors, logs or receipts.
-  return SECRET_PATTERNS.some((pattern) => pattern.test(text)) ? ["possible credential or session data"] : [];
+  return SECRET_PATTERNS.some((pattern) => pattern.test(text)) ? ["possible credential, session or patient data"] : [];
 }
 
 function timestamp(value, now) {
@@ -67,7 +68,7 @@ export function validateEvaluationPacket({ run, assignment, files = {}, source =
     data = doc.toJS({ maxAliasCount: 0 });
     if (!object(data)) throw new Error("invalid mapping");
   } catch { fail("invalid_yaml", "evidence.yaml"); }
-  if (!data) return { ok: false, errors, digest: packetDigest(files), evidence: [], counts: { records: 0 } };
+  if (!data) return { ok: false, errors, digest: packetDigest(files), evidence_present: false, counts: { records: 0 } };
   if (data.version !== PACKET_VERSION) fail("unsupported_packet_version", "version");
   const packet = object(data.packet) ? data.packet : {};
   for (const [key, expected] of [["run_id", run.run_id], ["assignment", assignment.id], ["base_sha", run.base_sha]]) {
@@ -138,6 +139,7 @@ export function validateEvaluationPacket({ run, assignment, files = {}, source =
   // Do not return worker-authored claims or references: validation diagnostics
   // may be logged before a human has inspected/redacted the packet.
   return { ok: errors.length === 0, errors, digest: packetDigest(files),
+    evidence_present: evidence.length > 0 && ["REPORT.md", "evidence.yaml"].every((name) => names.includes(name) && bytes(name).length > 0),
     counts: { records: evidence.length, source: evidence.filter((e) => e?.boundary === "source").length,
       deployed: evidence.filter((e) => e?.boundary === "deployed").length } };
 }

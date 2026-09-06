@@ -74,10 +74,11 @@ migration; add `--confirm` to preserve the original `LEGACY_RUN.vN.yaml` and rec
 inferred acceptance/sealing, and retain packet files untouched. Migration does not make old
 packet schemas valid. Corrections must preserve earlier evidence in Git history.
 
-The admission delivery intentionally blocks `eval seal`: collection timestamps cannot create
-a PASS. Authenticated current-head review, lead adjudication and GitHub seal attestations are
-the next dependency in the [implementation plan](specs/trustworthy-gauntlet.md). Do not use this
-intermediate delivery as a qualified autonomous evaluation service.
+The [authorized evaluation runbook](EVALUATION_RUNBOOK.md) adds protected launch ceilings,
+digest-bound lead adjudication, independent current-head criticism, explicit acknowledgment,
+scoped repair collection and GitHub seal attestations. Collection timestamps cannot create
+a PASS. Live qualification and the desktop continuation/portfolio integration remain pending;
+see the [implementation plan](specs/trustworthy-gauntlet.md).
 
 Matching MCP tools: `gauntlet_eval_validate`, `gauntlet_eval_collect` (preview unless `apply`),
 and `gauntlet_eval_migrate` (preview unless `confirm`). Validation failures return nonzero CLI

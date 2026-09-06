@@ -35,11 +35,11 @@ async function repository() {
   writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"), stringify({ meta: { schema_version: 1, program: "test",
     dispatch: { providers: { codex: { environment_id: "env-not-used" } } } }, pis: [] }));
   writeFileSync(join(root, "src", "example.js"), "export const example = 1;\n");
+  writeFileSync(join(root, "assignments.yaml"), stringify([assignment]));
   git(root, ["init", "-q"]); git(root, ["config", "user.email", "fixture@example.test"]); git(root, ["config", "user.name", "Fixture"]);
   git(root, ["add", "."]); git(root, ["commit", "-qm", "source"]);
   const sha = git(root, ["rev-parse", "HEAD"]).trim();
   const f = fixture(sha);
-  writeFileSync(join(root, "assignments.yaml"), stringify([assignment]));
   await runEvaluation(root, ["init", "--run", f.run.run_id, "--base-sha", sha, "--assignments", join(root, "assignments.yaml")]);
   const dir = `${f.run.artifact_root}/${f.run.run_id}`;
   const manifestPath = join(root, dir, "RUN.yaml");
@@ -55,6 +55,8 @@ async function repository() {
   }).join("");
   return { root, f, manifestPath, packetDir, patch };
 }
+
+export { repository as evaluationRepositoryFixture };
 
 export function registerEvaluationTests(test) {
   test("evidence admission accepts source-backed identity and linked claims without asserting truth", () => {
@@ -92,6 +94,13 @@ export function registerEvaluationTests(test) {
     f.files["REPORT.md"] += secret; f.data.evidence[0].claim += secret;
     const result = validate(f);
     code(result, "prohibited_data"); assert.ok(!JSON.stringify(result).includes(secret));
+  });
+  test("obvious structured patient-data fixtures are rejected without echoing values", () => {
+    const f = fixture();
+    const record = JSON.stringify({ patient_name: "SYNTHETIC PERSON", medical_record_number: "SYNTHETIC-00001" });
+    f.files["REPORT.md"] += record;
+    const result = validate(f); code(result, "prohibited_data");
+    assert.ok(!JSON.stringify(result).includes("SYNTHETIC PERSON"));
   });
   test("evidence source must be a regular frozen-tree file with valid line bounds", () => {
     for (const found of [null, { type: "tree", mode: "040000" }, { type: "blob", mode: "120000" }]) {

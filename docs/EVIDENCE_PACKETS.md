@@ -74,7 +74,8 @@ limit: 2 MiB. Only regular, non-executable files are accepted. Symlinks, special
 paths, renames/copies, duplicate YAML keys and YAML aliases are refused.
 
 Never include credentials, session cookies, patient/customer data or raw private transcripts.
-The scanner rejects detected credential patterns; it is not a secrecy guarantee and does not
+The scanner rejects detected credential/session and obvious structured patient-data patterns;
+it is not a secrecy guarantee and does not
 OCR images or prove that prose contains no prohibited personal data. The lead must inspect
 every attachment and redact before acceptance/publication. Validation diagnostics intentionally
 omit worker-authored claims and references.
@@ -87,6 +88,11 @@ the same fetched patch, checks local conflicts, applies exactly those bytes and 
 and patch SHA-256 digests only after verifying the resulting files. A failed apply never marks
 collection successful. Commit a collected packet before applying a later correction; history
 and receipts preserve attribution rather than silently replacing prior findings.
+
+The supported Cloud diff interface does not expose an authoritative worker commit SHA.
+Collection therefore records that revision as unverified. The local-commit requirement is a
+worker instruction, not a claim that the transport verified it. The enforced immutable content
+identities are the fetched patch, validated packet, and lead-published evidence PR head.
 
 `eval validate` independently checks local packet content. Validation is not lead acceptance,
 critic review, permission to publish, or a seal. Legacy runs remain unverified even if old

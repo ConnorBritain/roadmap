@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "nod
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
+import { npmCommand } from "./npm-command.mjs";
 
 const archive = resolve(process.argv[2] || "");
 assert.ok(archive.endsWith(".tgz"), "pass the candidate npm tarball");
@@ -15,7 +16,8 @@ function execute(command, args, input) {
 }
 try {
   writeFileSync(join(root, "package.json"), JSON.stringify({ private: true }));
-  execute("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", archive]);
+  const npm = npmCommand(["install", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", archive]);
+  execute(npm.command, npm.args);
   const installed = join(root, "node_modules", "@connorbritain", "roadmap");
   const cli = join(installed, "scripts", "cli.mjs");
   const mcp = join(installed, "scripts", "mcp.mjs");

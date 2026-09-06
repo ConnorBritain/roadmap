@@ -5,8 +5,8 @@ import { lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:
 import { join, relative } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
-import { assignmentDirectory, assertEvaluationDiffPaths } from "./evaluation-core.mjs";
-import { PACKET_MAX_BYTES, safePacketPath, validateEvaluationPacket } from "./evaluation-packet.mjs";
+import { assignmentDirectory, assertEvaluationDiffPaths, changedPathsFromUnifiedDiff, evaluationDirectory } from "./evaluation-core.mjs";
+import { PACKET_MAX_BYTES, safePacketPath, validateEvaluationPacket, prohibitedDataFindings, packetDigest } from "./evaluation-packet.mjs";
 
 export function evaluationCommand(root, command, args, { input, env, encoding = "utf8", execImpl = spawnSync } = {}) {
   const result = execImpl(command, args, { cwd: root, input, env, encoding, maxBuffer: 32 * 1024 * 1024 });
@@ -45,7 +45,7 @@ export function frozenSourceLookup(root) {
   };
 }
 
-function filesFromIndex(root, directory, env) {
+function filesFromIndex(root, directory, env, maxBytes = PACKET_MAX_BYTES) {
   const output = evaluationCommand(root, "git", ["--literal-pathspecs", "ls-files", "--stage", "-z", "--", directory], { env });
   const files = Object.create(null);
   let size = 0;
@@ -56,8 +56,24 @@ function filesFromIndex(root, directory, env) {
     if (!safePacketPath(name)) throw new Error("unsafe packet file");
     const bytes = evaluationCommand(root, "git", ["cat-file", "blob", match[2]], { env, encoding: null });
     size += bytes.length;
-    if (size > PACKET_MAX_BYTES) throw new Error("evaluation packet exceeds byte limit");
+    if (size > maxBytes) throw new Error("evaluation packet/corpus exceeds byte limit");
     files[name] = bytes;
+  }
+  return files;
+}
+
+export function evaluationFilesAtCommit(root, sha, directory) {
+  if (!/^[a-f0-9]{40}$/.test(sha) || !safePacketPath(directory)) throw new Error("unsafe evidence tree identity");
+  const records = evaluationCommand(root, "git", ["--literal-pathspecs", "ls-tree", "-r", "-z", sha, "--", directory]);
+  const files = Object.create(null); let size = 0;
+  for (const record of records.split("\0").filter(Boolean)) {
+    const match = /^100644 blob ([a-f0-9]{40})\t([^\0]+)$/.exec(record);
+    if (!match || !safePacketPath(match[2]) || !match[2].startsWith(directory + "/")) throw new Error("unsupported evidence Git file mode or path");
+    const bytes = evaluationCommand(root, "git", ["cat-file", "blob", match[1]], { encoding: null });
+    size += bytes.length;
+    if (size > 64 * 1024 * 1024) throw new Error("evaluation corpus exceeds 64 MiB");
+    if (prohibitedDataFindings(bytes).length) throw new Error("committed evidence corpus contains detected prohibited data");
+    files[match[2].slice(directory.length + 1)] = bytes;
   }
   return files;
 }
@@ -74,6 +90,9 @@ export function inspectEvaluationPatch(root, { run, assignment, diff, now }) {
   try {
     const env = { ...process.env, GIT_INDEX_FILE: join(temp, "index") };
     evaluationCommand(root, "git", ["read-tree", "HEAD"], { env });
+    if (packetDigest(readEvaluationFiles(root, directory)) !== packetDigest(filesFromIndex(root, directory, env))) {
+      throw new Error("local packet bytes differ from the committed base, including ignored or assume-unchanged files");
+    }
     evaluationCommand(root, "git", ["apply", "--cached", "--whitespace=nowarn", "-"], { env, input: diff });
     const actualPaths = evaluationCommand(root, "git", ["diff", "--cached", "--name-only", "-z", "HEAD"], { env }).split("\0").filter(Boolean);
     if (!actualPaths.length || actualPaths.some((path) => !path.startsWith(directory + "/") || !paths.includes(path))) {
@@ -96,8 +115,7 @@ export function applyEvaluationPatch(root, args) {
   return validation;
 }
 
-export function inspectLocalEvaluationPacket(root, { run, assignment, now }) {
-  const directory = assignmentDirectory(run.run_id, assignment.id, run.artifact_root);
+function readEvaluationFiles(root, directory, maxBytes = PACKET_MAX_BYTES) {
   assertNoSymlinkAncestors(root, directory);
   const files = Object.create(null);
   let size = 0;
@@ -111,12 +129,76 @@ export function inspectLocalEvaluationPacket(root, { run, assignment, now }) {
       if (entry.isDirectory()) { visit(full); continue; }
       const info = lstatSync(full);
       if ((info.mode & 0o111) !== 0) throw new Error("packet contains an executable file");
-      if (info.size + size > PACKET_MAX_BYTES) throw new Error("evaluation packet exceeds byte limit");
+      if (info.size + size > maxBytes) throw new Error("evaluation packet/corpus exceeds byte limit");
       const bytes = readFileSync(full); size += bytes.length;
-      if (size > PACKET_MAX_BYTES) throw new Error("evaluation packet exceeds byte limit");
+      if (size > maxBytes) throw new Error("evaluation packet/corpus exceeds byte limit");
       files[relative(join(root, directory), full).split("\\").join("/")] = bytes;
     }
   }
   visit(join(root, directory));
+  return files;
+}
+
+export function inspectLocalEvaluationPacket(root, { run, assignment, now }) {
+  const directory = assignmentDirectory(run.run_id, assignment.id, run.artifact_root);
+  const files = readEvaluationFiles(root, directory);
   return validateEvaluationPacket({ run, assignment, files, source: frozenSourceLookup(root), now });
+}
+
+export function inspectEvaluationRepairPatch(root, { run, reservation, diff, now }) {
+  const paths = changedPathsFromUnifiedDiff(diff);
+  const allowed = reservation?.request.allowed_paths;
+  if (reservation?.role !== "repair" || !Array.isArray(allowed) || paths.some((path) => !allowed.includes(path))) throw new Error("repair diff escapes the lead-approved exact file list");
+  if (evaluationCommand(root, "git", ["rev-parse", "HEAD"]).trim() !== reservation.expected_head) throw new Error("repair collection expected head moved; never force-apply an old repair");
+  const directory = evaluationDirectory(run.run_id, run.artifact_root);
+  if (paths.some((path) => !safePacketPath(path) || !path.startsWith(directory + "/"))) throw new Error("repair diff escapes run documentation");
+  for (const line of String(diff).split("\n")) {
+    if ((/^(?:new file|deleted file|old|new) mode /.test(line) && !line.endsWith(" 100644")) || /^(?:rename|copy) (?:from|to) /.test(line)) throw new Error("repair diff contains unsupported modes or renames");
+  }
+  for (const path of paths) assertNoSymlinkAncestors(root, path);
+  // All packet files are revalidated, so require the whole corpus to match its
+  // committed base instead of trusting only the files named by the worker.
+  if (evaluationCommand(root, "git", ["--literal-pathspecs", "status", "--porcelain", "--untracked-files=all", "--", directory]).trim()) throw new Error("commit or relocate local corpus changes before repair collection");
+  const temp = mkdtempSync(join(tmpdir(), "roadmap-repair-index-"));
+  try {
+    const env = { ...process.env, GIT_INDEX_FILE: join(temp, "index") };
+    evaluationCommand(root, "git", ["read-tree", "HEAD"], { env });
+    if (packetDigest(readEvaluationFiles(root, directory, 64 * 1024 * 1024)) !== packetDigest(filesFromIndex(root, directory, env, 64 * 1024 * 1024))) {
+      throw new Error("local corpus bytes differ from the committed repair base");
+    }
+    evaluationCommand(root, "git", ["apply", "--cached", "--whitespace=nowarn", "-"], { env, input: diff });
+    const actual = evaluationCommand(root, "git", ["diff", "--cached", "--name-only", "-z", "HEAD"], { env }).split("\0").filter(Boolean);
+    if (!actual.length || actual.some((path) => !allowed.includes(path) || !paths.includes(path))) throw new Error("actual repair patch differs from its allowed headers");
+    const files = filesFromIndex(root, directory, env, 64 * 1024 * 1024);
+    if (Object.values(files).some((bytes) => prohibitedDataFindings(bytes).length)) throw new Error("repair corpus contains detected prohibited data");
+    const packets = run.assignments.map((assignment) => {
+      const prefix = `inbox/${assignment.id}/`;
+      const packet = Object.fromEntries(Object.entries(files).filter(([path]) => path.startsWith(prefix)).map(([path, bytes]) => [path.slice(prefix.length), bytes]));
+      return { assignment: assignment.id, ...validateEvaluationPacket({ run, assignment, files: packet, source: frozenSourceLookup(root), now }) };
+    });
+    const artifact_digests = Object.fromEntries(paths.map((path) => {
+      const file = files[path.slice(directory.length + 1)];
+      return [path, file ? createHash("sha256").update(file).digest("hex") : null];
+    }));
+    return { ok: packets.every((packet) => packet.ok), packets, paths, artifact_digests, patch_digest: createHash("sha256").update(diff).digest("hex") };
+  } finally { rmSync(temp, { recursive: true, force: true }); }
+}
+
+export function applyEvaluationRepairPatch(root, args) {
+  const validation = inspectEvaluationRepairPatch(root, args);
+  if (!validation.ok) return validation;
+  for (const path of validation.paths) assertNoSymlinkAncestors(root, path);
+  evaluationCommand(root, "git", ["apply", "--check", "--whitespace=nowarn", "-"], { input: args.diff });
+  evaluationCommand(root, "git", ["apply", "--whitespace=nowarn", "-"], { input: args.diff });
+  for (const [path, expected] of Object.entries(validation.artifact_digests)) {
+    let actual = null;
+    try { actual = createHash("sha256").update(readFileSync(join(root, path))).digest("hex"); }
+    catch (e) { if (e.code !== "ENOENT") throw e; }
+    if (actual !== expected) throw new Error("repair artifact differs from the validated patch; collection was not recorded");
+  }
+  for (const assignment of args.run.assignments) {
+    const applied = inspectLocalEvaluationPacket(root, { run: args.run, assignment });
+    if (!applied.ok || applied.digest !== validation.packets.find((packet) => packet.assignment === assignment.id).digest) throw new Error("repair application differs from validated packets; collection was not recorded");
+  }
+  return validation;
 }

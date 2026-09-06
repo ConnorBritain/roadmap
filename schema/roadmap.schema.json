@@ -68,6 +68,9 @@
             "provider": { "enum": ["github", "gitlab", "git-native", "none"], "description": "Provider for the best-effort in-flight duplicate lock. Omit to auto-detect from origin." },
             "in_flight_window_hours": { "type": "number", "exclusiveMinimum": 0, "default": 24, "description": "How recent an open marker-bearing PR must be to block a duplicate low-level dispatch." },
             "default_provider": { "enum": ["claude", "codex"], "description": "Default remote-agent provider for ordinary cloud dispatch. Existing installations default to Claude when omitted." },
+            "evaluation": { "type": "object", "additionalProperties": false, "properties": {
+              "artifact_root": { "type": "string", "minLength": 1, "description": "Repository-relative evaluation run root. Runtime validation also refuses traversal, drive paths, control characters, symlinks and .git components." }
+            } },
             "providers": { "type": "object", "additionalProperties": false, "properties": { "codex": { "type": "object", "additionalProperties": false, "properties": { "environment_id": { "type": "string", "minLength": 1, "description": "Codex Cloud environment ID for this repository. It is configuration, not a credential." } } } } }
           }
         },
