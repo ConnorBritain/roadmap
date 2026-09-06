@@ -22,6 +22,7 @@ import { githubAuthorizationStore, mutateAuthorization } from "./lib/gauntlet-au
 import { runEvaluationReviewAction, inspectCommittedEvaluationCorpus } from "./lib/evaluation-review-io.mjs";
 import { evaluationReviewStatus, findEvaluationAttestation, sealEvaluationPayload } from "./lib/evaluation-review-core.mjs";
 import { roleModelPreference, qualifyModelPreference } from "./lib/model-policy.mjs";
+import { recordDecisionForPr, decisionReport, readDecisionFile } from "./lib/gauntlet-decisions.mjs";
 
 function value(args, name) { const i = args.indexOf(name); return i < 0 ? null : args[i + 1] || null; }
 function flag(args, name) { return args.includes(name); }
@@ -126,7 +127,7 @@ export async function runEvaluation(root, args, opts = {}) {
   const graph = loadGraph(join(root, "docs", "roadmap", "roadmap.yaml"));
   const artifactRoot = configuredArtifactRoot(graph);
   const runIdForLock = requiredRunId(value(args, "--run") || args.find((arg) => !arg.startsWith("-")));
-  const mutating = ["init", "launch", "accept", "repair", "critic", "ack", "seal", "authorize", "observe", "attach", "reconcile"].includes(action)
+  const mutating = ["init", "launch", "accept", "repair", "critic", "ack", "seal", "authorize", "observe", "attach", "reconcile", "decision"].includes(action)
     || (["collect", "collect-repair"].includes(action) && flag(args, "--apply")) || (["migrate", "recover"].includes(action) && flag(args, "--confirm"));
   if (mutating && !opts.locked) return withRunLock(root, runIdForLock, artifactRoot,
     () => runEvaluation(root, [action, ...args], { ...opts, locked: true }));
@@ -236,6 +237,7 @@ export async function runEvaluation(root, args, opts = {}) {
     return { run_id: runId, base_sha: manifest.base_sha, version: manifest.version,
       verification: manifest.version === EVALUATION_VERSION ? "requires_admission" : "legacy_unverified", state: manifest.state, assignments,
       authority_status: authorityStatus, limits: authority ? authorizationStatus(authority.state) : null, publication, corpus, review,
+      decision_report: authority ? decisionReport(authority.state) : null,
       executions: (authority?.state.reservations || []).map((reservation) => ({ key: reservation.key, role: reservation.role,
         receipt: reservation.receipt, state: reservation.state, model_policy: reservation.request.model_policy || null,
         observation: reservation.receipt ? observeExecution(reservation.receipt, manifest.environment_id, opts)
@@ -250,6 +252,14 @@ export async function runEvaluation(root, args, opts = {}) {
     const actor = await (opts.github || githubClient(root)).viewerLogin();
     if (actor !== state.authorization.lead_actor) throw new Error("evaluation actuator requires the frozen lead GitHub actor");
   };
+  if (action === "decision") {
+    const store = authorityStore(), snapshot = await store.read(runId);
+    if (!snapshot?.state.evidence_pr) throw new Error("decision needs protected authorization and the lead-owned evidence PR");
+    await verifyAuthority(snapshot.state);
+    return recordDecisionForPr({ store, runId, github: opts.github || githubClient(root), prNumber: snapshot.state.evidence_pr.number,
+      expectedHead: value(args, "--expected-head"), input: opts.decisionRecord || readDecisionFile(value(args, "--record-file")),
+      confirm: flag(args, "--confirm"), now: opts.now || new Date().toISOString() });
+  }
   if (["attach", "accept", "critic", "ack", "seal", "repair"].includes(action)) {
     const store = authorityStore(); const snapshot = await store.read(runId);
     if (!snapshot) throw new Error("evaluation review requires protected authorization");

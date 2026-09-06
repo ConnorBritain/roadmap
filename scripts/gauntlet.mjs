@@ -47,10 +47,11 @@ import {
 } from "./lib/cloud-agent-providers.mjs";
 import { freezeImplementationAuthority, readImplementationAuthority, reserveImplementationCapacity,
   submitWithImplementationCapacity, authorizedVerificationPrompt, implementationAuthorityStore } from "./lib/implementation-authorization.mjs";
-import { authorizationStatus, recordLaunchObservation } from "./lib/gauntlet-authorization.mjs";
+import { authorizationStatus, recordLaunchObservation, reconcileLaunchReceipt } from "./lib/gauntlet-authorization.mjs";
 import { mutateAuthorization } from "./lib/gauntlet-authorization-io.mjs";
 import { observeAuthorizedExecution } from "./lib/gauntlet-observation.mjs";
 import { roleModelPreference, qualifyModelPreference } from "./lib/model-policy.mjs";
+import { recordDecisionForPr, decisionReport, readDecisionFile } from "./lib/gauntlet-decisions.mjs";
 
 const FULL_SHA = /^[a-f0-9]{40}$/;
 const DEFAULT_MAX_ROUNDS = 3;
@@ -1010,6 +1011,7 @@ export async function runGauntletStatus(root, idOrKey, opts = {}) {
     ...status,
     authority_status: observed.authority.snapshot ? "protected" : "legacy_unverified",
     limits,
+    decision_report: observed.authority.snapshot ? decisionReport(observed.authority.snapshot.state) : null,
     executions: (observed.authority.snapshot?.state.reservations || []).map((reservation) => ({ key: reservation.key, role: reservation.role,
       receipt: reservation.receipt, state: reservation.state, model_policy: reservation.request.model_policy,
       observation: reservation.receipt ? observeAuthorizedExecution(reservation.receipt, reservation.request.environment_id, opts)
@@ -1032,6 +1034,41 @@ export async function runGauntletObserve(root, idOrKey, opts = {}) {
     observations.push({ key: reservation.key, ...observation });
   }
   return { run_id: run.run_id, observations, limits: authorizationStatus((await authority.store.read(run.run_id)).state) };
+}
+
+export async function runGauntletReconcile(root, idOrKey, opts = {}) {
+  const { run, github, authority } = await observeGauntlet(root, idOrKey, opts);
+  if (!authority.snapshot) throw new Error("receipt reconciliation requires protected implementation authorization");
+  await assertFrozenLeadActor(github, run);
+  const reservation = authority.snapshot.state.reservations.find((entry) => entry.key === opts.launchKey);
+  if (!reservation || reservation.provider !== "codex") throw new Error("reconciliation requires an exact Codex reservation; unsupported providers remain unresolved");
+  if (!/^task_[A-Za-z0-9_-]+$/.test(opts.taskId || "") || ![
+    `https://chatgpt.com/codex/tasks/${opts.taskId}`, `https://chatgpt.com/codex/cloud/tasks/${opts.taskId}`,
+  ].includes(opts.taskUrl)) throw new Error("supply the inspected exact task ID and matching URL, never a recent-task guess");
+  const receipt = reservation.receipt || { provider: "codex", external_id: opts.taskId, external_url: opts.taskUrl,
+    model_policy: reservation.request.model_policy || null };
+  if (receipt.external_id !== opts.taskId || receipt.external_url !== opts.taskUrl) throw new Error("cannot replace a recorded receipt");
+  const logicalKey = reservation.key.replace(/:attempt:\d+$/, "");
+  const attempt = Number(/:attempt:(\d+)$/.exec(reservation.key)?.[1] || 1);
+  const cached = (run.launches || []).find((launch) => launch.key === logicalKey && Number(launch.attempt || 1) === attempt);
+  if (cached?.external_id && cached.external_id !== receipt.external_id) throw new Error("local and protected receipts conflict; inspect without silently replacing either");
+  const observation = observeAuthorizedExecution(receipt, reservation.request.environment_id, opts);
+  const result = await mutateAuthorization(authority.store, run.run_id, (state) => ({ state: reconcileLaunchReceipt(state, reservation.key, {
+    actor: run.lead_actor, receipt, observation, reason: opts.reason, confirm: opts.confirm === true, now: nowIso(opts),
+  }) }));
+  if (cached && readGauntletLedger(root).runs[run.run_id]) {
+    updateLaunch(root, run.run_id, cached, { status: "launched", provider: "codex", external_id: receipt.external_id,
+      external_url: receipt.external_url, model_policy: receipt.model_policy, updated_at: nowIso(opts) });
+  }
+  return { run_id: run.run_id, launch_key: reservation.key, receipt, observation,
+    limits: authorizationStatus(result.state, { now: Date.parse(nowIso(opts)) }) };
+}
+
+export async function runGauntletDecision(root, idOrKey, opts = {}) {
+  const { run, pr, github, authority } = await observeGauntlet(root, idOrKey, opts);
+  if (!pr || !authority.snapshot) throw new Error("decision requires a bounded implementation run with its existing PR");
+  return recordDecisionForPr({ store: authority.store, runId: run.run_id, github, prNumber: pr.number,
+    expectedHead: opts.expectedHead, input: opts.record, confirm: opts.confirm, now: nowIso(opts) });
 }
 
 export async function runGauntletAcknowledge(root, idOrKey, opts = {}) {
@@ -1462,7 +1499,7 @@ if (isMain) {
     });
     process.exit(result.status ?? 1);
   }
-  const known = new Set(["start", "status", "observe", "ack", "critic", "repair", "cancel"]);
+  const known = new Set(["start", "status", "observe", "reconcile", "decision", "ack", "critic", "repair", "cancel"]);
   const action = known.has(args[0]) ? args.shift() : "start";
   const val = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
   const modelPreference = val("--model") || val("--reasoning-effort") || args.includes("--strict-model")
@@ -1473,6 +1510,8 @@ if (isMain) {
     console.error(`usage:
   roadmap gauntlet start <key> [--bar-file <path>] [--max-rounds <0..20>] [--implementation-provider claude|codex] [--critic-provider claude|codex] [--repair-provider claude|codex] [--implementation-tier <tier>] [--critic-tier <tier>] [--critic-profile <name>] [--repair-tier <tier>] [--force]
   roadmap gauntlet status <run|key> [--json] | status --all --json
+  roadmap gauntlet reconcile <run> --launch-key <key> --task-id <exact-id> --task-url <exact-url> --reason <text> --confirm
+  roadmap gauntlet decision <run> --expected-head <sha> --record-file <decision.json> --confirm
   roadmap gauntlet ack <run|key> --comment-url <exact-url> --confirm
   roadmap gauntlet critic <run|key> --expected-head <full-sha> [--provider claude|codex] [--critic-role <slug>] [--tier <tier>] [--profile <name>] [--force-checks] [--confirm-recovered-bar]
   roadmap gauntlet repair <run|key> --expected-head <full-sha> --packet-file <path> [--provider claude|codex] [--tier <tier>] [--profile <name>]
@@ -1501,6 +1540,13 @@ if (isMain) {
       console.log(args.includes("--json") || args.includes("--all") ? JSON.stringify(result, null, 2) : formatGauntletStatus(result));
     } else if (action === "observe") {
       result = await runGauntletObserve(process.cwd(), positional);
+      console.log(JSON.stringify(result, null, 2));
+    } else if (action === "reconcile") {
+      result = await runGauntletReconcile(process.cwd(), positional, { launchKey: val("--launch-key"), taskId: val("--task-id"), taskUrl: val("--task-url"),
+        reason: val("--reason"), confirm: args.includes("--confirm") });
+      console.log(JSON.stringify(result, null, 2));
+    } else if (action === "decision") {
+      result = await runGauntletDecision(process.cwd(), positional, { expectedHead: val("--expected-head"), record: readDecisionFile(val("--record-file")), confirm: args.includes("--confirm") });
       console.log(JSON.stringify(result, null, 2));
     } else if (action === "ack") {
       result = await runGauntletAcknowledge(process.cwd(), positional, {

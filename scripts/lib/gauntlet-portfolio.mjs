@@ -10,16 +10,22 @@ import { githubAuthorizationStore } from "./gauntlet-authorization-io.mjs";
 import { authorizationStatus } from "./gauntlet-authorization.mjs";
 import { githubClient, runGauntletStatus } from "../gauntlet.mjs";
 import { runEvaluation } from "../evaluate.mjs";
+import { decisionReport } from "./gauntlet-decisions.mjs";
 
 export function authorizationReport(state, { now = Date.now() } = {}) {
   const limits = authorizationStatus(state, { now });
   const findings = new Set(state.reservations.flatMap((r) => (r.request.accepted_findings || [])
     .map((finding) => `${finding.critic_comment_url}:${finding.id}`)));
+  const decisions = decisionReport(state), kinds = new Set(decisions.records.map((event) => event.decision.kind));
   return { limits, submissions: state.reservations.length, repairs: limits.repairs_used,
     elapsed_seconds: Math.max(0, Math.floor((now - Date.parse(state.authorization.created_at)) / 1000)),
     accepted_repair_findings: findings.size,
-    rejected_findings: null, regressions: null, human_interventions: null,
-    reporting_limitations: ["Finding rejection, regression and human-intervention totals are unknown unless explicitly recorded; absence is not zero.",
+    accepted_findings: kinds.has("finding") ? decisions.accepted_findings : null,
+    rejected_findings: kinds.has("finding") ? decisions.rejected_findings : null,
+    regressions: kinds.has("regression") ? decisions.regressions : null,
+    human_interventions: kinds.has("human_intervention") ? decisions.human_interventions : null,
+    decision_report: decisions,
+    reporting_limitations: ["Decision counts cover attributable lead records only, not unobserved findings or interventions; missing record categories are unknown, not zero.",
       "Elapsed time is run age, not provider compute time or time-to-PASS."],
     monetary_usage: { amount: null, currency: null, verification: "unavailable", reason: "No trustworthy provider monetary usage is attached to these receipts." } };
 }

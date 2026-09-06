@@ -17,7 +17,7 @@ import { linearState, linearStatusLine, normalizeLinearConfig } from "./lib/line
 import { platedKeys } from "./lib/plate-core.mjs";
 import { runSync, runNote, runNotes, runProjectUpdate } from "./linear.mjs";
 import { runDispatch, runFanCloud } from "./dispatch.mjs";
-import { runGauntletStart, runGauntletStatus, runGauntletObserve, runGauntletAcknowledge, runGauntletCritic, runGauntletRepair, runGauntletCancel } from "./gauntlet.mjs";
+import { runGauntletStart, runGauntletStatus, runGauntletObserve, runGauntletReconcile, runGauntletDecision, runGauntletAcknowledge, runGauntletCritic, runGauntletRepair, runGauntletCancel } from "./gauntlet.mjs";
 import { runEvaluation } from "./evaluate.mjs";
 import { runEstimate, runTimeline, runLog } from "./estimate.mjs";
 import { LOG_STATUSES } from "./lib/estimate-core.mjs";
@@ -49,6 +49,11 @@ const CLOUD_TOOLS = [
 // Conducted cloud work: deterministic senses/actuators only. The lead model remains the
 // executive function that judges critic materiality, synthesizes repairs, and decides stops.
 const GAUNTLET_TOOLS = [
+  { name: "gauntlet_decision", description: "Record a lead-inspected finding decision, regression or human intervention against an immutable comment on the exact implementation PR head. Reporting only: does not accept packets, acknowledge critics, authorize repairs or prove a claim. Corrections must name the superseded record fingerprint.",
+    inputSchema: { type: "object", required: ["run", "expected_head", "record", "confirm"], properties: { run: { type: "string" }, expected_head: { type: "string" }, record: { type: "object" }, confirm: { const: true } } } },
+  { name: "gauntlet_reconcile", description: "After frozen-lead inspection, associate an exact observable Codex task ID/URL with an unresolved protected implementation launch. Records the lead reason, cannot replace receipts or replenish budgets, and never launches or guesses by recency.",
+    inputSchema: { type: "object", required: ["run", "launch_key", "task_id", "task_url", "reason", "confirm"], properties: {
+      run: { type: "string" }, launch_key: { type: "string" }, task_id: { type: "string" }, task_url: { type: "string" }, reason: { type: "string" }, confirm: { const: true } } } },
   { name: "gauntlet_observe", description: "Refresh exact provider receipts for a bounded implementation run into protected accounting. Releases concurrency on terminal provider observations but never replenishes spent submissions. Failed queries remain explicit and cannot authorize retries.",
     inputSchema: { type: "object", required: ["run"], properties: { run: { type: "string" } } } },
   { name: "gauntlet_start", description: "Freeze the current quality bar, create a run, and launch one provider-selected implementation execution. GitHub remains the durable artifact; the local ledger records generic provider receipts. Codex implementation may await artifact publication rather than claiming a PR.",
@@ -85,6 +90,8 @@ const GAUNTLET_TOOLS = [
 ];
 
 const EVALUATION_TOOLS = [
+  { name: "gauntlet_eval_decision", description: "Append an inspected lead reporting decision for a finding, regression or human intervention on the exact evidence PR head. Binds an immutable comment digest and preserves attributable corrections. Does not replace packet admission, critic acknowledgment, scoped repair approval or sealing.",
+    inputSchema: { type: "object", required: ["run", "expected_head", "record", "confirm"], properties: { run: { type: "string" }, expected_head: { type: "string" }, record: { type: "object" }, confirm: { const: true } } } },
   { name: "gauntlet_eval_launch", description: "Launch the specified frozen evaluation wave using protected authorization and durable capacity reservations. Exactly one attempt per submission; duplicate or ambiguous reservations never cause a blind resubmission. Does not authorize new scope.",
     inputSchema: { type: "object", required: ["run", "wave"], properties: { run: { type: "string" }, wave: { type: "string" } } } },
   { name: "gauntlet_eval_reconcile", description: "After the frozen lead inspects an exact cloud task and verifies its association with an unresolved launch, bind its exact ID/URL to the protected reservation. Records an attributable reason and observes that same task. Never guesses by recency, replaces an existing receipt or replenishes spent submissions.",
@@ -176,7 +183,7 @@ function callTool(name, args) {
     if (args.apply === true) argv.push("--apply");
     if (args.confirm === true) argv.push("--confirm");
     if (args.redaction_inspected === true) argv.push("--redaction-inspected");
-    return runEvaluation(repoRoot(), argv, { modelPreference: args.model_preference || null });
+    return runEvaluation(repoRoot(), argv, { modelPreference: args.model_preference || null, decisionRecord: args.record || null });
   }
   if (READ_HANDLERS[name]) {
     const graph = loadGraph(roadmapPaths(repoRoot()).yaml);
@@ -231,6 +238,9 @@ function callTool(name, args) {
   }
   if (name === "gauntlet_status") return runGauntletStatus(repoRoot(), args.run, { all: args.all === true });
   if (name === "gauntlet_observe") return runGauntletObserve(repoRoot(), args.run);
+  if (name === "gauntlet_decision") return runGauntletDecision(repoRoot(), args.run, { expectedHead: args.expected_head, record: args.record, confirm: args.confirm === true });
+  if (name === "gauntlet_reconcile") return runGauntletReconcile(repoRoot(), args.run, { launchKey: args.launch_key,
+    taskId: args.task_id, taskUrl: args.task_url, reason: args.reason, confirm: args.confirm === true });
   if (name === "gauntlet_ack") return runGauntletAcknowledge(repoRoot(), args.run,
     { commentUrl: args.comment_url, confirm: args.confirm === true });
   if (name === "gauntlet_critic") {
