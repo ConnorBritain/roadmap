@@ -16,7 +16,7 @@ const SECRET_PATTERNS = [
   /\b(?:sk-proj-|sk-ant-)[A-Za-z0-9_-]{16,}/,
   /\bAKIA[A-Z0-9]{16}\b/,
   /\b(?:authorization\s*:\s*bearer|(?:set-)?cookie\s*:)\s*\S{8,}/i,
-  /\b(?:patient_name|patient_email|medical_record_number|social_security_number)\b["']?\s*:\s*["'][^"'\n]{3,}["']/i,
+  /\b(?:patient_name|patient_email|medical_record_number|social_security_number)\b["']?[ \t]*:[ \t]*["']?[^"'\r\n]{3,}/i,
 ];
 
 export function safePacketPath(path) {

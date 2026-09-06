@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { freezeAuthorization, authorizationStatus, reserveAuthorizedLaunch, recordLaunchOutcome,
-  recordLaunchObservation, assertAuthorizationState, assertAuthorizationTransition, authorizationDigest, reconcileLaunchReceipt, recordContinuation, continuationStatus } from "../lib/gauntlet-authorization.mjs";
+  recordLaunchObservation, recordLaunchNotSubmitted, assertAuthorizationState, assertAuthorizationTransition, authorizationDigest, reconcileLaunchReceipt, recordContinuation, continuationStatus } from "../lib/gauntlet-authorization.mjs";
 import { mutateAuthorization } from "../lib/gauntlet-authorization-io.mjs";
 import { submitWithImplementationCapacity } from "../lib/implementation-authorization.mjs";
 
@@ -38,6 +38,19 @@ function receipt(id = "task_fixture") { return { provider: "codex", external_id:
 function reserve(state, key, role) { return reserveAuthorizedLaunch(state, request(key, role), { owner: key, now: NOW }).state; }
 
 export function registerAuthorizationTests(test) {
+  test("known pre-submit outcomes cannot erase ambiguity, reset budgets or originate from provider observations", () => {
+    const reserved = reserve(authorizationFixture(), "one");
+    const stopped = recordLaunchNotSubmitted(reserved, "one", { owner: "one", now: NOW });
+    assertAuthorizationTransition(reserved, stopped);
+    assert.equal(reserveAuthorizedLaunch(stopped, request("one"), { owner: "other", now: NOW }).reserved, false);
+    assert.equal(authorizationStatus(stopped).submissions_used, 1);
+    const ambiguous = recordLaunchOutcome(reserved, "one", { owner: "one", ambiguous: true, now: NOW });
+    assert.throws(() => recordLaunchNotSubmitted(ambiguous, "one", { owner: "one", now: NOW }));
+    assert.throws(() => assertAuthorizationTransition(ambiguous, stopped));
+    const submitted = recordLaunchOutcome(reserved, "one", { owner: "one", receipt: receipt(), now: NOW });
+    const observed = recordLaunchObservation(submitted, "one", { external_id: "task_fixture", state: "not_submitted" }, { now: NOW });
+    assert.equal(observed.reservations[0].state, "submitted");
+  });
   test("pausing after reservation prevents provider submission without replenishing capacity or blocking observation", async () => {
     const reserved = reserve(authorizationFixture(), "one");
     const store = memoryAuthorityStore(recordContinuation(reserved, continuationFixtureReceipt(NOW, "PAUSED"),
@@ -45,16 +58,19 @@ export function registerAuthorizationTests(test) {
     let submissions = 0;
     await assert.rejects(() => submitWithImplementationCapacity({ store, runId: reserved.authorization.run_id,
       key: "one", owner: "one", reserved: true }, async () => { submissions++; return receipt(); },
-    { now: Date.parse(NOW) }), /unresolved/);
+    { now: Date.parse(NOW) }), /before provider submission/);
     assert.equal(submissions, 0);
     const afterPause = (await store.read()).state;
     assert.equal(authorizationStatus(afterPause).submissions_used, 1);
-    assert.equal(afterPause.reservations[0].state, "ambiguous");
-    const reconciled = reconcileLaunchReceipt(afterPause, "one", { actor: "lead", receipt: receipt(),
+    assert.equal(afterPause.reservations[0].state, "not_submitted");
+    assert.equal(authorizationStatus(afterPause).active, 0);
+    assertAuthorizationTransition(reserved, afterPause);
+    assert.throws(() => reconcileLaunchReceipt(afterPause, "one", { actor: "lead", receipt: receipt(),
       observation: { external_id: "task_fixture", state: "completed" }, reason: "Inspected exact fixture receipt",
-      confirm: true, now: NOW });
-    assert.equal(reconciled.reservations[0].state, "completed");
-    assert.equal(continuationStatus(reconciled, { now: Date.parse(NOW) }).state, "paused");
+      confirm: true, now: NOW }), /no longer awaiting/);
+    const submitted = recordLaunchOutcome(reserved, "one", { owner: "one", receipt: receipt(), now: NOW });
+    const paused = recordContinuation(submitted, continuationFixtureReceipt(NOW, "PAUSED"), { actor: "lead", confirm: true, now: NOW });
+    assert.equal(recordLaunchObservation(paused, "one", { external_id: "task_fixture", state: "completed" }, { now: NOW }).reservations[0].state, "completed");
   });
   test("bounded launches require a fresh active desktop handoff, without treating registration as a verified wake", () => {
     const state = authorizationFixture(); delete state.continuation_records;

@@ -3,7 +3,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { assignmentDirectory, evaluationDirectory } from "./evaluation-core.mjs";
 import { inspectLocalEvaluationPacket, evaluationCommand, evaluationFilesAtCommit, frozenSourceLookup } from "./evaluation-io.mjs";
 import { prohibitedDataFindings, validateEvaluationPacket } from "./evaluation-packet.mjs";
-import { authorizationDigest, reserveAuthorizedLaunch, recordLaunchOutcome, authorizationStatus, continuationStatus } from "./gauntlet-authorization.mjs";
+import { authorizationDigest, reserveAuthorizedLaunch, recordLaunchOutcome, recordLaunchNotSubmitted, authorizationStatus, continuationStatus } from "./gauntlet-authorization.mjs";
 import { mutateAuthorization } from "./gauntlet-authorization-io.mjs";
 import { evaluationReviewRun, evaluationReviewStatus, assertNextEvaluationReviewer, evaluationAttestation,
   findEvaluationAttestation, evaluationAdmissionTotals, sealEvaluationPayload } from "./evaluation-review-core.mjs";
@@ -129,6 +129,7 @@ export async function runEvaluationReviewAction(root, action, { manifest, store,
       model_policy: modelPolicy,
     }, { owner, now: opts.now || new Date().toISOString() }));
     if (!reserved.reserved) return { action, duplicate: true, reservation: reserved.reservation };
+    let submissionAttempted = false;
     try {
       pr = await github.getPr(pr.number); assertHead(pr, expectedHead);
       const currentReview = evaluationReviewStatus((await store.read(manifest.run_id)).state, pr, { corpusDigest: corpus.corpus_digest });
@@ -144,11 +145,14 @@ export async function runEvaluationReviewAction(root, action, { manifest, store,
         + `Lead-synthesized repair packet (digest ${packet.digest}):\n${JSON.stringify(repairPacket, null, 2)}`;
       const currentAuthority = (await store.read(manifest.run_id)).state, now = Date.parse(opts.now || new Date().toISOString());
       if (!authorizationStatus(currentAuthority, { now }).launch_window_open || !continuationStatus(currentAuthority, { now }).launch_ready) throw new Error("launch window or desktop continuation expired");
+      submissionAttempted = true;
       const receipt = { ...await (opts.launchCloud || launchCodexCloud)({ environmentId: manifest.environment_id, branch: expectedHead, attempts: 1, prompt }), model_policy: modelPolicy };
       await mutateAuthorization(store, manifest.run_id, (current) => ({ state: recordLaunchOutcome(current, key, { owner, receipt }) }));
       return { action, run_id: manifest.run_id, round, head: expectedHead, launch_key: key, allowed_paths: packet.paths, receipt, model_policy: modelPolicy };
     } catch {
-      try { await mutateAuthorization(store, manifest.run_id, (current) => ({ state: recordLaunchOutcome(current, key, { owner, ambiguous: true }) })); } catch { /* reservation remains occupied */ }
+      try { await mutateAuthorization(store, manifest.run_id, (current) => ({ state: submissionAttempted
+        ? recordLaunchOutcome(current, key, { owner, ambiguous: true }) : recordLaunchNotSubmitted(current, key, { owner }) })); } catch { /* reservation remains occupied */ }
+      if (!submissionAttempted) throw new Error("repair stopped before provider submission; spent reservation retained, no provider receipt exists to reconcile");
       throw new Error("repair reservation is unresolved; inspect its exact receipt before any further submission");
     }
   }
@@ -182,6 +186,7 @@ export async function runEvaluationReviewAction(root, action, { manifest, store,
       model_policy: modelPolicy,
     }, { owner, now: opts.now || new Date().toISOString() }));
     if (!reserved.reserved) return { action, duplicate: true, reservation: reserved.reservation };
+    let submissionAttempted = false;
     try {
       pr = await github.getPr(pr.number); assertHead(pr, expectedHead);
       await github.addComment(pr.number, renderGauntletLaunchMarker({ run: review.run, role: "critic", criticRole: role, round, expectedHead, nonce }));
@@ -189,11 +194,14 @@ export async function runEvaluationReviewAction(root, action, { manifest, store,
         + `\n\nLead-adjudicated packet digest register (verify against actual committed files):\n${JSON.stringify(corpus.records.map(({ assignment, digest, status }) => ({ assignment, digest, status })), null, 2)}`;
       const currentAuthority = (await store.read(manifest.run_id)).state, now = Date.parse(opts.now || new Date().toISOString());
       if (!authorizationStatus(currentAuthority, { now }).launch_window_open || !continuationStatus(currentAuthority, { now }).launch_ready) throw new Error("launch window or desktop continuation expired");
+      submissionAttempted = true;
       const receipt = { ...await (opts.launchCloud || launchCodexCloud)({ environmentId: manifest.environment_id, branch: expectedHead, attempts: 1, prompt }), model_policy: modelPolicy };
       await mutateAuthorization(store, manifest.run_id, (current) => ({ state: recordLaunchOutcome(current, key, { owner, receipt }) }));
       return { action, run_id: manifest.run_id, role, round, head: expectedHead, receipt, model_policy: modelPolicy };
     } catch {
-      try { await mutateAuthorization(store, manifest.run_id, (current) => ({ state: recordLaunchOutcome(current, key, { owner, ambiguous: true }) })); } catch { /* reservation remains occupied */ }
+      try { await mutateAuthorization(store, manifest.run_id, (current) => ({ state: submissionAttempted
+        ? recordLaunchOutcome(current, key, { owner, ambiguous: true }) : recordLaunchNotSubmitted(current, key, { owner }) })); } catch { /* reservation remains occupied */ }
+      if (!submissionAttempted) throw new Error("critic stopped before provider submission; spent reservation retained, no provider receipt exists to reconcile");
       throw new Error("critic reservation is unresolved; inspect its exact GitHub attestation/receipt before any further submission");
     }
   }

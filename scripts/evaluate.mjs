@@ -17,7 +17,7 @@ import {
 import { applyEvaluationPatch, inspectEvaluationPatch, inspectLocalEvaluationPacket, assertNoSymlinkAncestors, evaluationCommand,
   inspectEvaluationRepairPatch, applyEvaluationRepairPatch } from "./lib/evaluation-io.mjs";
 import { githubClient } from "./gauntlet.mjs";
-import { freezeAuthorization, authorizationDigest, reserveAuthorizedLaunch, recordLaunchOutcome, recordLaunchObservation, authorizationStatus, reconcileLaunchReceipt, continuationStatus } from "./lib/gauntlet-authorization.mjs";
+import { freezeAuthorization, authorizationDigest, reserveAuthorizedLaunch, recordLaunchOutcome, recordLaunchNotSubmitted, recordLaunchObservation, authorizationStatus, reconcileLaunchReceipt, continuationStatus } from "./lib/gauntlet-authorization.mjs";
 import { githubAuthorizationStore, mutateAuthorization, recordRunContinuation } from "./lib/gauntlet-authorization-io.mjs";
 import { runEvaluationReviewAction, inspectCommittedEvaluationCorpus } from "./lib/evaluation-review-io.mjs";
 import { evaluationReviewStatus, findEvaluationAttestation, sealEvaluationPayload } from "./lib/evaluation-review-core.mjs";
@@ -50,11 +50,17 @@ function readRun(root, runId, artifactRoot) {
   const path = runPath(root, runId, artifactRoot);
   if (!existsSync(path)) throw new Error(`evaluation run manifest not found: ${path}`);
   const parsed = parseInput(readFileSync(path, "utf8"), { legacyManifest: true });
+  return normalizeRunManifest(parsed, runId, artifactRoot);
+}
+function normalizeRunManifest(parsed, runId, artifactRoot, { recovering = false } = {}) {
   if (!parsed || typeof parsed !== "object") throw new Error("evaluation RUN.yaml is invalid");
   requiredRunId(parsed.run_id); requiredSha(parsed.base_sha);
+  if (parsed.run_id !== runId) throw new Error("evaluation manifest run identity differs from requested run");
   const recordedRoot = requiredArtifactRoot(parsed.artifact_root || EVALUATION_ROOT);
   if (recordedRoot !== artifactRoot) throw new Error(`evaluation run artifact root changed from ${recordedRoot} to ${artifactRoot}; restore the original repository configuration before continuing`);
+  if (recovering && (parsed.version !== EVALUATION_VERSION || !Array.isArray(parsed.assignments))) throw new Error("committed recovery manifest requires the current version and an assignments array");
   if (!Array.isArray(parsed.assignments)) parsed.assignments = [];
+  if (parsed.assignments.some((assignment) => !assignment || typeof assignment !== "object" || Array.isArray(assignment))) throw new Error("evaluation manifest assignments must be objects");
   parsed.assignments = parsed.assignments.map(normalizeAssignment);
   return parsed;
 }
@@ -117,6 +123,7 @@ function observeExecution(receipt, environmentId, opts) {
 }
 
 export async function runEvaluation(root, args, opts = {}) {
+  const now = () => (typeof opts.now === "function" ? opts.now() : opts.now) || new Date().toISOString();
   args = [...args];
   const modelPreference = value(args, "--model") || value(args, "--reasoning-effort") || flag(args, "--strict-model")
     ? { ...(value(args, "--model") ? { model: value(args, "--model") } : {}),
@@ -165,7 +172,7 @@ export async function runEvaluation(root, args, opts = {}) {
       const pr = await github.getPr(snapshot.state.evidence_pr.number);
       const head = evaluationCommand(root, "git", ["rev-parse", "HEAD"]).trim();
       if (head !== pr.currentHead) throw new Error("checkout the exact evidence PR head in an isolated lead checkout before manifest recovery");
-      const prior = parseInput(evaluationCommand(root, "git", ["show", `${head}:${evaluationDirectory(runId, artifactRoot)}/RUN.yaml`]), { legacyManifest: true });
+      const prior = normalizeRunManifest(parseInput(evaluationCommand(root, "git", ["show", `${head}:${evaluationDirectory(runId, artifactRoot)}/RUN.yaml`]), { legacyManifest: true }), runId, artifactRoot, { recovering: true });
       if (authorizationDigest(evaluationScopeSnapshot(prior)) !== authorizationDigest(snapshot.state.authorization.scope.snapshot)) throw new Error("committed manifest differs from protected scope");
       recovered = prior;
     }
@@ -215,7 +222,7 @@ export async function runEvaluation(root, args, opts = {}) {
       const durable = authority?.state.reservations.find((r) => r.request.assignment === assignment.id);
       const receipt = durable?.receipt || assignment.receipt;
       return { ...assignment, receipt, provider_observation: receipt
-        ? observeExecution(receipt, manifest.environment_id, opts) : { state: durable ? "reserved_without_receipt" : "not_launched" } };
+        ? observeExecution(receipt, manifest.environment_id, opts) : { state: durable?.state === "not_submitted" ? "not_submitted" : durable ? "reserved_without_receipt" : "not_launched" } };
     });
     let review = null, corpus = null, publication = null;
     if (authority?.state.evidence_pr) {
@@ -241,7 +248,7 @@ export async function runEvaluation(root, args, opts = {}) {
       executions: (authority?.state.reservations || []).map((reservation) => ({ key: reservation.key, role: reservation.role,
         receipt: reservation.receipt, state: reservation.state, model_policy: reservation.request.model_policy || null,
         observation: reservation.receipt ? observeExecution(reservation.receipt, manifest.environment_id, opts)
-          : { state: "reserved_without_receipt" } })) };
+          : { state: reservation.state === "not_submitted" ? "not_submitted" : "reserved_without_receipt" } })) };
   }
   if (manifest.version !== EVALUATION_VERSION) throw new Error("legacy evaluation is unverified; use eval migrate --run <id> --confirm before mutation or admission");
   const authorityStore = () => opts.authorityStore || githubAuthorizationStore(root, { github: opts.github || githubClient(root) });
@@ -258,14 +265,14 @@ export async function runEvaluation(root, args, opts = {}) {
     await verifyAuthority(snapshot.state);
     return recordDecisionForPr({ store, runId, github: opts.github || githubClient(root), prNumber: snapshot.state.evidence_pr.number,
       expectedHead: value(args, "--expected-head"), input: opts.decisionRecord || readDecisionFile(value(args, "--record-file")),
-      confirm: flag(args, "--confirm"), now: opts.now || new Date().toISOString() });
+      confirm: flag(args, "--confirm"), now: now() });
   }
   if (action === "continuation") {
     const store = authorityStore(), snapshot = await store.read(runId);
     if (!snapshot) throw new Error("continuation requires protected evaluation authorization");
     await verifyAuthority(snapshot.state);
     return recordRunContinuation({ store, runId, github: opts.github || githubClient(root),
-      record: opts.continuationRecord || readDecisionFile(value(args, "--receipt-file")), confirm: flag(args, "--confirm"), now: opts.now || new Date().toISOString() });
+      record: opts.continuationRecord || readDecisionFile(value(args, "--receipt-file")), confirm: flag(args, "--confirm"), now: now() });
   }
   if (["attach", "accept", "critic", "ack", "seal", "repair"].includes(action)) {
     const store = authorityStore(); const snapshot = await store.read(runId);
@@ -315,7 +322,7 @@ export async function runEvaluation(root, args, opts = {}) {
     const policy = parseInput(readFileSync(resolve(file), "utf8"));
     const initial = freezeAuthorization({ ...policy, version: 1, run_id: runId, mode: "evaluation", source_sha: manifest.base_sha,
       lead_actor: await github.viewerLogin(), scope: { description: policy?.scope?.description,
-        snapshot: evaluationScopeSnapshot(manifest) } }, { now: prior?.state.authorization.created_at || opts.now || new Date().toISOString() });
+        snapshot: evaluationScopeSnapshot(manifest) } }, { now: prior?.state.authorization.created_at || now() });
     if (initial.authorization.providers.evaluator !== "codex") throw new Error("this evaluation transport supports Codex Cloud evaluators only; no provider substitution was made");
     const result = prior ? { written: false, current: prior } : await store.compareAndSwap(runId, null, initial);
     if (!result.current || result.current.state.authorization_digest !== initial.authorization_digest) {
@@ -324,7 +331,7 @@ export async function runEvaluation(root, args, opts = {}) {
     manifest.authorization = { digest: initial.authorization_digest, ref: result.current.ref, lead_actor: initial.authorization.lead_actor };
     writeRun(root, manifest);
     return { action, run_id: runId, authorization: manifest.authorization, duplicate: !result.written, limits: authorizationStatus(result.current.state),
-      continuation: continuationStatus(result.current.state, { now: Date.parse(opts.now || new Date().toISOString()) }) };
+      continuation: continuationStatus(result.current.state, { now: Date.parse(now()) }) };
   }
   if (action === "observe") {
     const store = authorityStore();
@@ -334,7 +341,7 @@ export async function runEvaluation(root, args, opts = {}) {
     const observations = [];
     let cacheChanged = false;
     for (const reservation of prior.state.reservations) {
-      if (!reservation.receipt) { observations.push({ key: reservation.key, state: "reserved_without_receipt" }); continue; }
+      if (!reservation.receipt) { observations.push({ key: reservation.key, state: reservation.state === "not_submitted" ? "not_submitted" : "reserved_without_receipt" }); continue; }
       if (reservation.provider !== "codex") { observations.push({ key: reservation.key, state: "observation_failed", error_code: "unsupported_observation_provider" }); continue; }
       const observation = observeExecution(reservation.receipt, manifest.environment_id, opts);
       await mutateAuthorization(store, runId, (state) => ({ state: recordLaunchObservation(state, reservation.key, observation) }));
@@ -364,7 +371,7 @@ export async function runEvaluation(root, args, opts = {}) {
     const observation = observeExecution(receipt, manifest.environment_id, opts);
     const result = await mutateAuthorization(store, runId, (state) => ({ state: reconcileLaunchReceipt(state, key, {
       actor: snapshot.state.authorization.lead_actor, receipt, observation, reason: value(args, "--reason"),
-      confirm: flag(args, "--confirm"), now: opts.now || new Date().toISOString(),
+      confirm: flag(args, "--confirm"), now: now(),
     }) }));
     return { action, run_id: runId, launch_key: key, receipt, observation, limits: authorizationStatus(result.state) };
   }
@@ -379,7 +386,7 @@ export async function runEvaluation(root, args, opts = {}) {
     const authorized = await store.read(runId);
     if (!authorized) throw new Error("evaluation requires protected authorization before launch; use eval authorize");
     await verifyAuthority(authorized.state);
-    const continuation = continuationStatus(authorized.state, { now: Date.parse(opts.now || new Date().toISOString()) });
+    const continuation = continuationStatus(authorized.state, { now: Date.parse(now()) });
     if (!continuation.launch_ready) return { action, run_id: runId, state: "awaiting_continuation", launched: [], continuation };
     const modelPolicy = qualifyModelPreference({ provider: "codex", preference: roleModelPreference(authorized.state.authorization.model_preferences, "evaluator", opts.modelPreference) });
     const wave = value(args, "--wave");
@@ -395,19 +402,21 @@ export async function runEvaluation(root, args, opts = {}) {
         key, role: "evaluator", provider: "codex", expected_head: manifest.base_sha, assignment: assignment.id,
         environment_id: manifest.environment_id, prompt_digest: authorizationDigest(prompt),
         model_policy: modelPolicy,
-      }, { owner, now: opts.now || new Date().toISOString() }));
+      }, { owner, now: now() }));
       if (!reservation.reserved) {
         assignment.receipt = reservation.reservation.receipt;
         assignment.state = reservation.reservation.state;
         launched.push({ id: assignment.id, skipped: true, state: assignment.state, receipt: assignment.receipt });
         writeRun(root, manifest); continue;
       }
+      let submissionAttempted = false;
       try {
         const currentAuthority = (await store.read(runId)).state;
-        if (!continuationStatus(currentAuthority, { now: Date.parse(opts.now || new Date().toISOString()) }).launch_ready) throw new Error("desktop continuation paused or expired before submission");
-        if (!authorizationStatus(currentAuthority, { now: Date.parse(opts.now || new Date().toISOString()) }).launch_window_open) {
+        if (!continuationStatus(currentAuthority, { now: Date.parse(now()) }).launch_ready) throw new Error("desktop continuation paused or expired before submission");
+        if (!authorizationStatus(currentAuthority, { now: Date.parse(now()) }).launch_window_open) {
           throw new Error("launch deadline passed after reservation");
         }
+        submissionAttempted = true;
         const launchedReceipt = await (opts.launchCloud || launchCodexCloud)({ environmentId: manifest.environment_id,
           branch: manifest.base_sha, attempts: 1, prompt });
         const receipt = { ...launchedReceipt, model_policy: modelPolicy };
@@ -417,8 +426,10 @@ export async function runEvaluation(root, args, opts = {}) {
         assignment.receipt = receipt; assignment.state = "launched"; launched.push({ id: assignment.id, receipt });
         writeRun(root, manifest);
       } catch {
-        try { await mutateAuthorization(store, runId, (state) => ({ state: recordLaunchOutcome(state, key, { owner, ambiguous: true }) })); }
+        try { await mutateAuthorization(store, runId, (state) => ({ state: submissionAttempted
+          ? recordLaunchOutcome(state, key, { owner, ambiguous: true }) : recordLaunchNotSubmitted(state, key, { owner }) })); }
         catch { /* The durable reservation itself still consumes capacity. */ }
+        if (!submissionAttempted) throw new Error(`evaluation launch ${key} stopped before provider submission; its spent reservation is retained. No provider receipt exists to reconcile`);
         throw new Error(`evaluation submission ${key} is unresolved; its protected reservation consumes capacity. Reconcile the exact receipt; do not retry the provider submission`);
       }
     }

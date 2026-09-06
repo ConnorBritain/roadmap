@@ -2,8 +2,8 @@
 
 Status: implemented and fixture-tested; live Pidgeon qualification is still pending. This
 runbook describes the evaluation conductor, not automatic merging or product implementation.
-The shared authority/review primitives are reusable, but integrating bounded authority into
-the existing implementation entrypoints is a remaining program dependency.
+The shared authority/review primitives also support opt-in bounded implementation runs;
+legacy implementation runs remain readable without gaining verified authorization retroactively.
 
 ## Prepare once
 
@@ -85,6 +85,10 @@ roadmap gauntlet eval collect --run <id> --assignment <assignment> --apply
 Launch does not require repeated human approval within frozen authority. Reservations are
 atomically recorded in GitHub before submission; a concurrent loser cannot spend another task.
 Ambiguous responses and abandoned pre-submit reservations consume capacity until reconciled.
+If the reserving conductor knows it stopped before calling the provider, it records
+`not_submitted`: the submission budget stays spent, concurrency is released, and no provider
+receipt is expected. That exact launch key cannot be retried. A lost conductor cannot infer
+this outcome from a missing receipt, and an ambiguous submission cannot be relabelled this way.
 Never recover them by deleting local files and retrying the provider. Every receipt uses its
 exact task ID/URL; never associate tasks by recency.
 

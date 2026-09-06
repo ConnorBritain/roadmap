@@ -8,7 +8,7 @@ const SHA = /^[a-f0-9]{40}$/;
 const ID = /^[a-z0-9][a-z0-9_-]{2,159}$/;
 const ROLE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const ACTIVE = new Set(["reserved", "submitted", "ambiguous"]);
-const TERMINAL = new Set(["completed", "failed", "cancelled"]);
+const TERMINAL = new Set(["completed", "failed", "cancelled", "not_submitted"]);
 const ROLES = new Set(["implementation", "evaluator", "critic", "repair"]);
 const PROVIDERS = new Set(["codex", "claude"]);
 
@@ -98,6 +98,8 @@ export function assertAuthorizationTransition(previous, next) {
       required(current[key] === prior[key], "reservation identity is immutable");
     }
     if (prior.receipt) required(authorizationDigest(current.receipt) === authorizationDigest(prior.receipt), "receipt cannot be removed or replaced");
+    if (current.state === "not_submitted") required(["reserved", "not_submitted"].includes(prior.state) && !prior.receipt,
+      "cannot claim no submission after an ambiguous or submitted outcome");
     if (TERMINAL.has(prior.state)) required(current.state === prior.state, "terminal reservations cannot be reset");
     if (prior.state === "submitted") required(current.state === "submitted" || TERMINAL.has(current.state), "submitted reservations cannot be reset");
   }
@@ -161,6 +163,18 @@ export function recordLaunchOutcome(state, key, { owner, receipt = null, ambiguo
   return next;
 }
 
+export function recordLaunchNotSubmitted(state, key, { owner, now = new Date().toISOString() } = {}) {
+  assertAuthorizationState(state);
+  const next = structuredClone(state), reservation = next.reservations.find((r) => r.key === key);
+  required(reservation?.owner === owner && reservation.state === "reserved" && !reservation.receipt,
+    "only the reserving conductor can attest no submission, before any ambiguous or submitted outcome");
+  required(date(now), "outcome timestamp required");
+  reservation.state = "not_submitted"; reservation.updated_at = now;
+  const event = { kind: "submission_not_attempted", key, owner };
+  next.events.push({ ...event, fingerprint: authorizationDigest(event), observed_at: now });
+  return next;
+}
+
 export function recordLaunchObservation(state, key, observation, { now = new Date().toISOString() } = {}) {
   assertAuthorizationState(state);
   const next = structuredClone(state); const r = next.reservations.find((entry) => entry.key === key);
@@ -173,7 +187,7 @@ export function recordLaunchObservation(state, key, observation, { now = new Dat
   r.observation = structuredClone(observation); r.observed_at = now;
   // Delayed/conflicting provider snapshots are evidence, not permission to
   // rewrite terminal accounting or consume/release capacity a second time.
-  if (TERMINAL.has(observation.state) && !TERMINAL.has(r.state)) r.state = observation.state;
+  if (["completed", "failed", "cancelled"].includes(observation.state) && !TERMINAL.has(r.state)) r.state = observation.state;
   return next;
 }
 

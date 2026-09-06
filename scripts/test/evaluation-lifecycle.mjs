@@ -43,6 +43,58 @@ async function fixture() {
 }
 
 export function registerEvaluationLifecycleTests(test) {
+  test("PR-backed recovery rejects malformed committed manifests before writing local state", async () => {
+    for (const assignments of [null, "not-an-array", [null]]) {
+      const r = await fixture();
+      try {
+        await r.action("attach", "--pr", "42", "--confirm");
+        const broken = parse(readFileSync(r.manifestPath, "utf8")); broken.assignments = assignments;
+        writeFileSync(r.manifestPath, stringify(broken));
+        git(r.root, ["add", r.manifestPath]); git(r.root, ["commit", "-qm", "malformed recovery fixture"]);
+        r.pr.currentHead = git(r.root, ["rev-parse", "HEAD"]); unlinkSync(r.manifestPath);
+        await assert.rejects(() => r.action("recover", "--confirm"), /assignments/);
+        assert.equal(existsSync(r.manifestPath), false);
+        assert.equal((await r.store.read()).state.reservations.length, 0);
+      } finally { rmSync(r.root, { recursive: true, force: true }); }
+    }
+  });
+  test("PR-backed recovery adopts only normalized committed assignments", async () => {
+    const r = await fixture();
+    try {
+      await r.action("attach", "--pr", "42", "--confirm");
+      const prior = parse(readFileSync(r.manifestPath, "utf8")); prior.assignments[0].unexpected_field = "discarded";
+      writeFileSync(r.manifestPath, stringify(prior)); git(r.root, ["add", r.manifestPath]);
+      git(r.root, ["commit", "-qm", "extra recovery fixture metadata"]);
+      r.pr.currentHead = git(r.root, ["rev-parse", "HEAD"]); unlinkSync(r.manifestPath);
+      await r.action("recover", "--confirm");
+      assert.equal(parse(readFileSync(r.manifestPath, "utf8")).assignments[0].unexpected_field, undefined);
+    } finally { rmSync(r.root, { recursive: true, force: true }); }
+  });
+  test("a deadline crossed after reservation records no submission and never invents a provider receipt", async () => {
+    const r = await fixture();
+    try {
+      let clock = r.opts.now;
+      r.opts.now = () => clock;
+      const initial = structuredClone(r.state);
+      initial.authorization.limits.launch_deadline = "2026-09-05T10:01:00Z";
+      initial.authorization_digest = authorizationDigest(initial.authorization);
+      r.store = memoryAuthorityStore(initial); r.opts.authorityStore = r.store;
+      const original = r.store.compareAndSwap;
+      r.store.compareAndSwap = async (...args) => {
+        const result = await original(...args);
+        if (result.current.state.reservations.length) clock = "2026-09-05T10:02:00Z";
+        return result;
+      };
+      await assert.rejects(() => r.action("launch", "--wave", "wave-one"), /before provider submission/);
+      assert.equal(r.prompts.length, 0);
+      const state = (await r.store.read()).state;
+      assert.equal(state.reservations.length, 1); assert.equal(state.reservations[0].state, "not_submitted");
+      assert.equal(state.reservations[0].receipt, null);
+      const status = await r.action("status");
+      assert.equal(status.limits.submissions_used, 1); assert.equal(status.limits.active, 0);
+      assert.equal(status.executions[0].observation.state, "not_submitted");
+    } finally { rmSync(r.root, { recursive: true, force: true }); }
+  });
   test("strict unsupported evaluator settings fail before reserving or submitting", async () => {
     const r = await fixture();
     try {

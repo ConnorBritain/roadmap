@@ -36,7 +36,7 @@ export function evaluationReviewStatus(state, pr, { corpusDigest = null } = {}) 
   }
   const attestations = reconstructLaunchesFromComments({ run, comments: pr.comments || [] });
   const missingAttestations = [];
-  for (const reservation of state.reservations.filter((r) => r.role === "critic")) {
+  for (const reservation of state.reservations.filter((r) => r.role === "critic" && r.state !== "not_submitted")) {
     const request = reservation.request;
     if (corpusDigest && request.corpus_digest !== corpusDigest) continue;
     const attestation = attestations.find((launch) => launch.role === "critic" && launch.expected_head === reservation.expected_head
@@ -49,16 +49,19 @@ export function evaluationReviewStatus(state, pr, { corpusDigest = null } = {}) 
   const roles = state.authorization.required_review_roles.map((role) => {
     const valid = results.find((r) => r.criticRole === role && r.valid);
     const candidate = results.find((r) => r.criticRole === role && r.invalidReason === "unacknowledged_result");
-    const inFlight = state.reservations.find((r) => r.role === "critic" && r.expected_head === pr.currentHead && r.request.critic_role === role
+    const inFlight = state.reservations.find((r) => r.role === "critic" && r.state !== "not_submitted" && r.expected_head === pr.currentHead && r.request.critic_role === role
       && (!corpusDigest || r.request.corpus_digest === corpusDigest));
+    const notSubmitted = state.reservations.some((r) => r.role === "critic" && r.state === "not_submitted" && r.expected_head === pr.currentHead
+      && r.request.critic_role === role && (!corpusDigest || r.request.corpus_digest === corpusDigest));
     return { role, verdict: valid?.verdict || null, acknowledged: !!valid, comment_url: (valid || candidate)?.comment.url || null,
-      awaiting_ack: !!candidate, launched: !!inFlight };
+      awaiting_ack: !!candidate, launched: !!inFlight, not_submitted: notSubmitted };
   });
   const pass = missingAttestations.length === 0 && roles.every((role) => role.verdict === "PASS");
   const next = roles.find((role) => role.verdict !== "PASS");
   return { run, results, roles, pass, missing_attestations: missingAttestations,
     next_role: next?.role || null,
-    state: missingAttestations.length ? "launch_attestation_missing" : roles.some((role) => role.awaiting_ack) ? "awaiting_lead_ack"
+    state: roles.some((role) => role.not_submitted && !role.acknowledged) ? "launch_not_submitted"
+      : missingAttestations.length ? "launch_attestation_missing" : roles.some((role) => role.awaiting_ack) ? "awaiting_lead_ack"
       : roles.some((role) => role.verdict === "HUMAN_REQUIRED") ? "human_required"
       : roles.some((role) => role.verdict === "REVISE") ? "needs_repair"
       : pass ? "passed_unsealed" : next?.launched ? "critic_in_flight" : "awaiting_critic" };

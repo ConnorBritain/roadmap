@@ -1024,7 +1024,7 @@ export async function runGauntletStatus(root, idOrKey, opts = {}) {
     executions: (observed.authority.snapshot?.state.reservations || []).map((reservation) => ({ key: reservation.key, role: reservation.role,
       receipt: reservation.receipt, state: reservation.state, model_policy: reservation.request.model_policy,
       observation: reservation.receipt ? observeAuthorizedExecution(reservation.receipt, reservation.request.environment_id, opts)
-        : { state: "reserved_without_receipt" } })),
+        : { state: reservation.state === "not_submitted" ? "not_submitted" : "reserved_without_receipt" } })),
     run: publicRun(run),
     pr: pr ? { number: pr.number, url: pr.url, title: pr.title, state: pr.state,
       headRefName: pr.headRefName, currentHead: pr.currentHead, checks: pr.checks } : null,
@@ -1037,7 +1037,7 @@ export async function runGauntletObserve(root, idOrKey, opts = {}) {
   await assertFrozenLeadActor(github, run);
   const observations = [];
   for (const reservation of authority.snapshot.state.reservations) {
-    if (!reservation.receipt) { observations.push({ key: reservation.key, state: "reserved_without_receipt" }); continue; }
+    if (!reservation.receipt) { observations.push({ key: reservation.key, state: reservation.state === "not_submitted" ? "not_submitted" : "reserved_without_receipt" }); continue; }
     const observation = observeAuthorizedExecution(reservation.receipt, reservation.request.environment_id, opts);
     await mutateAuthorization(authority.store, run.run_id, (state) => ({ state: recordLaunchObservation(state, reservation.key, observation) }));
     observations.push({ key: reservation.key, ...observation });

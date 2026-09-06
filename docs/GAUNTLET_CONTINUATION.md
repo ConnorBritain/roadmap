@@ -179,3 +179,18 @@ workers. Never use unsafe claims to bypass qualification.
 
 The dirty primary Pidgeon checkout and open PR #2257 are preserved. Live qualification,
 scheduled-wake demonstration, evidence PR and closeout remain incomplete.
+
+### Subsequent approval and scheduled wake
+
+The owner approved the narrow protection policy. Pidgeon ruleset 22385299 now protects
+`refs/heads/roadmap-gauntlet-locks/*` with creation/update/deletion/non-fast-forward rules
+and repository-administrator bypass only; no worker App bypass was added. Effective matching
+was checked read-only. This is configuration verification, not a destructive worker test.
+The existing desktop heartbeat was resumed through the supported scheduling tool.
+
+The lead received an actual scheduled wake at `2026-09-06T12:51:54.747Z` for
+`trustworthy-gauntlet-lead-continuation` and resumed the PR #53 review fixes. This demonstrates
+scheduled task continuation, not a Cloud completion event, a verified model setting or a live
+qualification PASS. The frozen Pidgeon source is `363e147bb75833f1c279aad76e20673e2865d0ed`;
+the isolated lead run is `dcm-qualification-2026-09-06`. Live submissions and their restart
+recovery still require qualification after the corrected candidate passes its checks.

@@ -1,7 +1,7 @@
 // Optional bounded execution contract for implementation Gauntlets. Legacy
 // runs remain readable; they cannot acquire a fresh budget after launching.
 import { randomUUID } from "node:crypto";
-import { freezeAuthorization, authorizationDigest, reserveAuthorizedLaunch, recordLaunchOutcome, authorizationStatus, continuationStatus } from "./gauntlet-authorization.mjs";
+import { freezeAuthorization, authorizationDigest, reserveAuthorizedLaunch, recordLaunchOutcome, recordLaunchNotSubmitted, authorizationStatus, continuationStatus } from "./gauntlet-authorization.mjs";
 import { githubAuthorizationStore, mutateAuthorization } from "./gauntlet-authorization-io.mjs";
 import { gauntletProtocolDigest } from "./gauntlet-core.mjs";
 import { qualifyModelPreference, roleModelPreference } from "./model-policy.mjs";
@@ -64,17 +64,21 @@ export async function reserveImplementationCapacity(root, run, request, github, 
 export async function submitWithImplementationCapacity(reservation, submit, { now = Date.now() } = {}) {
   if (!reservation) return submit();
   if (!reservation.reserved) throw new Error("protected implementation reservation is already occupied; do not submit again");
+  let submissionAttempted = false;
   try {
     const state = (await reservation.store.read(reservation.runId)).state;
     if (!authorizationStatus(state, { now }).launch_window_open) throw new Error("launch window expired");
     if (!continuationStatus(state, { now }).launch_ready) throw new Error("desktop continuation paused or expired before submission");
+    submissionAttempted = true;
     const receipt = { ...await submit(), model_policy: reservation.modelPolicy };
     await mutateAuthorization(reservation.store, reservation.runId, (current) => ({ state: recordLaunchOutcome(current,
       reservation.key, { owner: reservation.owner, receipt }) }));
     return receipt;
   } catch {
-    try { await mutateAuthorization(reservation.store, reservation.runId, (current) => ({ state: recordLaunchOutcome(current,
-      reservation.key, { owner: reservation.owner, ambiguous: true }) })); } catch { /* protected slot remains occupied */ }
+    try { await mutateAuthorization(reservation.store, reservation.runId, (current) => ({ state: submissionAttempted
+      ? recordLaunchOutcome(current, reservation.key, { owner: reservation.owner, ambiguous: true })
+      : recordLaunchNotSubmitted(current, reservation.key, { owner: reservation.owner }) })); } catch { /* protected slot remains occupied */ }
+    if (!submissionAttempted) throw new Error("bounded implementation stopped before provider submission; spent reservation retained, no provider receipt exists to reconcile");
     throw new Error("bounded implementation submission is unresolved; inspect the exact receipt, never retry blindly");
   }
 }
