@@ -1506,7 +1506,7 @@ export function formatGauntletLaunchResult(result, role) {
 
 // ── CLI ──────────────────────────────────────────────────────────────────────
 const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-if (isMain) {
+async function main() {
   const args = process.argv.slice(2);
   if (args[0] === "eval") {
     const result = spawnSync("node", [resolve(new URL("./evaluate.mjs", import.meta.url).pathname), ...args.slice(1)], {
@@ -1605,3 +1605,11 @@ if (isMain) {
     process.exit(1);
   }
 }
+
+// Portfolio discovery dynamically imports modules that use this module's
+// exported actuators. Let this module finish evaluation before awaiting that
+// discovery; top-level await here otherwise creates an import-cycle deadlock.
+if (isMain) main().catch((error) => {
+  console.error(`roadmap gauntlet: ${error.message}`);
+  process.exitCode = 1;
+});

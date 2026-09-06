@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { rmSync, unlinkSync, existsSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { authorizationFixture, memoryAuthorityStore } from "./authorization.mjs";
 import { evaluationRepositoryFixture } from "./evaluation.mjs";
 import { evaluationScopeSnapshot } from "../lib/evaluation-core.mjs";
@@ -7,6 +9,21 @@ import { authorizationDigest } from "../lib/gauntlet-authorization.mjs";
 import { runGauntletPortfolio, authorizationReport, evaluationSafeActions } from "../lib/gauntlet-portfolio.mjs";
 
 export function registerPortfolioTests(test) {
+  test("portfolio CLI entrypoint completes dynamic discovery without top-level-await deadlock", async () => {
+    const r = await evaluationRepositoryFixture();
+    try {
+      // Deliberately unavailable external commands: no GitHub/provider IO in
+      // this subprocess test. Discovery must return honest partial JSON.
+      const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "path"));
+      env.PATH = "";
+      const result = spawnSync(process.execPath, [fileURLToPath(new URL("../gauntlet.mjs", import.meta.url)), "status", "--all", "--json"],
+        { cwd: r.root, env, encoding: "utf8", timeout: 15000 });
+      assert.equal(result.status, 0, result.stderr);
+      const status = JSON.parse(result.stdout);
+      assert.equal(status.read_only, true); assert.equal(status.observation_complete, false);
+      assert.ok(status.discovery_failures.length > 0);
+    } finally { rmSync(r.root, { recursive: true, force: true }); }
+  });
   test("portfolio recovers protected evaluation identity without writing a missing local manifest", async () => {
     const r = await evaluationRepositoryFixture();
     try {
