@@ -109,6 +109,13 @@ export function registerEvaluationTests(test) {
       assert.ok(!JSON.stringify(result).includes(record));
     }
   });
+  test("apostrophes, short values and multiline patient scalars cannot evade scanning", () => {
+    for (const record of ["patient_name: A'Bcd", "patient_name: X", "patient_name: |\n  SYNTHETIC PERSON", "patient_name: >-\n  SYNTHETIC\n  PERSON", "patient_name:\n  SYNTHETIC PERSON"]) {
+      const f = fixture(); f.files["REPORT.md"] += "\n" + record + "\n";
+      const result = validate(f); code(result, "prohibited_data");
+      assert.ok(!JSON.stringify(result).includes(record));
+    }
+  });
   test("evidence source must be a regular frozen-tree file with valid line bounds", () => {
     for (const found of [null, { type: "tree", mode: "040000" }, { type: "blob", mode: "120000" }]) {
       code(validate(fixture(), { source: () => found }), "source_not_regular_file_at_baseline");

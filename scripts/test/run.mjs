@@ -74,7 +74,7 @@ import { formatGauntletLaunchResult, formatGauntletStatus, githubClient,
   runGauntletAcknowledge, runGauntletCancel, runGauntletCritic, runGauntletRepair,
   runGauntletStart, runGauntletStatus, runGauntletReconcile } from "../gauntlet.mjs";
 import { freezeImplementationAuthority, reserveImplementationCapacity } from "../lib/implementation-authorization.mjs";
-import { recordLaunchOutcome, recordContinuation } from "../lib/gauntlet-authorization.mjs";
+import { recordLaunchOutcome, recordLaunchNotSubmitted, recordContinuation } from "../lib/gauntlet-authorization.mjs";
 import { mutateAuthorization } from "../lib/gauntlet-authorization-io.mjs";
 import { loadGraph } from "../lib/graph.mjs";
 import { runEvaluation } from "../evaluate.mjs";
@@ -5863,6 +5863,31 @@ function gauntletLifecycleRepo() {
   if (commit.status !== 0) throw new Error(`fixture git commit failed: ${commit.stderr}`);
   return root;
 }
+
+test("ledgerless implementation recovery preserves known pre-provider stops", async () => {
+  const root = gauntletLifecycleRepo(), { run } = gauntletFixture();
+  try {
+    Object.assign(run, { implementation_provider: "codex", critic_provider: "codex", repair_provider: "codex", environment_id: "fixture-env",
+      created_at: "2026-08-08T12:00:00Z", updated_at: "2026-08-08T12:00:00Z" });
+    const github = { assertAvailable: () => true, viewerLogin: () => run.lead_actor, findPrByRun: () => null };
+    let observations = 0;
+    const opts = { github, authorityStore: memoryAuthorityStore(null), now: () => new Date("2026-08-08T12:01:00Z"),
+      observeCloud: () => { observations++; throw new Error("no task exists"); } };
+    await freezeImplementationAuthority(root, run, { required_review_roles: ["critic"], verification_commands: [],
+      limits: { submissions: 3, concurrency: 2, repairs: 2, attempts_per_submission: 1, launch_deadline: "2026-08-11T12:00:00Z" } }, github, opts);
+    await mutateAuthorization(opts.authorityStore, run.run_id, (state) => ({ state: recordContinuation(state,
+      continuationFixtureReceipt("2026-08-08T12:00:00Z"), { actor: run.lead_actor, confirm: true, now: "2026-08-08T12:00:00Z" }) }));
+    const key = `${run.run_id}:implementation`;
+    const capacity = await reserveImplementationCapacity(root, run, { key, role: "implementation", provider: "codex", expected_head: run.base_sha, round: 0 }, github, opts);
+    await mutateAuthorization(opts.authorityStore, run.run_id, (state) => ({ state: recordLaunchNotSubmitted(state, key, { owner: capacity.owner }) }));
+    const recovered = await runGauntletStatus(root, run.run_id, opts);
+    ok(recovered.state !== "launch_ambiguous");
+    eq(recovered.run.implementationExecution.status, "not_submitted");
+    eq(recovered.executions[0].observation.state, "not_submitted");
+    eq([recovered.limits.submissions_used, recovered.limits.active, observations], [1, 0, 0]);
+    eq(existsSync(join(root, ".roadmap-gauntlet-state.json")), false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 test("implementation receipt reconciliation survives lost local state without resubmission or budget reset", async () => {
   const root = gauntletLifecycleRepo(), { run } = gauntletFixture();

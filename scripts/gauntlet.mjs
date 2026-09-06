@@ -570,7 +570,7 @@ async function observeGauntlet(root, idOrKey, opts = {}) {
       run.launches = durable.state.reservations.map((reservation) => ({ ...reservation.request,
         key: reservation.request.key.replace(/:attempt:\d+$/, ""),
         nonce_sha256: reservation.request.nonce_sha256,
-        status: reservation.receipt ? "launched" : "ambiguous",
+        status: reservation.state === "not_submitted" ? "not_submitted" : reservation.receipt ? "launched" : "ambiguous",
         external_id: reservation.receipt?.external_id, external_url: reservation.receipt?.external_url,
         provider_metadata: reservation.receipt?.provider_metadata, model_policy: reservation.request.model_policy,
       }));
