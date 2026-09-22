@@ -42,7 +42,7 @@ pis:
         priority: {tier: P0, weight: 90, reason: core must price natively before estimate-core moves into packages/core}
       - id: s2
         title: npm workspaces — packages/core, exec-engineering, exec-general, cli
-        status: next
+        status: complete
         invoke: workspaces
         what: Create the four workspace packages with package.json + READMEs; root bin still works; decide the tarball `files` deliberately.
         deps: [s1]
@@ -56,7 +56,7 @@ pis:
         read_order: ["docs/ARCHITECTURE.md (target layout)", "scripts/test/packed.mjs"]
       - id: s3
         title: Extract pure core modules and tests into packages/core with shims
-        status: scheduled
+        status: next
         invoke: core-extract
         what: Move the C-verdict modules and their test sections; re-export from scripts/lib paths; normalize hardcoded docs/roadmap/roadmap.yaml literals to REL.
         deps: [s2]

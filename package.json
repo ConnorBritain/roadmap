@@ -34,6 +34,9 @@
   "publishConfig": {
     "access": "public"
   },
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "cli": "node scripts/cli.mjs",
     "plan": "node scripts/cli.mjs plan",
@@ -47,9 +50,14 @@
     "watch": "node scripts/watch-prs.mjs",
     "test": "node scripts/test/run.mjs",
     "check:boundaries": "node scripts/check-boundaries.mjs",
+    "pack:all": "node -e \"require('fs').mkdirSync('dist',{recursive:true})\" && npm pack --workspaces --include-workspace-root --pack-destination dist",
     "test:packed": "node scripts/test/packed.mjs"
   },
   "dependencies": {
+    "@connorbritain/roadmap-cli": "0.7.2",
+    "@connorbritain/roadmap-core": "0.7.2",
+    "@connorbritain/roadmap-exec-engineering": "0.7.2",
+    "@connorbritain/roadmap-exec-general": "0.7.2",
     "yaml": "^2.5.0"
   }
 }

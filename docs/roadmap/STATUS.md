@@ -11,17 +11,19 @@ design: [`../ARCHITECTURE.md`](../ARCHITECTURE.md) · narrative: [`../../ROADMAP
 Step 1 (plan) landed in `729e343`. Slice 1 `estimate-native` is complete: the agent-time model is
 ported to `scripts/lib/estimator-core.mjs`, `roadmap estimate` prices natively (no Python), the
 history stays agent-time's `history.jsonl` format, and an external `estimator.py` is used only when
-`meta.estimation.engine` / `$AGENT_TIME_ENGINE` is set. Next is `workspaces`.
+`meta.estimation.engine` / `$AGENT_TIME_ENGINE` is set. Slice 2 `workspaces` is complete: four
+workspace packages scaffolded, the root depends on them by exact version, `npm run pack:all` +
+`npm run test:packed -- dist` install all five tarballs together. Next is `core-extract`.
 
-Next command: `roadmap show workspaces`.
+Next command: `roadmap show core-extract`.
 
 ## Slices
 
 | # | Slice | Status | Commit | Note |
 |---|---|---|---|---|
-| 1 | `estimate-native` | complete | (this branch, slice 1 commit) | 462 tests; agent-time's test suite ported |
-| 2 | `workspaces` | next | — | |
-| 3 | `core-extract` | scheduled | — | shims at old paths |
+| 1 | `estimate-native` | complete | `682b575` | 462 tests; agent-time's test suite ported |
+| 2 | `workspaces` | complete | (this branch, slice 2 commit) | packages scaffolded; packed check covers all tarballs |
+| 3 | `core-extract` | next | — | shims at old paths |
 | 4 | `gauntlet-split` | scheduled | — | protocol never learns it's GitHub |
 | 5 | `exec-engineering` | scheduled | — | |
 | 6 | `profile-loader` | scheduled | — | single `meta.profile` reader |

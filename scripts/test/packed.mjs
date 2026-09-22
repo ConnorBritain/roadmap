@@ -1,13 +1,20 @@
-// Exercise the installed tarball, not source-tree imports. Never launches cloud work.
+// Exercise the installed tarballs, not source-tree imports. Never launches cloud work.
+// Usage: node scripts/test/packed.mjs <dist-dir | root.tgz [workspace.tgz ...]>
+// The root package depends on its workspace packages, so every tarball `npm run pack:all` produces
+// must be installed together; a directory argument means "every .tgz in it".
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, readdirSync, statSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { npmCommand } from "./npm-command.mjs";
 
-const archive = resolve(process.argv[2] || "");
-assert.ok(archive.endsWith(".tgz"), "pass the candidate npm tarball");
+const given = process.argv.slice(2).map((a) => resolve(a));
+assert.ok(given.length, "pass the dist directory or the candidate npm tarballs");
+const archives = given.flatMap((p) => (existsSync(p) && statSync(p).isDirectory()) ? readdirSync(p).filter((f) => f.endsWith(".tgz")).map((f) => join(p, f)) : [p]);
+assert.ok(archives.length && archives.every((a) => a.endsWith(".tgz")), "every argument must be a .tgz (or a directory of them)");
+const WORKSPACE_PACKAGES = ["roadmap-core", "roadmap-exec-engineering", "roadmap-exec-general", "roadmap-cli"];
+assert.ok(archives.some((a) => /connorbritain-roadmap-\d/.test(a)), "the root @connorbritain/roadmap tarball is required");
 const root = mkdtempSync(join(tmpdir(), "roadmap-packed-smoke-"));
 function execute(command, args, input) {
   const result = spawnSync(command, args, { cwd: root, input, encoding: "utf8", timeout: 120000, maxBuffer: 8 * 1024 * 1024 });
@@ -16,9 +23,14 @@ function execute(command, args, input) {
 }
 try {
   writeFileSync(join(root, "package.json"), JSON.stringify({ private: true }));
-  const npm = npmCommand(["install", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", archive]);
+  const npm = npmCommand(["install", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", ...archives]);
   execute(npm.command, npm.args);
   const installed = join(root, "node_modules", "@connorbritain", "roadmap");
+  for (const name of WORKSPACE_PACKAGES) {
+    const pkg = join(root, "node_modules", "@connorbritain", name);
+    assert.ok(existsSync(join(pkg, "package.json")), `${name} installed alongside the root package (its tarball must be passed too)`);
+    assert.ok(!statSync(pkg).isSymbolicLink(), `${name} is a real install, not a workspace link`);
+  }
   const cli = join(installed, "scripts", "cli.mjs");
   const mcp = join(installed, "scripts", "mcp.mjs");
   mkdirSync(join(root, "docs", "roadmap"), { recursive: true });

@@ -1,0 +1,32 @@
+{
+  "name": "@connorbritain/roadmap-exec-engineering",
+  "description": "Engineering executors for roadmap: worktree-session + cloud-dispatch, the github-pr GauntletArtifact, ceilings, doctor, PR watch, providers, and the code-grepping scoper.",
+  "version": "0.7.2",
+  "type": "module",
+  "license": "MIT",
+  "author": "Connor England",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ConnorBritain/roadmap.git",
+    "directory": "packages/exec-engineering"
+  },
+  "engines": {
+    "node": ">=18.15"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "src/",
+    "index.mjs",
+    "README.md"
+  ],
+  "main": "index.mjs",
+  "exports": {
+    ".": "./index.mjs",
+    "./*": "./src/*"
+  },
+  "dependencies": {
+    "@connorbritain/roadmap-core": "0.7.2"
+  }
+}

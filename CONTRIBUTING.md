@@ -6,7 +6,15 @@
 npm ci
 npm test                      # 448+ pure tests, ~20 s, no network
 npm run validate              # this repo's own docs/roadmap/roadmap.yaml
-npm pack && npm run test:packed -- ./connorbritain-roadmap-*.tgz   # installed-tarball smoke
+npm run pack:all && npm run test:packed -- dist   # installed-tarball smoke: root + every workspace package
+```
+
+The repo is an npm-workspaces monorepo: `packages/core`, `packages/exec-engineering`,
+`packages/exec-general`, `packages/cli`. The root package `@connorbritain/roadmap` owns the
+`roadmap` bin and depends on the workspace packages by exact version, so `npm ci` links them and
+`npm run pack:all` produces one tarball per package plus the root.
+
+```bash
 ```
 
 ## Working agreements
