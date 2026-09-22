@@ -9,10 +9,6 @@ import { resolve, sep } from "node:path";
 
 const git = (root, ...a) => spawnSync("git", a, { cwd: root, encoding: "utf8" });
 
-// TODO(dedupe): hooks/session-start.mjs, scripts/watch-prs.mjs, and scripts/cleanup.mjs still carry
-// their own inline copies of these gatherers (pre-dating this module). Fold them onto this one home
-// in a follow-up so there's a single implementation. Tracked in the finishing-discipline backlog.
-
 // Merged PRs: [{ number, headRefName, title, body }]. [] on any failure. 5s cap.
 export function mergedPrs(root) {
   try {
@@ -26,12 +22,13 @@ export function mergedPrs(root) {
 // All PRs incl. open/draft with merge + check state:
 // [{ number, title, body, url, headRefName, headRefOid, state, isDraft,
 //    mergeStateStatus, statusCheckRollup, comments }].
-// null on failure (lets a caller distinguish "gh absent" from "zero PRs"). 5s cap.
-export function allPrs(root) {
+// null on failure (lets a caller distinguish "gh absent" from "zero PRs"). 5s cap by default; the
+// PR-watch monitor passes a longer timeout and a bigger buffer because it polls, it does not gate.
+export function allPrs(root, { timeout = 5000, maxBuffer = undefined } = {}) {
   try {
     const r = spawnSync("gh", ["pr", "list", "--state", "all", "--limit", "100",
       "--json", "number,title,body,url,headRefName,headRefOid,state,isDraft,mergeStateStatus,statusCheckRollup,comments"],
-      { cwd: root, encoding: "utf8", timeout: 5000 });
+      { cwd: root, encoding: "utf8", timeout, ...(maxBuffer ? { maxBuffer } : {}) });
     if (r.status !== 0) return null;
     return JSON.parse(r.stdout);
   } catch { return null; }

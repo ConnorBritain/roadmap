@@ -10,7 +10,7 @@
 import { writeFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import os from "node:os";
-import { join, resolve, sep } from "node:path";
+import { join, resolve } from "node:path";
 import { flatten, computeWaves, readyNodes, coherenceEnabled } from "@connorbritain/roadmap-core/graph.mjs";
 import { loadBacklog, mutateBacklog } from "@connorbritain/roadmap-core/store.mjs";
 import { backlogItemToNode, setItemFields } from "@connorbritain/roadmap-core/backlog-core.mjs";
@@ -22,7 +22,7 @@ import { terminalChoices } from "./wizard-core.mjs";
 import { readLocalConfig, resolveProfile, commandFor, launchDecisionForProfile } from "./assistant-core.mjs";
 import { engineeringPlanContext } from "./plan-engineering.mjs";
 import { engineeringScope } from "./scoper.mjs";
-import { worktrees } from "./external-state.mjs";
+import { worktrees, parseWorktrees } from "./external-state.mjs";
 
 // The lead pane's claude prompt (only with --lead-claude). It coordinates; it cannot see the
 // workers' context (separate processes) but observes their PRs/branches and merges.
@@ -388,21 +388,16 @@ export function pruneWorktrees(root, { remove = false, force = false, meta = {} 
   const wtRoot = resolve(meta.worktree_root || resolve(root, "..", "_worktrees"));
   git("fetch", remote, "--quiet");
   const porcelain = (git("worktree", "list", "--porcelain").stdout || "").trim();
-  const all = (porcelain ? porcelain.split(/\n\n+/) : []).map((b) => ({
-    path: (b.match(/^worktree (.+)$/m) || [])[1],
-    branch: (b.match(/^branch refs\/heads\/(.+)$/m) || [])[1] || null,
-  })).filter((w) => w.path);
   const mergedOut = git("branch", "--merged", `${remote}/${base}`, "--format=%(refname:short)").stdout || "";
   const merged = new Set(mergedOut.split("\n").map((x) => x.trim()).filter(Boolean));
-  const underRoot = (x) => { const rp = resolve(x); return rp === wtRoot || rp.startsWith(wtRoot + sep); };
-  const candidates = all.filter((w) => underRoot(w.path));
+  // One shared parser (external-state.parseWorktrees): the fanout's own worktrees, merged-flagged.
+  const candidates = parseWorktrees(porcelain, { mergedSet: merged, wtRoot });
   const lines = [];
   const out = { wtRoot, remote, base, plan: [], removed: [], kept: [], dry: !remove, lines, errors: [] };
   if (!candidates.length) { lines.push(`No fanout worktrees under ${wtRoot}.`); return out; }
   out.plan = candidates.map((w) => {
     const dirty = ((git("-C", w.path, "status", "--porcelain").stdout) || "").trim().length > 0;
-    const isMerged = w.branch ? merged.has(w.branch) : false;
-    return { ...w, dirty, isMerged, removable: isMerged && !dirty };
+    return { ...w, dirty, removable: w.isMerged && !dirty };
   });
   lines.push(`Fanout worktrees under ${wtRoot} (merged into ${remote}/${base}?):`);
   for (const p of out.plan) {

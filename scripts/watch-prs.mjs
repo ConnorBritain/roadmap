@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { findRepoRoot, REL } from "@connorbritain/roadmap-core/cli-core.mjs";
 import { loadGraph } from "@connorbritain/roadmap-core/graph.mjs";
 import { diffPrStates, belongsToRoadmapPr, checksOf, criticSignalOf } from "@connorbritain/roadmap-exec-engineering/pr-watch-core.mjs";
+import { allPrs } from "@connorbritain/roadmap-exec-engineering/external-state.mjs";
 
 const POLL_MS = Number(process.env.ROADMAP_WATCH_INTERVAL_MS || 30000);
 const log = (m) => process.stdout.write(m + "\n");
@@ -32,13 +33,8 @@ const ghAvailable = () => {
   catch { return false; }
 };
 
-function fetchPrs(root) {
-  const r = spawnSync("gh", ["pr", "list", "--state", "all", "--limit", "100",
-    "--json", "number,title,body,url,headRefName,headRefOid,state,isDraft,mergeStateStatus,statusCheckRollup,comments"],
-    { cwd: root, encoding: "utf8", timeout: 15000, maxBuffer: 64 * 1024 * 1024 });
-  if (r.status !== 0) return null;
-  try { return JSON.parse(r.stdout); } catch { return null; }
-}
+// One shared gatherer (external-state.allPrs): null when gh is absent/unauthed, [] when there are no PRs.
+const fetchPrs = (root) => allPrs(root, { timeout: 15000, maxBuffer: 64 * 1024 * 1024 });
 
 function snapshot(prs, graph) {
   const map = {};

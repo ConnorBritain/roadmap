@@ -5,7 +5,7 @@
 
 Use `roadmap show <name>` to orient on a menu entry; `roadmap plan` computes ready waves; `roadmap fan` prepares worktrees and can launch an explicitly configured assistant; `roadmap render` refreshes this file after merges. Claude slash skills are optional conveniences where installed.
 
-> **Backlog:** 2 open item(s) — erratic/follow-up work lives in [`docs/BACKLOG.md`](BACKLOG.md); capture with `/backlog` or `roadmap backlog add`, launch with `roadmap grab <id>`.
+> **Backlog:** 0 open item(s) — erratic/follow-up work lives in [`docs/BACKLOG.md`](BACKLOG.md); capture with `/backlog` or `roadmap backlog add`, launch with `roadmap grab <id>`.
 
 ## Ready now — wave map (cap 2)
 

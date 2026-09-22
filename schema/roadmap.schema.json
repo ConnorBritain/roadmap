@@ -4,283 +4,1023 @@
   "title": "roadmap roadmap.yaml",
   "description": "Canonical roadmap graph: PIs containing sprints, with dependency edges, file-ownership for two-wave detection, session estimates, gates, and per-sprint kickoff briefs. SLICES.md is generated from this file; do not edit the generated markdown.",
   "type": "object",
-  "required": ["meta", "pis"],
+  "required": [
+    "meta",
+    "pis"
+  ],
   "additionalProperties": false,
   "properties": {
     "meta": {
       "type": "object",
-      "required": ["schema_version", "program"],
+      "required": [
+        "schema_version",
+        "program"
+      ],
       "additionalProperties": false,
       "properties": {
-        "schema_version": { "const": 1 },
-        "program": { "type": "string", "description": "Active program label, e.g. Q3-PLATFORM" },
-        "profile": { "enum": ["engineering", "general"], "default": "engineering", "description": "The work profile: which executor package plans and conducts slices. engineering (default; absent = engineering, so existing files need no edit) = worktree sessions, cloud dispatch, GitHub-PR gauntlets, machine ceilings, code-grepping scoper. general = human / doc-agent executors, checklist gates, no ceilings, no touches required. Read in exactly one place (packages/cli/src/profile.mjs)." },
-        "north_star": { "type": "string", "description": "Path to the strategy / vision source of truth" },
-        "updated": { "type": "string", "description": "ISO date of last hand-edit" },
-        "default_gate": { "type": "string", "description": "Verification gate inherited by sprints whose gate is 'default' or interpolates {{default}}" },
-        "branch_convention": { "type": "string", "default": "{pi}/{sprint}" },
-        "worktree_root": { "type": "string", "description": "Parent dir for per-sprint worktrees; use a WSL/Linux-fs path, NOT a OneDrive-synced checkout" },
-        "worktree_gb": { "type": "number", "minimum": 0, "description": "Calibration knob for the disk ceiling: GB one worktree really costs (checkout + installs + build litter). Omitted → estimated from the tracked tree's size × 1.3" },
-        "terminal": { "enum": ["warp", "wt", "tmux", "iterm", "background", "print"], "default": "print", "description": "Default terminal adapter for /fanout launches" },
-        "default_concurrency": { "type": "integer", "minimum": 1, "default": 3 },
-        "worker_mode": { "enum": ["plan", "auto", "acceptEdits", "bypassPermissions"], "default": "plan", "description": "Default --permission-mode for launched worker + lead sessions; --worker-mode overrides. 'auto' = auto-approve tool/bash/MCP with safety checks (NOT a bypass); 'plan' = read-only research that gates edits behind plan approval." },
-        "agent_cmd": { "type": "string", "description": "Launch-command template for INTERACTIVE worker/lead sessions — swap the agent (e.g. a codex invocation). Tokens: {mode} = permission mode, {prompt} = the quoted kickoff prompt. Default: 'claude --permission-mode {mode} {prompt}'. Autonomous headless launches stay claude." },
-        "completed_window_days": { "type": "integer", "minimum": 1, "default": 14, "description": "How recently a sprint must have completed to appear in the Recently-completed table" },
-        "base_branch": { "type": "string", "default": "main", "description": "Branch worktrees are cut from + PR base" },
-        "remote": { "type": "string", "default": "origin", "description": "Git remote name for fetch + worktree base ref" },
-        "default_weight": { "enum": ["heavy", "medium", "light"], "description": "Weight assumed for a slice whose gate runner isn't recognized and that touches no code (default light)" },
+        "schema_version": {
+          "const": 1
+        },
+        "program": {
+          "type": "string",
+          "description": "Active program label, e.g. Q3-PLATFORM"
+        },
+        "profile": {
+          "enum": [
+            "engineering",
+            "general"
+          ],
+          "default": "engineering",
+          "description": "The work profile: which executor package plans and conducts slices. engineering (default; absent = engineering, so existing files need no edit) = worktree sessions, cloud dispatch, GitHub-PR gauntlets, machine ceilings, code-grepping scoper. general = human / doc-agent executors, checklist gates, no ceilings, no touches required. Read in exactly one place (packages/cli/src/profile.mjs)."
+        },
+        "north_star": {
+          "type": "string",
+          "description": "Path to the strategy / vision source of truth"
+        },
+        "updated": {
+          "type": "string",
+          "description": "ISO date of last hand-edit"
+        },
+        "default_gate": {
+          "type": "string",
+          "description": "Verification gate inherited by sprints whose gate is 'default' or interpolates {{default}}"
+        },
+        "branch_convention": {
+          "type": "string",
+          "default": "{pi}/{sprint}"
+        },
+        "worktree_root": {
+          "type": "string",
+          "description": "Parent dir for per-sprint worktrees; use a WSL/Linux-fs path, NOT a OneDrive-synced checkout"
+        },
+        "worktree_gb": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Calibration knob for the disk ceiling: GB one worktree really costs (checkout + installs + build litter). Omitted \u2192 estimated from the tracked tree's size \u00d7 1.3"
+        },
+        "terminal": {
+          "enum": [
+            "warp",
+            "wt",
+            "tmux",
+            "iterm",
+            "background",
+            "print"
+          ],
+          "default": "print",
+          "description": "Default terminal adapter for /fanout launches"
+        },
+        "default_concurrency": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 3
+        },
+        "worker_mode": {
+          "enum": [
+            "plan",
+            "auto",
+            "acceptEdits",
+            "bypassPermissions"
+          ],
+          "default": "plan",
+          "description": "Default --permission-mode for launched worker + lead sessions; --worker-mode overrides. 'auto' = auto-approve tool/bash/MCP with safety checks (NOT a bypass); 'plan' = read-only research that gates edits behind plan approval."
+        },
+        "agent_cmd": {
+          "type": "string",
+          "description": "Launch-command template for INTERACTIVE worker/lead sessions \u2014 swap the agent (e.g. a codex invocation). Tokens: {mode} = permission mode, {prompt} = the quoted kickoff prompt. Default: 'claude --permission-mode {mode} {prompt}'. Autonomous headless launches stay claude."
+        },
+        "completed_window_days": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 14,
+          "description": "How recently a sprint must have completed to appear in the Recently-completed table"
+        },
+        "base_branch": {
+          "type": "string",
+          "default": "main",
+          "description": "Branch worktrees are cut from + PR base"
+        },
+        "remote": {
+          "type": "string",
+          "default": "origin",
+          "description": "Git remote name for fetch + worktree base ref"
+        },
+        "default_weight": {
+          "enum": [
+            "heavy",
+            "medium",
+            "light"
+          ],
+          "description": "Weight assumed for a slice whose gate runner isn't recognized and that touches no code (default light)"
+        },
         "weight_patterns": {
-          "type": "object", "additionalProperties": false,
+          "type": "object",
+          "additionalProperties": false,
           "description": "Extend the built-in multi-ecosystem runner classifier with repo-specific regexes (case-insensitive strings)",
           "properties": {
-            "heavy": { "type": "array", "items": { "type": "string" } },
-            "medium": { "type": "array", "items": { "type": "string" } }
+            "heavy": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "medium": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
           }
         },
         "weight_cost": {
-          "type": "object", "additionalProperties": false,
+          "type": "object",
+          "additionalProperties": false,
           "description": "Override per-class per-session resource cost used by the concurrency recommender",
           "properties": {
-            "heavy": { "$ref": "#/$defs/cost" },
-            "medium": { "$ref": "#/$defs/cost" },
-            "light": { "$ref": "#/$defs/cost" }
+            "heavy": {
+              "$ref": "#/$defs/cost"
+            },
+            "medium": {
+              "$ref": "#/$defs/cost"
+            },
+            "light": {
+              "$ref": "#/$defs/cost"
+            }
           }
         },
         "initiatives": {
           "type": "object",
           "description": "Optional per-initiative Linear styling: maps an initiative NAME (matching a pi.initiative) to its board icon/color, so grouping reads as signal (every Lumen project a WritingAI icon, every Trust project a Shield) instead of the deterministic-but-arbitrary fallback palette. Applied to a declared initiative's projects AND its header; undeclared initiatives keep Linear's default header and use the fallback palette on their projects only.",
           "additionalProperties": {
-            "type": "object", "additionalProperties": false,
+            "type": "object",
+            "additionalProperties": false,
             "properties": {
-              "icon": { "type": "string", "description": "Linear icon name (e.g. Robot, Shield, Database, WritingAI). Names are a fixed Linear set; an unrecognized one degrades to no icon (color still groups)." },
-              "color": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$", "description": "Hex color like #5e6ad2." }
+              "icon": {
+                "type": "string",
+                "description": "Linear icon name (e.g. Robot, Shield, Database, WritingAI). Names are a fixed Linear set; an unrecognized one degrades to no icon (color still groups)."
+              },
+              "color": {
+                "type": "string",
+                "pattern": "^#[0-9a-fA-F]{6}$",
+                "description": "Hex color like #5e6ad2."
+              }
             }
           }
         },
         "plate": {
           "type": "array",
-          "items": { "type": "string" },
-          "description": "The 'My Issues' hopper: an explicit list of slice invoke keys / backlog ids the Linear sync assigns to YOU (assignee), so Linear's My Issues tab = your curated current batch. Presence enables the feature (absent → no assignee projection at all). Active slices / in_progress items are ALWAYS included on top; completed slices auto-drain on sync. Capped for signal by meta.linear.plate_max. Issues we assign carry a 'plate' label so a hand-assignment in Linear is never disturbed."
+          "items": {
+            "type": "string"
+          },
+          "description": "The 'My Issues' hopper: an explicit list of slice invoke keys / backlog ids the Linear sync assigns to YOU (assignee), so Linear's My Issues tab = your curated current batch. Presence enables the feature (absent \u2192 no assignee projection at all). Active slices / in_progress items are ALWAYS included on top; completed slices auto-drain on sync. Capped for signal by meta.linear.plate_max. Issues we assign carry a 'plate' label so a hand-assignment in Linear is never disturbed."
         },
         "dispatch": {
-          "type": "object", "additionalProperties": false,
+          "type": "object",
+          "additionalProperties": false,
           "description": "Cloud-dispatch safety and provider settings. Runtime credentials remain machine-local.",
           "properties": {
-            "provider": { "enum": ["github", "gitlab", "git-native", "none"], "description": "Provider for the best-effort in-flight duplicate lock. Omit to auto-detect from origin." },
-            "in_flight_window_hours": { "type": "number", "exclusiveMinimum": 0, "default": 24, "description": "How recent an open marker-bearing PR must be to block a duplicate low-level dispatch." },
-            "default_provider": { "enum": ["claude", "codex"], "description": "Default remote-agent provider for ordinary cloud dispatch. Existing installations default to Claude when omitted." },
-            "evaluation": { "type": "object", "additionalProperties": false, "properties": {
-              "artifact_root": { "type": "string", "minLength": 1, "description": "Repository-relative evaluation run root. Runtime validation also refuses traversal, drive paths, control characters, symlinks and .git components." }
-            } },
-            "providers": { "type": "object", "additionalProperties": false, "properties": { "codex": { "type": "object", "additionalProperties": false, "properties": { "environment_id": { "type": "string", "minLength": 1, "description": "Codex Cloud environment ID for this repository. It is configuration, not a credential." } } } } }
+            "provider": {
+              "enum": [
+                "github",
+                "gitlab",
+                "git-native",
+                "none"
+              ],
+              "description": "Provider for the best-effort in-flight duplicate lock. Omit to auto-detect from origin."
+            },
+            "in_flight_window_hours": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "default": 24,
+              "description": "How recent an open marker-bearing PR must be to block a duplicate low-level dispatch."
+            },
+            "default_provider": {
+              "enum": [
+                "claude",
+                "codex"
+              ],
+              "description": "Default remote-agent provider for ordinary cloud dispatch. Existing installations default to Claude when omitted."
+            },
+            "evaluation": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "artifact_root": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Repository-relative evaluation run root. Runtime validation also refuses traversal, drive paths, control characters, symlinks and .git components."
+                }
+              }
+            },
+            "providers": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "codex": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "environment_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Codex Cloud environment ID for this repository. It is configuration, not a credential."
+                    }
+                  }
+                }
+              }
+            }
           }
         },
         "gauntlet": {
-          "type": "object", "additionalProperties": false,
+          "type": "object",
+          "additionalProperties": false,
           "description": "Conducted implementation/critic/repair policy. Run history stays in GitHub plus the gitignored local launch ledger, never on slices.",
           "properties": {
-            "max_rounds": { "type": "integer", "minimum": 0, "maximum": 20, "default": 3, "description": "Maximum repair launches in one run. The lead may stop earlier for diminishing returns or human judgment." },
-            "model_preferences": { "type": "object", "description": "Optional provider-neutral role preferences. Unsupported preferences warn; strict requests fail. Actual Cloud settings remain unverified without provider metadata.", "additionalProperties": false,
-              "properties": { "lead": { "$ref": "#/$defs/modelPreference" }, "cloud": { "$ref": "#/$defs/modelPreference" }, "implementation": { "$ref": "#/$defs/modelPreference" }, "evaluator": { "$ref": "#/$defs/modelPreference" }, "critic": { "$ref": "#/$defs/modelPreference" }, "repair": { "$ref": "#/$defs/modelPreference" } } },
-            "implementation_tier": { "type": "string", "minLength": 1, "maxLength": 512, "description": "Optional Routine tier for initial implementation. A slice/item dispatch_tier takes precedence." },
-            "critic_tier": { "type": "string", "minLength": 1, "maxLength": 512, "description": "Optional Routine tier for independent criticism. Missing requested tiers fail; they never silently downgrade." },
-            "repair_tier": { "type": "string", "minLength": 1, "maxLength": 512, "description": "Optional Routine tier for fresh repair workers. A slice/item dispatch_tier takes precedence." }
-            ,"implementation_provider": { "enum": ["claude", "codex"], "description": "Remote provider for initial implementation; defaults to Claude." }
-            ,"critic_provider": { "enum": ["claude", "codex"], "description": "Remote provider for independent critics; defaults to Claude." }
-            ,"repair_provider": { "enum": ["claude", "codex"], "description": "Remote provider for repair workers; defaults to Claude." }
+            "max_rounds": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 20,
+              "default": 3,
+              "description": "Maximum repair launches in one run. The lead may stop earlier for diminishing returns or human judgment."
+            },
+            "model_preferences": {
+              "type": "object",
+              "description": "Optional provider-neutral role preferences. Unsupported preferences warn; strict requests fail. Actual Cloud settings remain unverified without provider metadata.",
+              "additionalProperties": false,
+              "properties": {
+                "lead": {
+                  "$ref": "#/$defs/modelPreference"
+                },
+                "cloud": {
+                  "$ref": "#/$defs/modelPreference"
+                },
+                "implementation": {
+                  "$ref": "#/$defs/modelPreference"
+                },
+                "evaluator": {
+                  "$ref": "#/$defs/modelPreference"
+                },
+                "critic": {
+                  "$ref": "#/$defs/modelPreference"
+                },
+                "repair": {
+                  "$ref": "#/$defs/modelPreference"
+                }
+              }
+            },
+            "implementation_tier": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "description": "Optional Routine tier for initial implementation. A slice/item dispatch_tier takes precedence."
+            },
+            "critic_tier": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "description": "Optional Routine tier for independent criticism. Missing requested tiers fail; they never silently downgrade."
+            },
+            "repair_tier": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "description": "Optional Routine tier for fresh repair workers. A slice/item dispatch_tier takes precedence."
+            },
+            "implementation_provider": {
+              "enum": [
+                "claude",
+                "codex"
+              ],
+              "description": "Remote provider for initial implementation; defaults to Claude."
+            },
+            "critic_provider": {
+              "enum": [
+                "claude",
+                "codex"
+              ],
+              "description": "Remote provider for independent critics; defaults to Claude."
+            },
+            "repair_provider": {
+              "enum": [
+                "claude",
+                "codex"
+              ],
+              "description": "Remote provider for repair workers; defaults to Claude."
+            }
           }
         },
         "linear": {
-          "type": "object", "additionalProperties": false,
-          "required": ["team"],
-          "description": "Optional Linear integration. Absent → all Linear behavior off (byte-identical). Linear is a PROJECTION of this file plus a proposal inbox — the YAML stays canonical. Auth is the LINEAR_API_KEY env var, never stored here.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "team"
+          ],
+          "description": "Optional Linear integration. Absent \u2192 all Linear behavior off (byte-identical). Linear is a PROJECTION of this file plus a proposal inbox \u2014 the YAML stays canonical. Auth is the LINEAR_API_KEY env var, never stored here.",
           "properties": {
-            "team": { "type": "string", "description": "Push-target team key (e.g. ENG)" },
-            "granularity": { "enum": ["pis", "slices", "slices+backlog"], "default": "slices", "description": "What projects to Linear: PIs as Projects only, +slices as Issues, +backlog items too. Per-PI override via pi.linear.granularity (ack-gated on conflict)." },
-            "horizon": { "enum": ["all", "near"], "default": "all", "description": "Issue-creation horizon: all = every not-done slice becomes an issue; near = scheduled/optionality slices stay YAML-only (no NEW issues) until promoted, so the board carries only actionable work. Already-mapped issues keep updating either way — never orphaned." },
-            "verbosity": { "enum": ["title", "brief", "full"], "default": "brief", "description": "Issue-description detail. Never copies read-order/prompt; always ends with the machine footer + docs link." },
-            "cycles": { "enum": ["off", "on"], "default": "off", "description": "Mirror the team's ACTIVE Linear cycle from slice status: active+next issues join the current cycle, demoted ones leave it. The cycle IS the elected weekly batch — promotion (scheduled→next) is the planning ritual's job. Requires cycles enabled on the Linear team; converges with Linear's native rollover/auto-add. With cycles on, dispatch/fan refuse out-of-cycle slices without --force." },
-            "cycle_capacity": { "type": "integer", "minimum": 1, "default": 10, "description": "est_sessions the cycle election packs per cycle ('roadmap cycle plan'). Unestimated slices are never silently packed; committed-but-unpriced work is flagged rather than counted as zero." },
-            "history": { "enum": ["off", "window", "full"], "default": "off", "description": "Whether DONE slices project as completed issues (with completedAt = completed_on). off = never (pre-history behavior); window = completed within meta.completed_window_days (default 14); full = all shipped work — what makes a project's progress % real and keeps the record queryable in Linear (auto-archive handles aging). Flipping to full on a large roadmap is a one-time backfill; an interrupted push resumes safely (ids write back incrementally)." },
-            "pull": { "enum": ["off", "propose", "auto"], "default": "off", "description": "Inbound handling: propose = /sync walks the inbox with you; auto = applied directly." },
-            "push_on": { "enum": ["sync", "manual"], "default": "sync", "description": "sync = /sync runs the Linear phase when authed; manual = only 'roadmap linear sync'." },
-            "estimate_max": { "type": "integer", "minimum": 1, "default": 5, "description": "Max value pushed to a slice's native Linear estimate (est_sessions is rounded, then clamped here). Set to your Linear team's estimate scale max — use the 'Linear' scale (1..5; extended adds 6,7) for a direct 1-point=1-session read. validate warns when a slice exceeds it: the signal to split it, not extend." },
-            "plate_max": { "type": "integer", "minimum": 1, "default": 7, "description": "Cap on the EXPLICIT meta.plate list — validate warns above it so Linear's My Issues stays signal (active work adds on top, uncapped)." },
-            "stale_days": { "type": "integer", "minimum": 1, "description": "Staleness threshold (days). Presence enables: committed work (active/next) whose latest journal comment (fallback: issue creation) is older than this gets a 'stale' label on sync, surfaces in the Stale view, and is reviewed FIRST by the cycle election. Basis is journal activity, never issue updatedAt (our own pushes would reset that clock)." },
-            "status_map": { "type": "object", "additionalProperties": { "type": "string" }, "description": "roadmap status → exact Linear workflow-state NAME overrides; unmapped statuses use the state-TYPE defaults (scheduled→backlog, next/blocked/paused/gated→unstarted, active→started, complete→completed). Only active means In Progress; held statuses read Todo + a status:<held> label." },
+            "team": {
+              "type": "string",
+              "description": "Push-target team key (e.g. ENG)"
+            },
+            "granularity": {
+              "enum": [
+                "pis",
+                "slices",
+                "slices+backlog"
+              ],
+              "default": "slices",
+              "description": "What projects to Linear: PIs as Projects only, +slices as Issues, +backlog items too. Per-PI override via pi.linear.granularity (ack-gated on conflict)."
+            },
+            "horizon": {
+              "enum": [
+                "all",
+                "near"
+              ],
+              "default": "all",
+              "description": "Issue-creation horizon: all = every not-done slice becomes an issue; near = scheduled/optionality slices stay YAML-only (no NEW issues) until promoted, so the board carries only actionable work. Already-mapped issues keep updating either way \u2014 never orphaned."
+            },
+            "verbosity": {
+              "enum": [
+                "title",
+                "brief",
+                "full"
+              ],
+              "default": "brief",
+              "description": "Issue-description detail. Never copies read-order/prompt; always ends with the machine footer + docs link."
+            },
+            "cycles": {
+              "enum": [
+                "off",
+                "on"
+              ],
+              "default": "off",
+              "description": "Mirror the team's ACTIVE Linear cycle from slice status: active+next issues join the current cycle, demoted ones leave it. The cycle IS the elected weekly batch \u2014 promotion (scheduled\u2192next) is the planning ritual's job. Requires cycles enabled on the Linear team; converges with Linear's native rollover/auto-add. With cycles on, dispatch/fan refuse out-of-cycle slices without --force."
+            },
+            "cycle_capacity": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 10,
+              "description": "est_sessions the cycle election packs per cycle ('roadmap cycle plan'). Unestimated slices are never silently packed; committed-but-unpriced work is flagged rather than counted as zero."
+            },
+            "history": {
+              "enum": [
+                "off",
+                "window",
+                "full"
+              ],
+              "default": "off",
+              "description": "Whether DONE slices project as completed issues (with completedAt = completed_on). off = never (pre-history behavior); window = completed within meta.completed_window_days (default 14); full = all shipped work \u2014 what makes a project's progress % real and keeps the record queryable in Linear (auto-archive handles aging). Flipping to full on a large roadmap is a one-time backfill; an interrupted push resumes safely (ids write back incrementally)."
+            },
+            "pull": {
+              "enum": [
+                "off",
+                "propose",
+                "auto"
+              ],
+              "default": "off",
+              "description": "Inbound handling: propose = /sync walks the inbox with you; auto = applied directly."
+            },
+            "push_on": {
+              "enum": [
+                "sync",
+                "manual"
+              ],
+              "default": "sync",
+              "description": "sync = /sync runs the Linear phase when authed; manual = only 'roadmap linear sync'."
+            },
+            "estimate_max": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 5,
+              "description": "Max value pushed to a slice's native Linear estimate (est_sessions is rounded, then clamped here). Set to your Linear team's estimate scale max \u2014 use the 'Linear' scale (1..5; extended adds 6,7) for a direct 1-point=1-session read. validate warns when a slice exceeds it: the signal to split it, not extend."
+            },
+            "plate_max": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 7,
+              "description": "Cap on the EXPLICIT meta.plate list \u2014 validate warns above it so Linear's My Issues stays signal (active work adds on top, uncapped)."
+            },
+            "stale_days": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Staleness threshold (days). Presence enables: committed work (active/next) whose latest journal comment (fallback: issue creation) is older than this gets a 'stale' label on sync, surfaces in the Stale view, and is reviewed FIRST by the cycle election. Basis is journal activity, never issue updatedAt (our own pushes would reset that clock)."
+            },
+            "status_map": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "roadmap status \u2192 exact Linear workflow-state NAME overrides; unmapped statuses use the state-TYPE defaults (scheduled\u2192backlog, next/blocked/paused/gated\u2192unstarted, active\u2192started, complete\u2192completed). Only active means In Progress; held statuses read Todo + a status:<held> label."
+            },
             "watch": {
               "type": "array",
               "description": "Inbound sources (multiple teams/projects, e.g. a public 'Submit an issue' team). New issues become proposed backlog items carrying source.linear demarcation.",
               "items": {
-                "type": "object", "additionalProperties": false, "required": ["team"],
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "team"
+                ],
                 "properties": {
-                  "team": { "type": "string" },
-                  "project": { "type": "string", "description": "Omit to watch the whole team" },
-                  "capture": { "enum": ["backlog"], "default": "backlog" },
-                  "kind": { "enum": ["bug", "chore", "followup", "urgent", "idea"], "default": "idea" },
-                  "priority": { "$ref": "#/$defs/priority", "description": "Default priority for inbound items = implicit source weighting (the issue's own Linear priority wins when set)" }
+                  "team": {
+                    "type": "string"
+                  },
+                  "project": {
+                    "type": "string",
+                    "description": "Omit to watch the whole team"
+                  },
+                  "capture": {
+                    "enum": [
+                      "backlog"
+                    ],
+                    "default": "backlog"
+                  },
+                  "kind": {
+                    "enum": [
+                      "bug",
+                      "chore",
+                      "followup",
+                      "urgent",
+                      "idea"
+                    ],
+                    "default": "idea"
+                  },
+                  "priority": {
+                    "$ref": "#/$defs/priority",
+                    "description": "Default priority for inbound items = implicit source weighting (the issue's own Linear priority wins when set)"
+                  }
                 }
               }
             }
           }
         },
         "estimation": {
-          "type": "object", "additionalProperties": false,
-          "description": "Optional estimation config: calibrated per-slice duration estimates (the agent-time model, built in) roll up into projected PI target dates. Absent → defaults apply; slices with no `estimate` block simply don't feed the timeline. `engine` opts into an external estimator.py instead of the native model. The shape/risk vocabulary is estimator-core's SHAPES/RISKS tables, validated at estimate time.",
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Optional estimation config: calibrated per-slice duration estimates (the agent-time model, built in) roll up into projected PI target dates. Absent \u2192 defaults apply; slices with no `estimate` block simply don't feed the timeline. `engine` opts into an external estimator.py instead of the native model. The shape/risk vocabulary is estimator-core's SHAPES/RISKS tables, validated at estimate time.",
           "properties": {
-            "engine": { "type": "string", "description": "Path to agent-time's estimator.py. Omit to resolve ~/.claude/skills/agent-time-estimator/estimator.py (or $AGENT_TIME_ENGINE)." },
-            "python": { "type": "string", "default": "python3", "description": "Python launcher for the estimator (the IO layer falls back to 'python' when 'python3' is absent)." },
-            "hours_per_day": { "type": "number", "exclusiveMinimum": 0, "default": 6, "description": "Productive agent wall-clock hours per calendar day — the rate that converts rolled-up slice minutes into a calendar span for projected_target_date." },
-            "point": { "enum": ["expected", "high"], "default": "expected", "description": "Which point of the low/expected/high estimate drives the projected date: 'expected' (realistic) or 'high' (under-promise)." },
-            "model": { "type": "string", "default": "opus-4.8", "description": "Model name passed to the estimator (drives its per-model pace + checkpoint horizon)." }
+            "engine": {
+              "type": "string",
+              "description": "Path to agent-time's estimator.py. Omit to resolve ~/.claude/skills/agent-time-estimator/estimator.py (or $AGENT_TIME_ENGINE)."
+            },
+            "python": {
+              "type": "string",
+              "default": "python3",
+              "description": "Python launcher for the estimator (the IO layer falls back to 'python' when 'python3' is absent)."
+            },
+            "hours_per_day": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "default": 6,
+              "description": "Productive agent wall-clock hours per calendar day \u2014 the rate that converts rolled-up slice minutes into a calendar span for projected_target_date."
+            },
+            "point": {
+              "enum": [
+                "expected",
+                "high"
+              ],
+              "default": "expected",
+              "description": "Which point of the low/expected/high estimate drives the projected date: 'expected' (realistic) or 'high' (under-promise)."
+            },
+            "model": {
+              "type": "string",
+              "default": "opus-4.8",
+              "description": "Model name passed to the estimator (drives its per-model pace + checkpoint horizon)."
+            }
           }
         },
         "discipline": {
-          "type": "object", "additionalProperties": false,
+          "type": "object",
+          "additionalProperties": false,
           "description": "Scope-discipline knobs read by the /sync and /debrief guardrails and the wave scheduler",
           "properties": {
-            "capture_ratio": { "type": "number", "exclusiveMinimum": 0, "default": 2, "description": "Max (captured backlog items + added sprints) per completed slice per review window before the sprawl warning fires" },
-            "pi_min_slices": { "type": "integer", "minimum": 1, "description": "Composition floor: validate warns (one aggregated line) when a non-complete PI holds fewer slices than this. A PI under ~3 slices is usually a slice wearing a PI's coat — fold it into a sibling or grow it. Absent → off." },
-            "coherence": { "type": "boolean", "default": true, "description": "Wave-packing coherence: prefer finishing started PIs over opening fresh ones (strictly below declared priority). false restores pure priority/status/est ordering." },
-            "required_receipts": { "type": "array", "items": { "enum": ["build", "test", "clone_install", "screenshot", "signoff", "publish"] }, "description": "Finishing-discipline knob: receipt keys a slice MUST carry once complete. A complete slice missing any listed key WARNS (opt-in — absent → off)." }
+            "capture_ratio": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "default": 2,
+              "description": "Max (captured backlog items + added sprints) per completed slice per review window before the sprawl warning fires"
+            },
+            "pi_min_slices": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Composition floor: validate warns (one aggregated line) when a non-complete PI holds fewer slices than this. A PI under ~3 slices is usually a slice wearing a PI's coat \u2014 fold it into a sibling or grow it. Absent \u2192 off."
+            },
+            "coherence": {
+              "type": "boolean",
+              "default": true,
+              "description": "Wave-packing coherence: prefer finishing started PIs over opening fresh ones (strictly below declared priority). false restores pure priority/status/est ordering."
+            },
+            "required_receipts": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "build",
+                  "test",
+                  "clone_install",
+                  "screenshot",
+                  "signoff",
+                  "publish"
+                ]
+              },
+              "description": "Finishing-discipline knob: receipt keys a slice MUST carry once complete. A complete slice missing any listed key WARNS (opt-in \u2014 absent \u2192 off)."
+            }
           }
         },
         "last_review": {
-          "type": "object", "additionalProperties": false,
-          "required": ["date", "commit"],
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "date",
+            "commit"
+          ],
           "description": "The /debrief / /retro anchor: when the human last reviewed, and the roadmap.yaml git rev AT that review (captured before the review's own edits). Written by the skills via Edit+validate.",
           "properties": {
-            "date": { "type": "string", "description": "ISO date the review closed" },
-            "commit": { "type": "string", "description": "git rev of the previous review's roadmap.yaml state" }
+            "date": {
+              "type": "string",
+              "description": "ISO date the review closed"
+            },
+            "commit": {
+              "type": "string",
+              "description": "git rev of the previous review's roadmap.yaml state"
+            }
           }
         },
         "links": {
-          "type": "object", "additionalProperties": true,
+          "type": "object",
+          "additionalProperties": true,
           "description": "Optional repo cross-references the renderer links from (all optional; omitted ones are skipped)",
           "properties": {
-            "narrative": { "type": "string" },
-            "status": { "type": "string" },
-            "tracker": { "type": "string" },
-            "bootstrap": { "type": "string" },
-            "strategy": { "type": "string" }
+            "narrative": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string"
+            },
+            "tracker": {
+              "type": "string"
+            },
+            "bootstrap": {
+              "type": "string"
+            },
+            "strategy": {
+              "type": "string"
+            }
           }
+        },
+        "command_lane": {
+          "type": "object",
+          "required": [
+            "objective",
+            "until"
+          ],
+          "additionalProperties": false,
+          "description": "A dated finishing override: the lane's slices sort first until `until` passes or every member ships (validated in graph.mjs).",
+          "properties": {
+            "objective": {
+              "type": "string",
+              "minLength": 1
+            },
+            "until": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            "pi": {
+              "type": "string",
+              "description": "PI id whose every sprint is in the lane"
+            },
+            "slices": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "invoke keys in the lane"
+            }
+          }
+        },
+        "assistants": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Portable assistant-profile selection for the engineering executor's launches (machine commands and launch authority live in .roadmap/config.local.yaml, never here).",
+          "properties": {
+            "default": {
+              "type": "string",
+              "description": "profile name launched by default (manual | claude | codex | custom | a named profile)"
+            },
+            "profiles": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object"
+              },
+              "description": "per-profile overrides merged over the built-ins"
+            }
+          }
+        },
+        "jira": {
+          "type": "object",
+          "description": "Reserved: the planned Jira projection (docs/DEPLOYMENT.md). Not implemented \u2014 validate warns and the block is ignored."
         }
       }
     },
     "pis": {
       "type": "array",
-      "items": { "$ref": "#/$defs/pi" }
+      "items": {
+        "$ref": "#/$defs/pi"
+      }
     }
   },
   "$defs": {
-    "modelPreference": { "type": "object", "additionalProperties": false, "properties": {
-      "model": { "type": ["string", "null"], "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$" },
-      "reasoning_effort": { "type": ["string", "null"], "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$" },
-      "strict": { "type": "boolean" } } },
+    "modelPreference": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"
+        },
+        "reasoning_effort": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"
+        },
+        "strict": {
+          "type": "boolean"
+        }
+      }
+    },
     "cost": {
       "type": "object",
       "additionalProperties": false,
       "description": "Per-session resource cost for a weight class",
       "properties": {
-        "ram": { "type": "number", "description": "GB RAM per session" },
-        "cores": { "type": "number", "description": "CPU cores per session" }
+        "ram": {
+          "type": "number",
+          "description": "GB RAM per session"
+        },
+        "cores": {
+          "type": "number",
+          "description": "CPU cores per session"
+        }
       }
     },
     "status": {
-      "enum": ["active", "next", "scheduled", "complete", "blocked", "paused", "gated", "optionality"],
-      "description": "Canonical status. Emoji derived: active 🟢 · next 🟡 · scheduled ⚪ · complete ✅ · blocked 🔴 · paused ⏸️ · gated 🔒 · optionality 🟣"
+      "enum": [
+        "active",
+        "next",
+        "scheduled",
+        "complete",
+        "blocked",
+        "paused",
+        "gated",
+        "optionality"
+      ],
+      "description": "Canonical status. Emoji derived: active \ud83d\udfe2 \u00b7 next \ud83d\udfe1 \u00b7 scheduled \u26aa \u00b7 complete \u2705 \u00b7 blocked \ud83d\udd34 \u00b7 paused \u23f8\ufe0f \u00b7 gated \ud83d\udd12 \u00b7 optionality \ud83d\udfe3"
     },
     "pi": {
       "type": "object",
-      "required": ["id", "title", "status", "sprints"],
+      "required": [
+        "id",
+        "title",
+        "status",
+        "sprints"
+      ],
       "additionalProperties": false,
       "properties": {
-        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$", "description": "Stable PI slug; matches the branch-slug and the tracker row" },
-        "title": { "type": "string" },
-        "theme": { "type": "string" },
-        "program_label": { "type": "string", "description": "Display string for the 'PI / program' column when it differs from id (e.g. 'Billing Rewrite P2'). Optional; defaults to the uppercased id." },
-        "status": { "$ref": "#/$defs/status" },
-        "deps": { "type": "array", "items": { "type": "string" }, "description": "PI-level dependencies (PI ids)" },
-        "estimate_weeks": { "type": "string" },
-        "exit_criteria": { "type": "string" },
-        "detail": { "type": "string", "description": "Pointer to the sprint dir / detail doc" },
-        "exec_hint": { "type": ["string", "null"], "description": "Optional human override of the derived exec-plan line; rendered alongside the derived line" },
-        "initiative": { "type": "string", "description": "Groups this PI under a Linear Initiative of this name (the tier above projects). Sync creates the initiative and attaches this PI's project. Several PIs sharing a name group together." },
-        "priority": { "$ref": "#/$defs/priority", "description": "STRATEGIC priority of this bet (not derived from slice heat) → Linear project priority. tier P0=Urgent … P3=Low." },
-        "summary": { "type": "string", "maxLength": 255, "description": "Short one-line subtitle → Linear project description (the ≤255 field the board shows under the title). Authored so it never truncates; when omitted the subtitle is derived from the exit's first sentence and validate warns if that would truncate." },
-        "start_date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "Start date (YYYY-MM-DD) → Linear project startDate (drives the roadmap timeline). Set it explicitly, or leave blank and the sync auto-stamps it the first time the PI is active (≈ when it was picked up). Explicit always wins." },
-        "target_date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "Target date (YYYY-MM-DD) → Linear project targetDate. A deliberate commitment date; omit when there's no dated commitment." },
-        "projected_target_date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "DERIVED target date (YYYY-MM-DD) computed by 'roadmap estimate timeline' from rolled-up slice estimates — the estimate-driven timeline. Never overwrites an explicit target_date (which always wins); the Linear projection uses target_date || projected_target_date. Recomputed each run; don't hand-author." },
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]*$",
+          "description": "Stable PI slug; matches the branch-slug and the tracker row"
+        },
+        "title": {
+          "type": "string"
+        },
+        "theme": {
+          "type": "string"
+        },
+        "program_label": {
+          "type": "string",
+          "description": "Display string for the 'PI / program' column when it differs from id (e.g. 'Billing Rewrite P2'). Optional; defaults to the uppercased id."
+        },
+        "status": {
+          "$ref": "#/$defs/status"
+        },
+        "deps": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "PI-level dependencies (PI ids)"
+        },
+        "estimate_weeks": {
+          "type": "string"
+        },
+        "exit_criteria": {
+          "type": "string"
+        },
+        "detail": {
+          "type": "string",
+          "description": "Pointer to the sprint dir / detail doc"
+        },
+        "exec_hint": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Optional human override of the derived exec-plan line; rendered alongside the derived line"
+        },
+        "initiative": {
+          "type": "string",
+          "description": "Groups this PI under a Linear Initiative of this name (the tier above projects). Sync creates the initiative and attaches this PI's project. Several PIs sharing a name group together."
+        },
+        "priority": {
+          "$ref": "#/$defs/priority",
+          "description": "STRATEGIC priority of this bet (not derived from slice heat) \u2192 Linear project priority. tier P0=Urgent \u2026 P3=Low."
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 255,
+          "description": "Short one-line subtitle \u2192 Linear project description (the \u2264255 field the board shows under the title). Authored so it never truncates; when omitted the subtitle is derived from the exit's first sentence and validate warns if that would truncate."
+        },
+        "start_date": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "description": "Start date (YYYY-MM-DD) \u2192 Linear project startDate (drives the roadmap timeline). Set it explicitly, or leave blank and the sync auto-stamps it the first time the PI is active (\u2248 when it was picked up). Explicit always wins."
+        },
+        "target_date": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "description": "Target date (YYYY-MM-DD) \u2192 Linear project targetDate. A deliberate commitment date; omit when there's no dated commitment."
+        },
+        "projected_target_date": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "description": "DERIVED target date (YYYY-MM-DD) computed by 'roadmap estimate timeline' from rolled-up slice estimates \u2014 the estimate-driven timeline. Never overwrites an explicit target_date (which always wins); the Linear projection uses target_date || projected_target_date. Recomputed each run; don't hand-author."
+        },
         "linear": {
-          "type": "object", "additionalProperties": false,
+          "type": "object",
+          "additionalProperties": false,
           "description": "Per-PI Linear override + the pushed-back project id. A granularity or verbosity conflicting with the global requires the yes_linear_override ack at creation; validate warns on stored mismatches.",
           "properties": {
-            "granularity": { "enum": ["pis", "slices", "slices+backlog"] },
-            "verbosity": { "enum": ["title", "brief", "full"], "description": "Per-PI issue-description detail override — quiet a noisy PI to title, or richen an active one to full, without moving the global." },
-            "project": { "type": "string", "description": "Linear project id — written back by the first push; don't hand-author" }
+            "granularity": {
+              "enum": [
+                "pis",
+                "slices",
+                "slices+backlog"
+              ]
+            },
+            "verbosity": {
+              "enum": [
+                "title",
+                "brief",
+                "full"
+              ],
+              "description": "Per-PI issue-description detail override \u2014 quiet a noisy PI to title, or richen an active one to full, without moving the global."
+            },
+            "project": {
+              "type": "string",
+              "description": "Linear project id \u2014 written back by the first push; don't hand-author"
+            }
           }
         },
-        "sprints": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/sprint" } }
+        "sprints": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/sprint"
+          }
+        }
       }
     },
     "sprint": {
       "type": "object",
-      "required": ["id", "title", "status", "invoke"],
+      "required": [
+        "id",
+        "title",
+        "status",
+        "invoke"
+      ],
       "additionalProperties": false,
       "properties": {
-        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$", "description": "Sprint slug local to its PI, e.g. s1, s3, m1-s2" },
-        "title": { "type": "string" },
-        "status": { "$ref": "#/$defs/status" },
-        "status_label": { "type": "string", "description": "Display override for the status cell (e.g. 'Planned', 'Queued', 'Gated (Connor)', 'Next'); defaults to the capitalized enum" },
-        "invoke": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$", "description": "The /slice invocation key. Stable — renames break references. Unique across the whole file." },
-        "what": { "type": "string", "description": "One-line summary for the At-a-glance table" },
-        "est_sessions": { "type": "number", "minimum": 0, "description": "Focused Claude sessions remaining to clear this sprint (0 when done)" },
-        "shape": { "type": "string", "description": "agent-time task shape (e.g. localized-feature, refactor, migration-schema) — the primary classifier the estimator prices from. One of agent-time's SHAPES; validated there, not enum-checked here (avoids cross-repo vocab drift). Set it (+ optional risks) to make a slice estimable via 'roadmap estimate'." },
-        "risks": { "type": "array", "items": { "type": "string" }, "description": "agent-time risk factors (e.g. external-api, slow-flaky-tests) that skew the estimate right. From agent-time's RISKS vocabulary; validated there." },
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]*$",
+          "description": "Sprint slug local to its PI, e.g. s1, s3, m1-s2"
+        },
+        "title": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/status"
+        },
+        "status_label": {
+          "type": "string",
+          "description": "Display override for the status cell (e.g. 'Planned', 'Queued', 'Gated (Connor)', 'Next'); defaults to the capitalized enum"
+        },
+        "invoke": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]*$",
+          "description": "The /slice invocation key. Stable \u2014 renames break references. Unique across the whole file."
+        },
+        "what": {
+          "type": "string",
+          "description": "One-line summary for the At-a-glance table"
+        },
+        "est_sessions": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Focused Claude sessions remaining to clear this sprint (0 when done)"
+        },
+        "shape": {
+          "type": "string",
+          "description": "agent-time task shape (e.g. localized-feature, refactor, migration-schema) \u2014 the primary classifier the estimator prices from. One of agent-time's SHAPES; validated there, not enum-checked here (avoids cross-repo vocab drift). Set it (+ optional risks) to make a slice estimable via 'roadmap estimate'."
+        },
+        "risks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "agent-time risk factors (e.g. external-api, slow-flaky-tests) that skew the estimate right. From agent-time's RISKS vocabulary; validated there."
+        },
         "estimate": {
-          "type": "object", "additionalProperties": false,
-          "description": "Cached agent-time estimate — written by 'roadmap estimate', read by the timeline rollup. Not hand-authored; refresh with 'roadmap estimate <slice> --force'.",
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Cached agent-time estimate \u2014 written by 'roadmap estimate', read by the timeline rollup. Not hand-authored; refresh with 'roadmap estimate <slice> --force'.",
           "properties": {
-            "minutes": { "type": "object", "additionalProperties": false, "properties": { "low": { "type": "number" }, "expected": { "type": "number" }, "high": { "type": "number" } }, "description": "Wall-clock estimate (low/expected/high minutes)." },
-            "confidence": { "type": "string", "description": "Estimator confidence label (never 'high' by design)." },
-            "task_id": { "type": "string", "description": "agent-time task id — links this slice to its history record for the calibration log." },
-            "at": { "type": "string", "description": "ISO timestamp the estimate was produced." },
-            "basis": { "type": "string", "description": "Calibration basis (which history bucket + spread the estimate drew on)." }
+            "minutes": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "low": {
+                  "type": "number"
+                },
+                "expected": {
+                  "type": "number"
+                },
+                "high": {
+                  "type": "number"
+                }
+              },
+              "description": "Wall-clock estimate (low/expected/high minutes)."
+            },
+            "confidence": {
+              "type": "string",
+              "description": "Estimator confidence label (never 'high' by design)."
+            },
+            "task_id": {
+              "type": "string",
+              "description": "agent-time task id \u2014 links this slice to its history record for the calibration log."
+            },
+            "at": {
+              "type": "string",
+              "description": "ISO timestamp the estimate was produced."
+            },
+            "basis": {
+              "type": "string",
+              "description": "Calibration basis (which history bucket + spread the estimate drew on)."
+            }
           }
         },
-        "weight": { "enum": ["heavy", "medium", "light"], "description": "Optional override of the inferred resource weight (heavy=dotnet test, medium=build/vitest, light=docs); drives the concurrency recommender" },
-        "deps": { "type": "array", "items": { "type": "string" }, "description": "Dependency edges: sibling sprint id (s2), fully-qualified pi-id/sprint-id, or a PI id (complete-when-all-sprints-complete)" },
-        "touches": { "type": "array", "items": { "type": "string" }, "description": "Files this sprint writes; used to detect shared-file contention (two-wave) in the scheduler" },
-        "owns": { "type": "array", "items": { "type": "string" }, "description": "Dirs/files this sprint exclusively owns" },
-        "gate": { "oneOf": [{ "type": "string" }, { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }], "description": "'default' (inherit meta.default_gate) or a command string ({{default}} interpolates meta.default_gate), or a CHECKLIST: a list of criteria a person or critic confirms (the general profile's gate kind; engineering may use it too)" },
-        "artifact": { "type": "string", "description": "Repository-relative path of the deliverable this slice produces (general profile: the git-file gauntlet artifact the critic reviews; defaults to docs/roadmap/artifacts/<invoke>.md)" },
-        "gated_on": { "type": "string", "description": "Name of the human this is gated on; such a node never enters the auto-ready set" },
-        "optional": { "type": "boolean", "default": false },
-        "read_order": { "type": "array", "items": { "type": "string" }, "description": "Ordered docs/sections a session reads to self-orient (markdown link or 'path — note')" },
-        "resume_action": { "type": "string", "description": "The next action; first sentence is the immediate step" },
-        "kickoff_brief": { "type": "string", "description": "'brief' = synthesize from fields; or an inline brief string; or a path to a brief file" },
-        "prs": { "type": "array", "items": { "type": "string" }, "description": "Merged PR refs, e.g. ['#359']" },
-        "completed_on": { "type": "string", "description": "ISO date a sprint flipped to complete (drives the Recently-completed window)" },
-        "track": { "type": "string", "description": "Optional lane label for the three-track partition (e.g. A | B | C). --track filters a fanout to one lane. Omit for an untracked slice." },
-        "execution": { "$ref": "#/$defs/execution" },
-        "priority": { "$ref": "#/$defs/priority" },
-        "prompt": { "type": "string", "description": "Author-stashed pickup instructions, embedded VERBATIM in the synthesized kickoff brief and shown by /slice and roadmap show. Update as new info comes in (set_fields / roadmap set)." },
-        "milestone": { "type": "string", "description": "Optional stage name within the PI's Linear project (e.g. 'harness', 'hardening', 'ship'). Sync creates the distinct milestones per project and attaches this slice's issue — turning a project's flat issue list into legible stages. Project-scoped: the same name under two PIs is two milestones. Opt-in; absent everywhere → no milestone sync." },
-        "dispatch_tier": { "type": "string", "description": "Cloud-dispatch routine tier for this slice (e.g. 'fable' = a routine whose claude.ai model selector is set to the frontier tier). Dispatch resolves routines[\"<owner/repo>#<tier>\"] (or \"default#<tier>\") from ~/.claude-routines.json and THROWS if the tier isn't configured — a frontier slice never silently falls back to the standard routine. Absent: the standard repo routine. CLI --tier overrides per launch." },
-        "linear": { "type": "string", "description": "Linear issue identifier (e.g. ABC-123) this slice maps to — written back by the first push. The {linear} branch_convention token uses it so Linear auto-links the PR." },
+        "weight": {
+          "enum": [
+            "heavy",
+            "medium",
+            "light"
+          ],
+          "description": "Optional override of the inferred resource weight (heavy=dotnet test, medium=build/vitest, light=docs); drives the concurrency recommender"
+        },
+        "deps": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Dependency edges: sibling sprint id (s2), fully-qualified pi-id/sprint-id, or a PI id (complete-when-all-sprints-complete)"
+        },
+        "touches": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Files this sprint writes; used to detect shared-file contention (two-wave) in the scheduler"
+        },
+        "owns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Dirs/files this sprint exclusively owns"
+        },
+        "gate": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          ],
+          "description": "'default' (inherit meta.default_gate) or a command string ({{default}} interpolates meta.default_gate), or a CHECKLIST: a list of criteria a person or critic confirms (the general profile's gate kind; engineering may use it too)"
+        },
+        "artifact": {
+          "type": "string",
+          "description": "Repository-relative path of the deliverable this slice produces (general profile: the git-file gauntlet artifact the critic reviews; defaults to docs/roadmap/artifacts/<invoke>.md)"
+        },
+        "gated_on": {
+          "type": "string",
+          "description": "Name of the human this is gated on; such a node never enters the auto-ready set"
+        },
+        "optional": {
+          "type": "boolean",
+          "default": false
+        },
+        "read_order": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Ordered docs/sections a session reads to self-orient (markdown link or 'path \u2014 note')"
+        },
+        "resume_action": {
+          "type": "string",
+          "description": "The next action; first sentence is the immediate step"
+        },
+        "kickoff_brief": {
+          "type": "string",
+          "description": "'brief' = synthesize from fields; or an inline brief string; or a path to a brief file"
+        },
+        "prs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Merged PR refs, e.g. ['#359']"
+        },
+        "completed_on": {
+          "type": "string",
+          "description": "ISO date a sprint flipped to complete (drives the Recently-completed window)"
+        },
+        "track": {
+          "type": "string",
+          "description": "Optional lane label for the three-track partition (e.g. A | B | C). --track filters a fanout to one lane. Omit for an untracked slice."
+        },
+        "execution": {
+          "$ref": "#/$defs/execution"
+        },
+        "priority": {
+          "$ref": "#/$defs/priority"
+        },
+        "prompt": {
+          "type": "string",
+          "description": "Author-stashed pickup instructions, embedded VERBATIM in the synthesized kickoff brief and shown by /slice and roadmap show. Update as new info comes in (set_fields / roadmap set)."
+        },
+        "milestone": {
+          "type": "string",
+          "description": "Optional stage name within the PI's Linear project (e.g. 'harness', 'hardening', 'ship'). Sync creates the distinct milestones per project and attaches this slice's issue \u2014 turning a project's flat issue list into legible stages. Project-scoped: the same name under two PIs is two milestones. Opt-in; absent everywhere \u2192 no milestone sync."
+        },
+        "dispatch_tier": {
+          "type": "string",
+          "description": "Cloud-dispatch routine tier for this slice (e.g. 'fable' = a routine whose claude.ai model selector is set to the frontier tier). Dispatch resolves routines[\"<owner/repo>#<tier>\"] (or \"default#<tier>\") from ~/.claude-routines.json and THROWS if the tier isn't configured \u2014 a frontier slice never silently falls back to the standard routine. Absent: the standard repo routine. CLI --tier overrides per launch."
+        },
+        "linear": {
+          "type": "string",
+          "description": "Linear issue identifier (e.g. ABC-123) this slice maps to \u2014 written back by the first push. The {linear} branch_convention token uses it so Linear auto-links the PR."
+        },
         "receipts": {
-          "type": "object", "additionalProperties": false,
-          "description": "Optional per-slice completion evidence — each value is a PR#, path, url, or note proving a finishing step actually happened. Opt-in enforcement: list keys in meta.discipline.required_receipts and a complete slice missing one WARNS. Absent → no-op.",
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Optional per-slice completion evidence \u2014 each value is a PR#, path, url, or note proving a finishing step actually happened. Opt-in enforcement: list keys in meta.discipline.required_receipts and a complete slice missing one WARNS. Absent \u2192 no-op.",
           "properties": {
-            "build": { "type": "string" },
-            "test": { "type": "string" },
-            "clone_install": { "type": "string" },
-            "screenshot": { "type": "string" },
-            "signoff": { "type": "string" },
-            "publish": { "type": "string" }
+            "build": {
+              "type": "string"
+            },
+            "test": {
+              "type": "string"
+            },
+            "clone_install": {
+              "type": "string"
+            },
+            "screenshot": {
+              "type": "string"
+            },
+            "signoff": {
+              "type": "string"
+            },
+            "publish": {
+              "type": "string"
+            }
           }
         },
-        "outcome": { "type": "string", "description": "Optional founder-review outcome this slice rolls up into — sibling slices sharing a name group into one OUTCOME line in SLICES.md summarizing their done-state. Absent → no rollup." }
+        "outcome": {
+          "type": "string",
+          "description": "Optional founder-review outcome this slice rolls up into \u2014 sibling slices sharing a name group into one OUTCOME line in SLICES.md summarizing their done-state. Absent \u2192 no rollup."
+        }
       }
     },
     "priority": {
@@ -288,33 +1028,83 @@
       "additionalProperties": false,
       "description": "Optional prioritization: tier for coarse triage buckets, weight for fine ordering within a tier, reason so agents and humans know why. Sort order is derived (tier asc, weight desc), never stored. Shared by roadmap sprints and backlog items.",
       "properties": {
-        "tier": { "enum": ["P0", "P1", "P2", "P3"] },
-        "weight": { "type": "number", "minimum": 0, "maximum": 100 },
-        "reason": { "type": "string" }
+        "tier": {
+          "enum": [
+            "P0",
+            "P1",
+            "P2",
+            "P3"
+          ]
+        },
+        "weight": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "reason": {
+          "type": "string"
+        }
       }
     },
     "execution": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Per-slice staffing-strategy HINT: how to fan this slice out (topology + suggested LIVE worker count + team composition). All fields optional and backward-compatible — a slice that omits the block behaves exactly as before; the lead chooses by gut. Rendered as an imperative directive so a launched session staffs at the declared topology instead of chronically under-parallelizing.",
+      "description": "Per-slice staffing-strategy HINT: how to fan this slice out (topology + suggested LIVE worker count + team composition). All fields optional and backward-compatible \u2014 a slice that omits the block behaves exactly as before; the lead chooses by gut. Rendered as an imperative directive so a launched session staffs at the declared topology instead of chronically under-parallelizing.",
       "properties": {
         "mode": {
-          "enum": ["solo", "subagents", "dynamic-workflow", "agent-team"],
+          "enum": [
+            "solo",
+            "subagents",
+            "dynamic-workflow",
+            "agent-team"
+          ],
           "description": "Fan-out topology. solo = atomic/exploratory/branching-sequential (no fan-out). subagents = scoped sprint, lead-merges + disjoint-file workers (the current default). dynamic-workflow = an in-slice pipeline whose steps depend on each other. agent-team = many genuinely-independent file-clusters + peer coordination (native Agent Teams)."
         },
-        "concurrency": { "type": "integer", "minimum": 1, "description": "Suggested LIVE worker count" },
-        "min_concurrency": { "type": "integer", "minimum": 1, "description": "Floor — warn/refuse if a run uses fewer on disjoint files. Must be ≤ concurrency when both are set." },
-        "team": { "type": "array", "description": "Team composition; omit for solo. When concurrency is also set, the head-count must agree.", "items": { "$ref": "#/$defs/execRole" } },
-        "rationale": { "type": "string", "description": "Why this topology + count (surfaced verbatim in the directive)" }
+        "concurrency": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Suggested LIVE worker count"
+        },
+        "min_concurrency": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Floor \u2014 warn/refuse if a run uses fewer on disjoint files. Must be \u2264 concurrency when both are set."
+        },
+        "team": {
+          "type": "array",
+          "description": "Team composition; omit for solo. When concurrency is also set, the head-count must agree.",
+          "items": {
+            "$ref": "#/$defs/execRole"
+          }
+        },
+        "rationale": {
+          "type": "string",
+          "description": "Why this topology + count (surfaced verbatim in the directive)"
+        }
       }
     },
     "execRole": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["role"],
+      "required": [
+        "role"
+      ],
       "properties": {
-        "role": { "enum": ["verifier", "implementer", "reviewer", "researcher", "integrator"] },
-        "count": { "type": "integer", "minimum": 1, "default": 1, "description": "How many of this role (default 1)" }
+        "role": {
+          "enum": [
+            "verifier",
+            "implementer",
+            "reviewer",
+            "researcher",
+            "integrator"
+          ]
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1,
+          "description": "How many of this role (default 1)"
+        }
       }
     }
   }
