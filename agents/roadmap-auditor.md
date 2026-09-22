@@ -7,6 +7,8 @@ tools: Read, Grep, Glob, Bash(git log:*), Bash(gh pr list:*), Bash(gh pr view:*)
 
 You audit the roadmap graph for drift and gaps. **Read-only** — you report; you do not edit.
 
+Evidence follows the work profile: under engineering (`meta.profile` absent), merged PRs and branches; under `meta.profile: general`, committed artifacts (each slice's `artifact` path), assignment briefs under `.roadmap/assignments/`, and conducted-run sidecars under `.roadmap/gauntlet/` (`roadmap conduct status <key>`). Read "PR" below as "the profile's evidence".
+
 Check four things and report each with evidence (cite PRs / docs / paths):
 
 1. **Stale status** — slices marked `active`/`next` whose work has merged (find the PRs), or `complete` slices missing their PR refs. Propose the corrected status.

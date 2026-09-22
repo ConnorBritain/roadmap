@@ -2,21 +2,14 @@
 // SessionStart hook: if the repo at cwd has docs/roadmap/roadmap.yaml, inject the current
 // ready wave as context. Degrades SILENTLY (emits nothing) when there's no roadmap or deps
 // are missing — it must never break or slow a session in a non-roadmap repo.
+//
+// Profile-aware through the loader (the only meta.profile reader): the reconcile nudge and the
+// closing hint are what the loaded profile registers (`nudge`, `sessionHint`) — merged PRs +
+// /fanout under engineering, conducted runs + /conduct under general. Core facts (ready wave,
+// held work, backlog, Linear) are the same under both. This hook imports no executor package.
 
 import { readFileSync, existsSync } from "node:fs";
-import { spawnSync } from "node:child_process";
 import { join, dirname, resolve } from "node:path";
-
-// Merged PRs via gh, for reconcile detection. Guarded + short-timeout: if gh is missing, unauthed,
-// or slow, return [] so the hook stays fast and silent. Never throws.
-function mergedPrs(root) {
-  try {
-    const r = spawnSync("gh", ["pr", "list", "--state", "merged", "--limit", "100", "--json", "number,headRefName,title,body"],
-      { cwd: root, encoding: "utf8", timeout: 5000 });
-    if (r.status !== 0 || !r.stdout) return [];
-    return JSON.parse(r.stdout);
-  } catch { return []; }
-}
 
 function emit(ctx) {
   if (ctx) process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: ctx } }));
@@ -38,7 +31,7 @@ for (let dir = start; ;) {
 if (!root) emit("");   // no roadmap here — stay silent
 
 try {
-  const graph = await import(new URL("../scripts/lib/graph.mjs", import.meta.url));
+  const graph = await import("@connorbritain/roadmap-core/graph.mjs");
   const g = graph.loadGraph(join(root, "docs", "roadmap", "roadmap.yaml"));
   const model = graph.flatten(g);
   const cap = (g.meta && g.meta.default_concurrency) || 3;
@@ -46,20 +39,26 @@ try {
   const ready = (waves[0] || []).map((n) => n.invoke);
   const onHuman = held.onHuman.map((n) => n.invoke);
 
-  // Reconcile detection: slices whose fanout branch has a merged PR but are still open.
-  // Deterministic detection here; the agent does the judgment + the status flip (agentic sync).
-  let nudge = "";
+  // The work profile (guarded: an unloadable profile → engineering wording, no nudge).
+  let profile = null;
   try {
-    const sync = await import(new URL("../scripts/lib/sync-core.mjs", import.meta.url));
-    nudge = sync.reconcileNudge(sync.findUnrecordedMerges(g, mergedPrs(root)));
-  } catch { /* gh or sync-core unavailable — skip the nudge */ }
+    const { loadProfile } = await import("@connorbritain/roadmap-cli/profile.mjs");
+    profile = await loadProfile(g.meta, { root });
+  } catch { /* fall through */ }
+  const general = profile && profile.name === "general";
+
+  // Reconcile detection comes from the profile (engineering: merged PRs whose slices are still
+  // open, gh-guarded; general: conducted runs that passed but are still open). Deterministic
+  // here; the agent does the judgment + the status flip.
+  let nudge = "";
+  try { nudge = profile ? String((await profile.nudge(g)) || "") : ""; } catch { /* skip the nudge */ }
 
   // Backlog open-count (guarded: absent/unparseable backlog → silent).
   let backlogNote = "";
   try {
     if (existsSync(join(root, "docs", "roadmap", "backlog.yaml"))) {
-      const store = await import(new URL("../scripts/lib/store.mjs", import.meta.url));
-      const bl = await import(new URL("../scripts/lib/backlog-core.mjs", import.meta.url));
+      const store = await import("@connorbritain/roadmap-core/store.mjs");
+      const bl = await import("@connorbritain/roadmap-core/backlog-core.mjs");
       const n = bl.openCount(store.loadBacklog(root));
       if (n > 0) backlogNote = ` Backlog: ${n} open (see /backlog or docs/BACKLOG.md).`;
     }
@@ -68,19 +67,19 @@ try {
   // Linear one-liner (guarded, ZERO network: config presence + env key only).
   let linearNote = "";
   try {
-    const lc = await import(new URL("../scripts/lib/linear-core.mjs", import.meta.url));
+    const lc = await import("@connorbritain/roadmap-core/linear-core.mjs");
     const st = lc.linearState({ meta: g.meta, env: process.env });
     if (st.configured) linearNote = ` ${lc.linearStatusLine(st)}`;
   } catch { /* skip */ }
 
   if (!ready.length && !onHuman.length && !nudge && !backlogNote && !linearNote) emit("");
 
-  let ctx = `roadmap (${(g.pis || []).length} PIs): ready now (cap ${cap}) — ${ready.join(", ") || "none"}.`;
+  let ctx = `roadmap (${(g.pis || []).length} PIs${general ? ", general profile" : ""}): ready now (cap ${cap}) — ${ready.join(", ") || "none"}.`;
   if (onHuman.length) ctx += ` Held on a human: ${onHuman.join(", ")}.`;
   if (nudge) ctx += ` ⟳ ${nudge}`;
   ctx += backlogNote;
   ctx += linearNote;
-  ctx += ` Use /slice <name> to orient, /fanout to launch a wave, or 'roadmap plan' for the full wave map.`;
+  ctx += ` ${profile ? profile.sessionHint : "Use /slice <name> to orient, or 'roadmap plan' for the full wave map."}`;
   emit(ctx);
 } catch {
   emit("");   // missing deps / parse error → silent; never break the session

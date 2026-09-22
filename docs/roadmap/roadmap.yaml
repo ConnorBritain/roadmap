@@ -185,7 +185,7 @@ pis:
           basis: UNCALIBRATED (static prior 3.0 min/round; only 0 logged outcomes) · sparse-data widening ×1.75 (n=0)
       - id: s8
         title: Skills, agents, hooks and MCP registration follow the profile
-        status: next
+        status: complete
         invoke: skills-agents
         what: /init /imagine /prioritize /debrief /retro /sync /backlog stay core and work under both profiles; /fanout + /gauntlet PR text to engineering; /conduct + /assign for general; hooks/manifests re-pointed at packages/cli.
         deps: [s7]
@@ -207,7 +207,7 @@ pis:
           basis: UNCALIBRATED (static prior 3.0 min/round; only 0 logged outcomes) · sparse-data widening ×1.75 (n=0)
       - id: s9
         title: Docs — concepts README, per-package READMEs, AGENTS.md, MIGRATION.md
-        status: scheduled
+        status: next
         invoke: docs
         what: Retire the 600-line README into concepts + install + a pointer per profile; MIGRATION.md states no YAML changes are required (profile defaults to engineering).
         deps: [s8]

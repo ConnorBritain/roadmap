@@ -2,12 +2,21 @@
 name: sync
 description: Reconcile canonical roadmap/backlog state with merged GitHub PRs, then re-render generated views and optionally project to Linear. Run after lead/human merge decisions; never touches product code.
 argument-hint: "[--since YYYY-MM-DD] [--dry-run]"
-allowed-tools: Read, Bash(roadmap render:*), Bash(roadmap backlog:*), Bash(roadmap linear:*), Bash(roadmap gauntlet status:*), Bash(roadmap:*), Bash(node:*), Bash(git log:*), Bash(gh pr list:*), Bash(gh pr view:*)
+allowed-tools: Read, Bash(roadmap render:*), Bash(roadmap backlog:*), Bash(roadmap linear:*), Bash(roadmap gauntlet status:*), Bash(roadmap conduct reconcile:*), Bash(roadmap conduct status:*), Bash(roadmap:*), Bash(node:*), Bash(git log:*), Bash(gh pr list:*), Bash(gh pr view:*)
 ---
 
-Reconcile `docs/roadmap/roadmap.yaml` and `docs/roadmap/backlog.yaml` with durable GitHub reality,
-then re-render `docs/SLICES.md` and `docs/BACKLOG.md`. GitHub is the primary execution record;
-Linear, when configured, is a later projection/pull-inbox phase.
+Reconcile `docs/roadmap/roadmap.yaml` and `docs/roadmap/backlog.yaml` with durable execution
+reality, then re-render `docs/SLICES.md` and `docs/BACKLOG.md`. Linear, when configured, is a later
+projection/pull-inbox phase. **Both profiles** run this skill; what counts as ground truth follows
+the work profile:
+
+- **engineering** (`meta.profile` absent or `engineering`): GitHub is the execution record — merged
+  PRs and Gauntlet PR evidence (steps 2–4 below).
+- **general** (`meta.profile: general`): the committed artifact and its sidecar are the record.
+  Run `roadmap conduct reconcile` (or the `conduct_reconcile` tool): every conducted run with an
+  acknowledged current-head `PASS` proposes its slice complete. Inspect each proposal (the
+  artifact path, the acknowledged verdict's locator, the round count), then apply with
+  `--apply` / `apply=true`, which writes through the store. Skip steps 2–4 and continue at 5.
 
 1. **Window.** Use `--since <date>` when given; otherwise infer from the newest PR already cited
    in canonical YAML, falling back to roughly 14 days.
@@ -46,5 +55,6 @@ Linear, when configured, is a later projection/pull-inbox phase.
    flip, list any stale/missing Gauntlet verdicts, and name ambiguous associations. Note unrelated
    dirty work without touching it.
 
-This is a docs/data reconciliation, not a product-code test gate. The Gauntlet concludes the
-artifact review; `/sync` records the already-authorized merge in the planning graph.
+This is a docs/data reconciliation, not a product-code test gate. The Gauntlet (or, under the
+general profile, `/conduct`) concludes the artifact review; `/sync` records the already-authorized
+outcome in the planning graph.

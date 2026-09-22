@@ -46,9 +46,13 @@ and the conducted loop (`conduct.mjs`: start / status / critic / verdict / ack /
 with `roadmap conduct` / `roadmap assign` and `conduct_*` MCP tools; core gained the `artifact`
 field, checklist-gate rendering and gate/artifact validation. The exit test round-trips a
 touches-free general roadmap through the whole loop on a markdown artifact and survives ledger
-loss. Next is `skills-agents`.
+loss. Slice 8 `skills-agents` is complete: `/conduct` + `/assign` skills (general), profile banners
+on `/fanout` + `/gauntlet`, both-profile wording in `/sync` `/backlog` `/slice` `/init` and the
+agents, hooks re-pointed at the packages and driven by the profile's `nudge` / `sessionHint`
+(the Stop hook is engineering-only), manifests updated; `packages/cli/test/plugin-assets.mjs`
+pins skills to the registries and runs both hooks per profile. Next is `docs`.
 
-Next command: `roadmap show skills-agents`.
+Next command: `roadmap show docs`.
 
 ## Slices
 
@@ -60,9 +64,9 @@ Next command: `roadmap show skills-agents`.
 | 4 | `gauntlet-split` | complete | `dfbc8c9` | 475 tests; contract on memory + github-pr |
 | 5 | `exec-engineering` | complete | `c1bd959` | 499 tests; Executor contract on memory + worktree-session + cloud-dispatch; golden launcher fixtures |
 | 6 | `profile-loader` | complete | `75ce038` | 504 tests; single reader + rule 1c in the boundary check |
-| 7 | `exec-general` | complete | (this branch, slice 7 commit) | 522 tests; git-file + human + doc-agent on the contracts; round-trip exit test |
-| 8 | `skills-agents` | next | — | |
-| 9 | `docs` | scheduled | — | |
+| 7 | `exec-general` | complete | `5330492` | 522 tests; git-file + human + doc-agent on the contracts; round-trip exit test |
+| 8 | `skills-agents` | complete | (this branch, slice 8 commit) | 524 tests; skills pinned to the registries; hooks per profile |
+| 9 | `docs` | next | — | |
 | 10 | `unshim` | scheduled | — | |
 
 ## Decisions log

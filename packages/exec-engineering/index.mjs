@@ -7,6 +7,8 @@ import { githubPrArtifact } from "./src/github-pr-artifact.mjs";
 import { engineeringPlanContext } from "./src/plan-engineering.mjs";
 import { ENGINEERING_TOOLS, callEngineeringTool } from "./src/mcp-engineering.mjs";
 import { engineeringValidators } from "./src/validate-engineering.mjs";
+import { mergedPrs } from "./src/external-state.mjs";
+import { findUnrecordedMerges, reconcileNudge } from "./src/reconcile-core.mjs";
 
 export const PACKAGE = "@connorbritain/roadmap-exec-engineering";
 export { worktreeSessionExecutor, cloudDispatchExecutor, githubPrArtifact, engineeringPlanContext };
@@ -29,5 +31,9 @@ export async function profile(root) {
     mcp: { tools: ENGINEERING_TOOLS, call: (name, args) => callEngineeringTool(name, args, { root }) },
     skills: SKILLS,
     planContext: engineeringPlanContext({ cwd: root }),
+    // SessionStart: the reconcile nudge (merged PRs whose slices are still open; gh-guarded,
+    // never throws) and the closing hint in this profile's vocabulary.
+    nudge: (graph) => reconcileNudge(findUnrecordedMerges(graph, mergedPrs(root))),
+    sessionHint: "Use /slice <name> to orient, /fanout to launch a wave, or 'roadmap plan' for the full wave map.",
   };
 }

@@ -55,6 +55,8 @@ export async function loadProfile(meta, { root = process.cwd(), importImpl = (s)
   if (typeof pkg.profile !== "function") throw new Error(`${PACKAGES[name]} exports no profile(root) factory`);
   const registered = await pkg.profile(root);
   const merged = assertProfile({
+    nudge: () => "",          // SessionStart reconcile nudge (optional; profiles override)
+    sessionHint: "Use /slice <name> to orient, or 'roadmap plan' for the full wave map.",
     ...registered,
     name, package: PACKAGES[name],
     commands: { ...CORE_COMMANDS, ...(registered.commands || {}) },

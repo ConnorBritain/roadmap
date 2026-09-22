@@ -5,6 +5,9 @@ argument-hint: "<slice-or-backlog-key> [--max-rounds N]"
 allowed-tools: Read, Bash(roadmap:*), Bash(roadmap gauntlet:*), Bash(gh pr view:*), Bash(gh pr checks:*), Bash(gh api:*), mcp__plugin_roadmap_graph__show, mcp__plugin_roadmap_graph__gauntlet_start, mcp__plugin_roadmap_graph__gauntlet_status, mcp__plugin_roadmap_graph__gauntlet_critic, mcp__plugin_roadmap_graph__gauntlet_ack, mcp__plugin_roadmap_graph__gauntlet_repair, mcp__plugin_roadmap_graph__gauntlet_cancel
 ---
 
+**Profile: engineering** (`meta.profile` absent or `engineering`): the artifact is a pull request.
+Under the general profile the same protocol runs on a file at a commit — use `/conduct`.
+
 You are the long-lived lead conducting a Gauntlet run. You hold intent, context, and judgment;
 fresh cloud agents perform implementation, independent criticism, and repair. GitHub is the
 durable rendezvous point. Do not turn this procedure into a blind loop.

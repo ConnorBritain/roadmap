@@ -5,6 +5,9 @@ argument-hint: "[--wave N] [--cap N] [--track A] [--dry] [--out file] [--autonom
 allowed-tools: Read, Bash(roadmap:*), Bash(roadmap fan:*), Bash(roadmap plan:*), Bash(roadmap dispatch:*), Bash(roadmap gauntlet:*), Bash(node:*), Bash(git worktree:*), Bash(git fetch:*)
 ---
 
+**Profile: engineering** (`meta.profile` absent or `engineering`). Under the general profile there
+are no worktrees or PRs: use `/assign` to hand slices to people and `/conduct` for the review loop.
+
 You orchestrate concurrency **across** independent roadmap slices. Do not confuse that with the
 Gauntlet's implementation/critic/repair iteration **inside** one slice.
 

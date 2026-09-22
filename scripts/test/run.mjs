@@ -118,6 +118,7 @@ import "../../packages/exec-engineering/test/github-pr-artifact.mjs";
 import "../../packages/exec-engineering/test/executors.mjs";
 import "../../packages/exec-engineering/test/launchers.mjs";
 import "../../packages/cli/test/profile.mjs";
+import "../../packages/cli/test/plugin-assets.mjs";
 import "../../packages/exec-general/test/general.mjs";
 
 

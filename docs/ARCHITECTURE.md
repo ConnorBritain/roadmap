@@ -45,6 +45,13 @@ verdict / ack / repair / reconcile, driving core's protocol unchanged) with its 
 gate rendering, and gate/artifact shape validation. The exit test in
 `packages/exec-general/test/general.mjs` round-trips a touches-free general roadmap through the
 whole loop on a markdown artifact and survives ledger loss.
+The `skills-agents` slice then made the plugin assets follow the registry: `/conduct` and
+`/assign` (general) joined the skills; `/fanout` and `/gauntlet` carry a `**Profile:
+engineering**` banner; `/sync`, `/backlog`, `/slice` and `/init` describe both profiles; the
+agents name their evidence per profile; both hooks import packages by name and ask the loaded
+profile for what differs (`nudge`, `sessionHint`; the Stop hook is a no-op outside engineering,
+where the branch convention lives); the manifests describe both loops. A test pins skills on disk
+to the registries (`CORE_SKILLS` + each package's `SKILLS`) and drives both hooks per profile.
 
 ## Why
 

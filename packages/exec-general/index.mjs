@@ -9,6 +9,7 @@ import { humanExecutor, docAgentExecutor, artifactPathFor } from "./src/executor
 import { gitFileArtifact } from "./src/git-file-artifact.mjs";
 import { generalValidators } from "./src/validate-general.mjs";
 import { GENERAL_TOOLS, callGeneralTool } from "./src/mcp-general.mjs";
+import { conductReconcile } from "./src/conduct.mjs";
 
 export const PACKAGE = "@connorbritain/roadmap-exec-general";
 export { humanExecutor, docAgentExecutor, gitFileArtifact };
@@ -30,5 +31,11 @@ export async function profile(root) {
     skills: SKILLS,
     // buildPlan's capacity/annotate: review capacity, and the artifact + brief per node.
     planContext: { capacity: (ready, graph) => human.capacity(graph), annotate: (n) => ({ ...human.annotate(n), artifact: artifactPathFor(n) }) },
+    // SessionStart: conducted runs whose artifact passed but whose slice is still open.
+    nudge: () => {
+      const pending = conductReconcile(root, {}).proposals.filter((p) => p.proposal === "complete").map((p) => p.key);
+      return pending.length ? `${pending.length} conducted slice(s) passed but are still open (${pending.join(", ")}) — run /sync (roadmap conduct reconcile --apply).` : "";
+    },
+    sessionHint: "Use /slice <name> to orient, /assign to hand a slice to someone, /conduct to run its review loop, or 'roadmap plan' for the full wave map.",
   };
 }
