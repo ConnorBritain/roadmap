@@ -1,0 +1,34 @@
+# Erratic work for the roadmap repo itself. Rendered to docs/BACKLOG.md.
+meta:
+  schema_version: 1
+items:
+  - id: b1
+    title: roadmap.schema.json meta is additionalProperties:false but code reads command_lane, assistants, jira, audit; backlog.schema.json lacks meta.audit
+    kind: bug
+    status: open
+    priority: { tier: P2, weight: 50, reason: a strict schema check of a real roadmap.yaml using any of these fails }
+    source: { date: 2026-09-22, note: found while mapping dependencies for docs/ARCHITECTURE.md }
+    refs: [core-extract]
+    touches: [schema/roadmap.schema.json, schema/backlog.schema.json]
+    est_sessions: 0.5
+    gate: default
+  - id: b2
+    title: Fold the inline gh/git probe copies in hooks/session-start.mjs, watch-prs.mjs, cleanup.mjs into external-state.mjs (its own TODO at lines 12-14)
+    kind: chore
+    status: open
+    priority: { tier: P3, reason: do it when those files move into exec-engineering }
+    source: { date: 2026-09-22 }
+    refs: [exec-engineering]
+    touches: [scripts/lib/external-state.mjs, hooks/session-start.mjs, scripts/watch-prs.mjs, scripts/cleanup.mjs]
+    est_sessions: 0.5
+    gate: default
+  - id: b3
+    title: mcp.mjs SERVER_INFO.version is hardcoded 0.6.0; read package.json
+    kind: chore
+    status: open
+    priority: { tier: P3 }
+    source: { date: 2026-09-22 }
+    refs: [profile-loader]
+    touches: [scripts/mcp.mjs]
+    est_sessions: 0.25
+    gate: default

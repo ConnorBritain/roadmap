@@ -1,0 +1,32 @@
+# Contributing
+
+## Setup
+
+```bash
+npm ci
+npm test                      # 448+ pure tests, ~20 s, no network
+npm run validate              # this repo's own docs/roadmap/roadmap.yaml
+npm pack && npm run test:packed -- ./connorbritain-roadmap-*.tgz   # installed-tarball smoke
+```
+
+## Working agreements
+
+The agreements in [`AGENTS.md`](AGENTS.md) apply to humans too. In particular: mutate the YAML
+only through `lib/store.mjs` (comments must survive), keep the pure libraries pure, keep CLI
+wrappers thin, and keep changes cross-platform.
+
+## Resuming work
+
+This repo plans itself. Before touching code on an in-flight initiative:
+
+1. Read [`docs/roadmap/STATUS.md`](docs/roadmap/STATUS.md). It says which slice is open, which
+   commit last moved it, and what "resume here" means.
+2. Run `roadmap show <slice>` (or `node scripts/cli.mjs show <slice>`) and read its `read_order`.
+3. Never start a slice whose `deps` are not `complete`. `roadmap plan` shows what is ready.
+4. Work one slice per commit. The commit that finishes a slice also flips its status
+   (`roadmap set <slice> status=complete prs='["#N"]'`), updates `STATUS.md`, and re-renders
+   `docs/SLICES.md`. Tests must be green at every commit.
+5. If you stop mid-slice, leave a `resume_action` on the slice and a line in `STATUS.md` so the
+   next session (human or agent) can pick up without re-deriving context.
+6. Leftovers go to `docs/roadmap/backlog.yaml` (`roadmap backlog add …`), never into a new sprint
+   or PI; scope decisions belong to the person steering the roadmap.

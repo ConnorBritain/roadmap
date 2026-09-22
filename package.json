@@ -46,6 +46,7 @@
     "prepack": "npm test",
     "watch": "node scripts/watch-prs.mjs",
     "test": "node scripts/test/run.mjs",
+    "check:boundaries": "node scripts/check-boundaries.mjs",
     "test:packed": "node scripts/test/packed.mjs"
   },
   "dependencies": {

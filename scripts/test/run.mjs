@@ -6834,6 +6834,14 @@ test("Gauntlet ledger lock fails closed with actionable owner metadata", () => {
   rmSync(root, { recursive: true, force: true });
 });
 
+// ── package boundaries (docs/ARCHITECTURE.md) ─────────────────────────────────
+test("boundary check: core never imports an executor and only the loader reads the work profile", async () => {
+  const { checkBoundaries } = await import("../check-boundaries.mjs");
+  const r = checkBoundaries(resolve("."));
+  eq(r.unexpected, [], "no unexpected core→executor imports or stray work-profile reads");
+  eq(r.stale, [], "every EXPECTED edge still exists (delete cut edges from the list)");
+});
+
 registerEvaluationTests(test);
 registerAuthorizationTests(test);
 registerEvaluationReviewTests(test);

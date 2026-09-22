@@ -1,0 +1,167 @@
+# roadmap plans itself. Canonical planning state for this repo; docs/SLICES.md is rendered from it.
+# Narrative: ../../ROADMAP.md · live status: STATUS.md · design: ../ARCHITECTURE.md
+meta:
+  schema_version: 1
+  program: roadmap
+  north_star: docs/ARCHITECTURE.md
+  default_gate: |
+    npm test
+  base_branch: main
+  remote: origin
+  default_concurrency: 2
+  discipline:
+    pi_min_slices: 3
+  links:
+    narrative: ../../ROADMAP.md
+    status: roadmap/STATUS.md
+    strategy: ARCHITECTURE.md
+
+pis:
+  - id: core-executor-split
+    title: Core + executor packages — plan non-engineering work without a mode flag
+    status: active
+    theme: >-
+      Split the flat scripts tree into packages/core (planning + ritual + gauntlet protocol) and
+      executor packages (engineering, general) behind two interfaces, Executor and GauntletArtifact,
+      as an npm-workspaces monorepo in this repo.
+    exit_criteria: >-
+      A general-profile roadmap.yaml with no touches and checklist gates round-trips plan / render /
+      sync / gauntlet start-critic-ack-repair against a markdown artifact; existing engineering
+      roadmaps work with zero edits; shims removed; full suite + packed install + both end-to-end
+      loops green.
+    detail: docs/ARCHITECTURE.md
+    sprints:
+      - id: s1
+        title: Native estimation — port agent-time's estimator into estimate-core
+        status: next
+        invoke: estimate-native
+        what: Port shapes/risks/PERT/calibration cascade/JSONL history to JS with agent-time's tests; keep meta.estimation.engine as an optional override.
+        est_sessions: 3
+        shape: cross-cutting-feature
+        touches: [scripts/lib/estimate-core.mjs, scripts/estimate.mjs, scripts/test/run.mjs]
+        gate: |
+          {{default}}
+          PLUS node scripts/check-boundaries.mjs
+        read_order: ["docs/ARCHITECTURE.md (target layout; estimate-core is core)", "scripts/lib/estimate-core.mjs", "agent-time skills/agent-time-estimator/references/model.md"]
+        resume_action: Port estimator.py's CONFIG/SHAPES/RISKS tables and compute_estimate into estimate-core.mjs; runEstimate uses it unless meta.estimation.engine is set.
+        priority: { tier: P0, weight: 90, reason: core must price natively before estimate-core moves into packages/core }
+      - id: s2
+        title: npm workspaces — packages/core, exec-engineering, exec-general, cli
+        status: scheduled
+        invoke: workspaces
+        what: Create the four workspace packages with package.json + READMEs; root bin still works; decide the tarball `files` deliberately.
+        deps: [s1]
+        est_sessions: 1
+        shape: localized-feature
+        touches: [package.json, package-lock.json, packages/, scripts/test/packed.mjs]
+        gate: |
+          {{default}}
+          PLUS node scripts/check-boundaries.mjs
+          PLUS npm pack && node scripts/test/packed.mjs <tgz>
+        read_order: ["docs/ARCHITECTURE.md (target layout)", "scripts/test/packed.mjs"]
+      - id: s3
+        title: Extract pure core modules and tests into packages/core with shims
+        status: scheduled
+        invoke: core-extract
+        what: Move the C-verdict modules and their test sections; re-export from scripts/lib paths; normalize hardcoded docs/roadmap/roadmap.yaml literals to REL.
+        deps: [s2]
+        est_sessions: 3
+        shape: refactor
+        touches: [packages/core/, scripts/lib/, scripts/test/run.mjs]
+        gate: |
+          {{default}}
+          PLUS node scripts/check-boundaries.mjs
+        read_order: ["docs/ARCHITECTURE.md (dependency map, seams)"]
+      - id: s4
+        title: Split gauntlet into core protocol and the github-pr GauntletArtifact adapter
+        status: scheduled
+        invoke: gauntlet-split
+        what: Protocol, decisions, authorization, receipts, evaluation packets into core; githubClient becomes the github-pr adapter in exec-engineering; break the gauntlet/portfolio/evaluate/dispatch cycles; contract test.
+        deps: [s3]
+        est_sessions: 4
+        shape: refactor
+        touches: [packages/core/, packages/exec-engineering/, scripts/lib/gauntlet-core.mjs, scripts/gauntlet.mjs, scripts/evaluate.mjs]
+        gate: |
+          {{default}}
+          PLUS node scripts/check-boundaries.mjs
+        read_order: ["docs/ARCHITECTURE.md (GauntletArtifact)", "docs/GAUNTLET.md", "scripts/gauntlet.mjs"]
+      - id: s5
+        title: Engineering executor — fanout, providers, ceilings, doctor, pr-watch, code scoper
+        status: scheduled
+        invoke: exec-engineering
+        what: Move fanout/grab/wizard/cleanup/dispatch/doctor/watch-prs and their libs into exec-engineering as worktree-session and cloud-dispatch Executors; slice-scoper's grep becomes the engineering scoper; core keeps a doc-based scoper; contract test.
+        deps: [s4]
+        est_sessions: 3
+        shape: refactor
+        touches: [packages/exec-engineering/, packages/core/, scripts/fanout.mjs, scripts/dispatch.mjs, agents/slice-scoper.md]
+        gate: |
+          {{default}}
+          PLUS node scripts/check-boundaries.mjs
+        read_order: ["docs/ARCHITECTURE.md (Executor)"]
+      - id: s6
+        title: Profile loader — meta.profile read in exactly one place
+        status: scheduled
+        invoke: profile-loader
+        what: packages/cli/src/profile.mjs selects the executor package and adapters; default engineering; command/MCP/validator/skill registries merged by the loader; boundary check refuses any other read.
+        deps: [s5]
+        est_sessions: 2
+        shape: localized-feature
+        touches: [packages/cli/, scripts/cli.mjs, scripts/mcp.mjs, scripts/lib/cli-core.mjs, scripts/check-boundaries.mjs, schema/roadmap.schema.json]
+        gate: |
+          {{default}}
+          PLUS node scripts/check-boundaries.mjs
+        read_order: ["docs/ARCHITECTURE.md (profile loader, seams: CLI, MCP)"]
+      - id: s7
+        title: General executor — human + doc-agent, git-file artifact, checklist gates
+        status: scheduled
+        invoke: exec-general
+        what: Build exec-general; gates as string arrays; no ceilings; validate a general roadmap with no touches round-trips plan / render / sync / gauntlet start-critic-ack-repair against a markdown artifact.
+        deps: [s6]
+        est_sessions: 4
+        shape: cross-cutting-feature
+        touches: [packages/exec-general/, packages/core/, schema/roadmap.schema.json]
+        gate: |
+          {{default}}
+          PLUS node scripts/check-boundaries.mjs
+          PLUS the general-profile round-trip fixture test
+        read_order: ["docs/ARCHITECTURE.md (general profile, git-file adapter)", "docs/EVALUATION_RUNBOOK.md"]
+      - id: s8
+        title: Skills, agents, hooks and MCP registration follow the profile
+        status: scheduled
+        invoke: skills-agents
+        what: /init /imagine /prioritize /debrief /retro /sync /backlog stay core and work under both profiles; /fanout + /gauntlet PR text to engineering; /conduct + /assign for general; hooks/manifests re-pointed at packages/cli.
+        deps: [s7]
+        est_sessions: 2
+        shape: cross-cutting-feature
+        touches: [skills/, agents/, hooks/, monitors/, .mcp.json, .claude-plugin/]
+        gate: |
+          {{default}}
+          PLUS node scripts/check-boundaries.mjs
+        read_order: ["docs/ARCHITECTURE.md (entry points table)", "skills/gauntlet/SKILL.md", "skills/fanout/SKILL.md"]
+      - id: s9
+        title: Docs — concepts README, per-package READMEs, AGENTS.md, MIGRATION.md
+        status: scheduled
+        invoke: docs
+        what: Retire the 600-line README into concepts + install + a pointer per profile; MIGRATION.md states no YAML changes are required (profile defaults to engineering).
+        deps: [s8]
+        est_sessions: 1
+        shape: trivial-edit
+        touches: [README.md, AGENTS.md, MIGRATION.md, packages/*/README.md, docs/DEPLOYMENT.md]
+        gate: |
+          {{default}}
+        read_order: ["docs/ARCHITECTURE.md", "README.md"]
+      - id: s10
+        title: Remove shims; full suite, packed install, end-to-end fanout and conduct loops
+        status: scheduled
+        invoke: unshim
+        what: Delete the scripts/lib re-export shims; run the full suite, the installation check, a dry fanout on a fixture repo (engineering) and a conduct loop on a markdown artifact (general).
+        deps: [s9]
+        est_sessions: 2
+        shape: refactor
+        touches: [scripts/, packages/, scripts/test/]
+        gate: |
+          {{default}}
+          PLUS node scripts/check-boundaries.mjs
+          PLUS npm pack && node scripts/test/packed.mjs <tgz>
+          PLUS roadmap fan --dry on the engineering fixture; roadmap conduct on the markdown fixture
+        read_order: ["docs/roadmap/STATUS.md", "docs/ARCHITECTURE.md"]
