@@ -40,6 +40,15 @@ pis:
         read_order: ["docs/ARCHITECTURE.md (target layout; estimate-core is core)", "scripts/lib/estimate-core.mjs", "agent-time skills/agent-time-estimator/references/model.md"]
         resume_action: Port estimator.py's CONFIG/SHAPES/RISKS tables and compute_estimate into estimate-core.mjs; runEstimate uses it unless meta.estimation.engine is set.
         priority: {tier: P0, weight: 90, reason: core must price natively before estimate-core moves into packages/core}
+        estimate:
+          minutes:
+            low: 29.1
+            expected: 93.5
+            high: 262.5
+          confidence: low
+          task_id: t-20260922-4b6b
+          at: 2026-09-22T17:50:36+00:00
+          basis: UNCALIBRATED (static prior 3.0 min/round; only 0 logged outcomes) · sparse-data widening ×1.75 (n=0)
       - id: s2
         title: npm workspaces — packages/core, exec-engineering, exec-general, cli
         status: complete
@@ -54,6 +63,15 @@ pis:
           PLUS node scripts/check-boundaries.mjs
           PLUS npm pack && node scripts/test/packed.mjs <tgz>
         read_order: ["docs/ARCHITECTURE.md (target layout)", "scripts/test/packed.mjs"]
+        estimate:
+          minutes:
+            low: 15.4
+            expected: 47
+            high: 131.3
+          confidence: low
+          task_id: t-20260922-fd66
+          at: 2026-09-22T17:50:36+00:00
+          basis: UNCALIBRATED (static prior 3.0 min/round; only 0 logged outcomes) · sparse-data widening ×1.75 (n=0)
       - id: s3
         title: Extract pure core modules and tests into packages/core with shims
         status: complete
@@ -67,6 +85,15 @@ pis:
           {{default}}
           PLUS node scripts/check-boundaries.mjs
         read_order: ["docs/ARCHITECTURE.md (dependency map, seams)"]
+        estimate:
+          minutes:
+            low: 24
+            expected: 75.5
+            high: 215.3
+          confidence: low
+          task_id: t-20260922-6472
+          at: 2026-09-22T17:50:36+00:00
+          basis: UNCALIBRATED (static prior 3.0 min/round; only 0 logged outcomes) · sparse-data widening ×1.75 (n=0)
       - id: s4
         title: Split gauntlet into core protocol and the github-pr GauntletArtifact adapter
         status: complete
@@ -80,9 +107,18 @@ pis:
           {{default}}
           PLUS node scripts/check-boundaries.mjs
         read_order: ["docs/ARCHITECTURE.md (GauntletArtifact)", "docs/GAUNTLET.md", "scripts/gauntlet.mjs"]
+        estimate:
+          minutes:
+            low: 24
+            expected: 75.5
+            high: 215.3
+          confidence: low
+          task_id: t-20260922-134e
+          at: 2026-09-22T17:50:36+00:00
+          basis: UNCALIBRATED (static prior 3.0 min/round; only 0 logged outcomes) · sparse-data widening ×1.75 (n=0)
       - id: s5
         title: Engineering executor — fanout, providers, ceilings, doctor, pr-watch, code scoper
-        status: next
+        status: complete
         invoke: exec-engineering
         what: Move fanout/grab/wizard/cleanup/dispatch/doctor/watch-prs and their libs into exec-engineering as worktree-session and cloud-dispatch Executors; slice-scoper's grep becomes the engineering scoper; core keeps a doc-based scoper; contract test.
         deps: [s4]
@@ -93,9 +129,18 @@ pis:
           {{default}}
           PLUS node scripts/check-boundaries.mjs
         read_order: ["docs/ARCHITECTURE.md (Executor)"]
+        estimate:
+          minutes:
+            low: 24
+            expected: 75.5
+            high: 215.3
+          confidence: low
+          task_id: t-20260922-5746
+          at: 2026-09-22T17:50:36+00:00
+          basis: UNCALIBRATED (static prior 3.0 min/round; only 0 logged outcomes) · sparse-data widening ×1.75 (n=0)
       - id: s6
         title: Profile loader — meta.profile read in exactly one place
-        status: scheduled
+        status: next
         invoke: profile-loader
         what: packages/cli/src/profile.mjs selects the executor package and adapters; default engineering; command/MCP/validator/skill registries merged by the loader; boundary check refuses any other read.
         deps: [s5]
@@ -106,6 +151,15 @@ pis:
           {{default}}
           PLUS node scripts/check-boundaries.mjs
         read_order: ["docs/ARCHITECTURE.md (profile loader, seams: CLI, MCP)"]
+        estimate:
+          minutes:
+            low: 15.4
+            expected: 47
+            high: 131.3
+          confidence: low
+          task_id: t-20260922-8da2
+          at: 2026-09-22T17:50:36+00:00
+          basis: UNCALIBRATED (static prior 3.0 min/round; only 0 logged outcomes) · sparse-data widening ×1.75 (n=0)
       - id: s7
         title: General executor — human + doc-agent, git-file artifact, checklist gates
         status: scheduled
@@ -120,6 +174,15 @@ pis:
           PLUS node scripts/check-boundaries.mjs
           PLUS the general-profile round-trip fixture test
         read_order: ["docs/ARCHITECTURE.md (general profile, git-file adapter)", "docs/EVALUATION_RUNBOOK.md"]
+        estimate:
+          minutes:
+            low: 29.1
+            expected: 93.5
+            high: 262.5
+          confidence: low
+          task_id: t-20260922-7d08
+          at: 2026-09-22T17:50:36+00:00
+          basis: UNCALIBRATED (static prior 3.0 min/round; only 0 logged outcomes) · sparse-data widening ×1.75 (n=0)
       - id: s8
         title: Skills, agents, hooks and MCP registration follow the profile
         status: scheduled
@@ -133,6 +196,15 @@ pis:
           {{default}}
           PLUS node scripts/check-boundaries.mjs
         read_order: ["docs/ARCHITECTURE.md (entry points table)", "skills/gauntlet/SKILL.md", "skills/fanout/SKILL.md"]
+        estimate:
+          minutes:
+            low: 29.1
+            expected: 93.5
+            high: 262.5
+          confidence: low
+          task_id: t-20260922-5945
+          at: 2026-09-22T17:50:36+00:00
+          basis: UNCALIBRATED (static prior 3.0 min/round; only 0 logged outcomes) · sparse-data widening ×1.75 (n=0)
       - id: s9
         title: Docs — concepts README, per-package READMEs, AGENTS.md, MIGRATION.md
         status: scheduled
@@ -145,6 +217,15 @@ pis:
         gate: |
           {{default}}
         read_order: ["docs/ARCHITECTURE.md", "README.md"]
+        estimate:
+          minutes:
+            low: 5.1
+            expected: 11
+            high: 36.8
+          confidence: low
+          task_id: t-20260922-6cb6
+          at: 2026-09-22T17:50:36+00:00
+          basis: UNCALIBRATED (static prior 3.0 min/round; only 0 logged outcomes) · sparse-data widening ×1.75 (n=0)
       - id: s10
         title: Remove shims; full suite, packed install, end-to-end fanout and conduct loops
         status: scheduled
@@ -160,3 +241,12 @@ pis:
           PLUS npm pack && node scripts/test/packed.mjs <tgz>
           PLUS roadmap fan --dry on the engineering fixture; roadmap conduct on the markdown fixture
         read_order: ["docs/roadmap/STATUS.md", "docs/ARCHITECTURE.md"]
+        estimate:
+          minutes:
+            low: 24
+            expected: 75.5
+            high: 215.3
+          confidence: low
+          task_id: t-20260922-ea95
+          at: 2026-09-22T17:50:36+00:00
+          basis: UNCALIBRATED (static prior 3.0 min/round; only 0 logged outcomes) · sparse-data widening ×1.75 (n=0)

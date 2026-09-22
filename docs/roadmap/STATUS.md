@@ -1,7 +1,7 @@
 # Status — PI `core-executor-split`
 
 Last updated: 2026-09-22 · branch `claude/roadmap-core-executor-split-hjrbxn` · baseline `main@565f96c`
-(448 tests passing).
+(448 tests passing; 499 after slice 5).
 
 Canonical state: [`roadmap.yaml`](roadmap.yaml) · rendered: [`../SLICES.md`](../SLICES.md) ·
 design: [`../ARCHITECTURE.md`](../ARCHITECTURE.md) · narrative: [`../../ROADMAP.md`](../../ROADMAP.md).
@@ -22,11 +22,19 @@ exercise core through the shims are the mixed ones (they assert on branches, PRs
 the protocol lives in core and reads only the neutral artifact shape; the github-pr adapter and the
 protected authority store live in exec-engineering; the runtime is `scripts/lib/gauntlet-runtime.mjs`
 (no import cycles left); the contract test passes on the in-memory reference and the github-pr
-adapter. The runtime still calls the adapter by its GitHub-era method names through
-`asGauntletArtifact`; it switches to the canonical names when it moves in `exec-engineering`. Next
-is `exec-engineering`.
+adapter. Slice 5 `exec-engineering` is complete: every engineering library and the gauntlet runtime
+live in `packages/exec-engineering/src` (shims at `scripts/lib/*`); the CLI bodies of `linear`,
+`estimate`, `cycle` (core `*-io.mjs`) and `dispatch`, `evaluate` (`cloud-dispatch.mjs`,
+`evaluate-runtime.mjs`) moved out of their script files; the Executor interface, its contract test
+and the generic scoper are in core (`executor.mjs`); `worktreeSessionExecutor` and
+`cloudDispatchExecutor` pass the contract; `fanout`/`grab`/`cleanup` are thin CLIs whose dry runs
+are pinned byte for byte by golden fixtures (`scripts/test/fixtures/launchers/`). The gauntlet
+runtime still calls the adapter by its GitHub-era names through `asGauntletArtifact`; the
+canonical-name switch is deferred to `unshim`. Dogfooding note: `roadmap estimate --all` wrote
+native `estimate:` blocks into this PI's slices (uncalibrated priors; the first `roadmap estimate
+log` outcomes will calibrate them). Next is `profile-loader`.
 
-Next command: `roadmap show exec-engineering`.
+Next command: `roadmap show profile-loader`.
 
 ## Slices
 
@@ -35,9 +43,9 @@ Next command: `roadmap show exec-engineering`.
 | 1 | `estimate-native` | complete | `682b575` | 462 tests; agent-time's test suite ported |
 | 2 | `workspaces` | complete | `d32b04d` | packages scaffolded; packed check covers all tarballs |
 | 3 | `core-extract` | complete | `384282d` | 24 modules + core tests moved; 7 edges cut; shims remain |
-| 4 | `gauntlet-split` | complete | (this branch, slice 4 commit) | 475 tests; contract on memory + github-pr |
-| 5 | `exec-engineering` | next | — | |
-| 6 | `profile-loader` | scheduled | — | single `meta.profile` reader |
+| 4 | `gauntlet-split` | complete | `dfbc8c9` | 475 tests; contract on memory + github-pr |
+| 5 | `exec-engineering` | complete | (this branch, slice 5 commit) | 499 tests; Executor contract on memory + worktree-session + cloud-dispatch; golden launcher fixtures |
+| 6 | `profile-loader` | next | — | single `meta.profile` reader |
 | 7 | `exec-general` | scheduled | — | general round-trip fixture is the exit test |
 | 8 | `skills-agents` | scheduled | — | |
 | 9 | `docs` | scheduled | — | |

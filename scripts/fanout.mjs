@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// roadmap — fanout launcher.
+// roadmap — fanout launcher (thin CLI over the worktree-session executor).
 // Computes the ready wave (auto-capped by the resource/purpose recommender unless
 // --cap is given) and launches each slice in its own git worktree via a terminal
 // adapter. Default terminal is tmux: a LEAD pane (your review/merge session) plus
@@ -14,18 +14,16 @@
 //                   [--launch] [--yes-spawn-autonomous] [--out file]
 
 import { writeFileSync } from "node:fs";
-import { spawn, spawnSync } from "node:child_process";
-import os from "node:os";
+import { spawnSync } from "node:child_process";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadGraph, flatten, computeWaves, readyNodes, coherenceEnabled } from "./lib/graph.mjs";
-import { recommendConcurrency, probeDisk, probeReviewDebt } from "./lib/recommend.mjs";
-import { synthesizeBrief, branchFor, worktreeFor, launchPrompt, baseRefOf, remoteOf, agentCmdFor } from "./lib/brief.mjs";
-import { launchDecision, bashWorktreeLines, pwshWorktreeLines, diskBlockLines } from "./lib/fanout-core.mjs";
-import { terminalChoices } from "./lib/wizard-core.mjs";
-import { filterByTrack } from "./lib/execution.mjs";
-import { readLocalConfig, resolveProfile, commandFor, launchDecisionForProfile } from "./lib/assistant-core.mjs";
-import { REL } from "./lib/cli-core.mjs";
+import { loadGraph } from "@connorbritain/roadmap-core/graph.mjs";
+import { REL } from "@connorbritain/roadmap-core/cli-core.mjs";
+import { planCloudWave } from "@connorbritain/roadmap-exec-engineering/cloud-dispatch.mjs";
+import {
+  planWave, launchSettings, renderWaveScript, waveLaunchDecision, waveSummaryLine,
+  withBom, spawnLaunchScript, commandExists, commandExistsWin,
+} from "@connorbritain/roadmap-exec-engineering/worktree-session.mjs";
 
 const args = process.argv.slice(2);
 const val = (n, d) => { const i = args.indexOf(n); return i >= 0 && args[i + 1] && !args[i + 1].startsWith("--") ? args[i + 1] : d; };
@@ -34,274 +32,52 @@ const has = (n) => args.includes(n);
 const inPath = val("--in", join(...REL));
 const waveIdx = Number(val("--wave", 1));
 const track = val("--track", null);             // forward-compat: fan out only one lane of the three-track partition
-const lane = val("--lane", "max");              // max (subscription) | api (ANTHROPIC_API_KEY)
-const autonomous = has("--autonomous");          // headless claude -p (else interactive, watchable)
 const dry = has("--dry") || has("--print");      // preview only — launch is the DEFAULT
-const okAutonomous = has("--yes-spawn-autonomous");
-const leadClaude = has("--lead-claude");         // launch claude in the lead pane (else a shell)
-const requestedAssistant = val("--assistant", null);
-const requestedLaunch = has("--launch");
 const outFile = val("--out", null);
-// The lead pane's claude prompt (only with --lead-claude). It coordinates; it cannot see the
-// workers' context (separate processes) but observes their PRs/branches and merges.
-const LEAD_PROMPT = "You are the LEAD for this fanout wave. The other panes are independent worker sessions - each owns one slice in its own git worktree and opens a PR. You cannot see their context, but you can observe their work: run gh pr list to see PRs, use git to inspect branches and worktrees, and review then merge each PR in dependency order as it lands. Only you merge - workers never do. Do not write slice code yourself.";
 
 const graph = loadGraph(inPath);
-const wtRootOverride = val("--worktree-root", null);
-if (wtRootOverride) (graph.meta ||= {}).worktree_root = wtRootOverride;
-const model = flatten(graph);
-// Terminal default is platform-aware (no machine-specifics in the committed YAML):
-// Windows → Windows Terminal tabs; elsewhere → tmux panes. terminalChoices() owns that rule.
-const term = val("--term", (graph.meta && graph.meta.terminal) || terminalChoices(os.platform())[0]);
-// Worker permission mode: flag > meta.worker_mode > 'plan'. The lead session uses the same mode.
-const workerMode = val("--worker-mode", (graph.meta && graph.meta.worker_mode) || "plan");
-const { config: localConfig } = readLocalConfig(process.cwd());
-const profile = resolveProfile(graph, localConfig, requestedAssistant);
 
-// ── cloud fanout: dispatch the wave to CLOUD agents via Linear instead of local worktrees.
-// Placed BEFORE all worktree/disk/terminal logic on purpose — no disk ceiling, no checkout:
-// the bottleneck moves from this machine to the agent plan's limits. (v0.5 seam — dispatch
-// itself is pending live verification; see scripts/dispatch.mjs.)
+// ── cloud fanout: dispatch the wave to CLOUD agents instead of local worktrees. Placed BEFORE
+// all worktree/disk/terminal logic on purpose — no disk ceiling, no checkout.
 if (has("--cloud")) {
-  // Machine ceilings vanish; the REVIEW ceiling doesn't — a human still merges the PRs.
-  const cloudCap = has("--cap") ? Number(val("--cap", 5)) : Number(val("--review-ceiling", 5));
-  const { waves: cloudWaves } = computeWaves(model, cloudCap, { coherence: coherenceEnabled(graph.meta) });
-  const wave = filterByTrack(cloudWaves[waveIdx - 1] || [], track);
-  if (!wave.length) { console.error(`No runnable slices in wave ${waveIdx} (cap ${cloudCap}).`); process.exit(0); }
-  console.error(`cloud fanout: wave ${waveIdx}, ${wave.length} slice(s) → roadmap dispatch (no worktrees, no disk ceiling; cap = review ceiling ${cloudCap})`);
+  const cloud = planCloudWave(graph, { cap: has("--cap") ? val("--cap", 5) : null, reviewCeiling: val("--review-ceiling", 5), wave: waveIdx, track });
+  if (!cloud.wave.length) { console.error(`No runnable slices in wave ${waveIdx} (cap ${cloud.cap}).`); process.exit(0); }
+  console.error(`cloud fanout: wave ${waveIdx}, ${cloud.wave.length} slice(s) → roadmap dispatch (no worktrees, no disk ceiling; cap = review ceiling ${cloud.cap})`);
   const scriptsDir = dirname(fileURLToPath(import.meta.url));
   let failed = 0;
-  for (const n of wave) {
+  for (const n of cloud.wave) {
     const r = spawnSync("node", [join(scriptsDir, "dispatch.mjs"), n.invoke, ...(val("--to") ? ["--to", val("--to")] : [])], { stdio: "inherit" });
     if ((r.status ?? 1) !== 0) failed += 1;
   }
   process.exit(failed ? 1 : 0);
 }
 
-const ready = readyNodes(model);
-const rec = recommendConcurrency(ready, graph, {
-  reviewCeiling: Number(val("--review-ceiling", 5)),
-  reviewDebt: probeReviewDebt(process.cwd(), graph),
-  today: new Date().toISOString().slice(0, 10),
-  disk: probeDisk(graph),
-});
-// Disk hard-block: auto-dialing handles the soft path (recommended >= 1), but when even ONE
-// worktree won't fit, launching would fail mid-checkout — refuse before creating anything.
-if (rec.disk && rec.disk.cap < 1) {
-  diskBlockLines(rec.disk).forEach((l) => console.error(l));
-  process.exit(1);
-}
-const cap = has("--cap") ? Number(val("--cap", rec.recommended)) : rec.recommended;
-
-let waves;
-try { ({ waves } = computeWaves(model, cap, { coherence: coherenceEnabled(graph.meta) })); }
-catch (e) { console.error(`✗ ${e.message}`); process.exit(1); }
-
-const fullWave = waves[waveIdx - 1] || [];
-// Optional --track filter: a person fans out only their lane (slices whose `track` matches).
-const wave = filterByTrack(fullWave, track);
-if (!wave.length) {
-  const trackNote = track ? ` on track ${track} (of ${fullWave.length} in the wave)` : "";
-  console.error(`No runnable slices in wave ${waveIdx} (cap ${cap})${trackNote}.`);
+let plan;
+try {
+  plan = planWave(graph, { root: process.cwd(), worktreeRoot: val("--worktree-root", null), wave: waveIdx, track,
+    cap: has("--cap") ? val("--cap", null) : null, reviewCeiling: Number(val("--review-ceiling", 5)) });
+} catch (e) { console.error(`✗ ${e.message}`); process.exit(1); }
+if (plan.blocked) { plan.lines.forEach((l) => console.error(l)); process.exit(1); }
+if (!plan.wave.length) {
+  const trackNote = track ? ` on track ${track} (of ${plan.fullWave.length} in the wave)` : "";
+  console.error(`No runnable slices in wave ${waveIdx} (cap ${plan.cap})${trackNote}.`);
   process.exit(0);
 }
 
-// claude invocation per session. Interactive workers START IN PLAN MODE (--permission-mode
-// plan) so each plans its slice before touching anything; autonomous workers run headless.
-function claudeCmd(node) {
-  const prompt = launchPrompt(node);
-  if (profile.name === "manual") return `echo "${node.invoke}: worktree and .kickoff.md ready; start your configured assistant here."`;
-  // meta.agent_cmd remains the legacy Claude compatibility path. New local profiles win.
-  const base = profile.command
-    ? commandFor(profile, { prompt, mode: autonomous ? "acceptEdits" : workerMode })
-    : agentCmdFor(graph, { prompt, mode: workerMode });
-  const withLane = lane === "api"
-    ? `ANTHROPIC_API_KEY="$ROADMAP_API_KEY" ${base}`     // api overflow lane (rarely used)
-    : base;                                                    // max: inherit the logged-in subscription
-  return withLane;
-}
-
-const repoRoot = process.cwd();
-
-// ── adapters ─────────────────────────────────────────────────────────────────
-function tmuxScript() {
-  const session = "roadmap";
-  const L = [];
-  L.push(`#!/usr/bin/env bash`);
-  L.push(`# roadmap fanout — wave ${waveIdx}, cap ${cap}, ${wave.length} slice(s), terminal=tmux, lane=${lane}, ${autonomous ? "autonomous" : "interactive"}`);
-  L.push(`set -euo pipefail`);
-  L.push(`git fetch ${remoteOf(graph)} --quiet`);
-  L.push(``);
-  L.push(`# 1) one worktree + uncommitted kickoff brief per slice`);
-  for (const n of wave) {
-    L.push(...bashWorktreeLines(worktreeFor(n, graph), branchFor(n, graph), baseRefOf(graph), synthesizeBrief(n, graph)));
-  }
-  L.push(``);
-  L.push(`# 2) tmux: lead pane (review/merge) + one pane per slice`);
-  L.push(`tmux kill-session -t ${session} 2>/dev/null || true`);
-  L.push(`tmux new-session -d -s ${session} -n wave${waveIdx} -c "${repoRoot}"`);
-  L.push(`tmux set -g pane-border-status top 2>/dev/null || true`);
-  L.push(`tmux select-pane -t ${session} -T "LEAD — review + merge PRs (workers never merge)"`);
-  L.push(leadClaude
-    ? `tmux send-keys -t ${session} '${agentCmdFor(graph, { prompt: LEAD_PROMPT, mode: workerMode })}' C-m`
-    : `tmux send-keys -t ${session} 'echo "LEAD pane - review + merge each slice PR as it lands. Workers do NOT merge."' C-m`);
-  for (const n of wave) {
-    const wt = worktreeFor(n, graph);
-    L.push(`tmux split-window -t ${session} -c "${wt}"`);
-    L.push(`tmux select-pane -t ${session} -T "${n.invoke}"`);
-    L.push(`tmux send-keys -t ${session} '${claudeCmd(n)}' C-m`);
-    L.push(`tmux select-layout -t ${session} tiled >/dev/null`);
-  }
-  L.push(`tmux select-layout -t ${session} main-vertical`);
-  L.push(`tmux attach -t ${session}`);
-  return L.join("\n") + "\n";
-}
-
-function printCommands() {
-  const out = [];
-  out.push(`# fanout wave ${waveIdx} — cap ${cap}, ${wave.length} slice(s), lane=${lane}, ${autonomous ? "autonomous" : "interactive"}`);
-  out.push(`git fetch ${remoteOf(graph)} --quiet`);
-  for (const n of wave) {
-    out.push(`git worktree add "${worktreeFor(n, graph)}" -b "${branchFor(n, graph)}" ${baseRefOf(graph)}   # ${n.invoke}`);
-    out.push(`(cd "${worktreeFor(n, graph)}" && ${claudeCmd(n)})`);
-  }
-  return out.join("\n") + "\n";
-}
-
-function basicTerminalScript(kind) {
-  // warp / wt / background — minimal per-node launchers (full adapters are P3 polish).
-  const out = [`# fanout wave ${waveIdx} via ${kind} (basic adapter)`];
-  for (const n of wave) {
-    const wt = worktreeFor(n, graph), cmd = claudeCmd(n);
-    out.push(`git worktree add "${wt}" -b "${branchFor(n, graph)}" ${baseRefOf(graph)} 2>/dev/null || true   # ${n.invoke}`);
-    if (kind === "wt") out.push(`wt new-tab --title "${n.invoke}" -d "${wt}" powershell -NoExit -Command '${cmd}'`);
-    else if (kind === "warp") out.push(`# Warp: open a tab at ${wt} running: ${cmd}  (Warp launch-config adapter is P3)`);
-    else out.push(`(cd "${wt}" && ${cmd}) &   # background`);
-  }
-  return out.join("\n") + "\n";
-}
-
-// claude invocation for a PowerShell tab (single-quote the prompt so the outer -Command "" needs no escaping).
-// Interactive workers start in PLAN MODE; autonomous run headless.
-function claudeCmdPwsh(node) {
-  const prompt = launchPrompt(node);
-  if (profile.name === "manual") return `Write-Host '${node.invoke}: worktree and .kickoff.md ready; start your configured assistant here.'`;
-  return profile.command
-    ? commandFor(profile, { prompt, mode: autonomous ? "acceptEdits" : workerMode })
-    : agentCmdFor(graph, { prompt, mode: workerMode, quote: "'" });
-}
-
-// Windows Terminal adapter: a self-contained PowerShell script — worktree + brief per slice,
-// then one `wt` window with a LEAD tab + one tab per slice (each cd'd into its worktree).
-function wtScript() {
-  const L = [];
-  L.push(`# roadmap fanout — wave ${waveIdx}, cap ${cap}, ${wave.length} slice(s), terminal=wt, lane=${lane}, ${autonomous ? "autonomous" : "interactive"}`);
-  if (lane === "api") L.push(`# note: --lane api is not yet wired for the wt adapter; using the logged-in (max) session.`);
-  L.push(`$ErrorActionPreference = 'Continue'`);   // git writes progress to stderr; 'Stop' would abort on it
-  L.push(`git fetch ${remoteOf(graph)} --quiet`);
-  L.push(``);
-  L.push(`# 1) one worktree + uncommitted kickoff brief per slice`);
-  for (const n of wave) {
-    L.push(...pwshWorktreeLines(worktreeFor(n, graph), branchFor(n, graph), baseRefOf(graph), synthesizeBrief(n, graph)));
-  }
-  L.push(``);
-  L.push(`# 2) Windows Terminal: a LEAD tab + one tab per slice`);
-  // ';' is wt's tab delimiter — it splits on ';' even inside quotes, so NEVER let one reach wt
-  // inside a tab command (a ';' in a prompt would spawn bogus tabs). Replace with a comma.
-  const wtSafe = (s) => s.replace(/;/g, ",");
-  const lead = leadClaude
-    ? agentCmdFor(graph, { prompt: LEAD_PROMPT, mode: workerMode, quote: "'" })
-    : `Write-Host 'LEAD tab - review + merge each slice PR as it lands. Workers do NOT merge.'`;
-  const parts = [`new-tab --title "LEAD" -d "${repoRoot}" powershell -NoExit -Command "${wtSafe(lead)}"`];
-  for (const n of wave) {
-    parts.push(`new-tab --title "${n.invoke}" -d "${worktreeFor(n, graph)}" powershell -NoExit -Command "${wtSafe(claudeCmdPwsh(n))}"`);
-  }
-  // Launch via Start-Process so ShellExecute resolves the 'wt' App Execution Alias — bare `wt`
-  // name-resolution fails from a non-interactive script (the alias is a 0-byte reparse point).
-  // The full command line is a literal here-string (no quote-escaping); tabs are ';'-separated.
-  L.push(`$wtArgs = @'`);
-  L.push(parts.join(" ; "));
-  L.push(`'@`);
-  L.push(`Start-Process wt -ArgumentList $wtArgs`);
-  return L.join("\n") + "\n";
-}
-
-// Warp adapter: Warp HAS a scriptable launch — the warp://tab_config/<name> deeplink
-// (added 2026-05-18, the registered warp:// URI handler). So we set everything up
-// (worktrees + briefs), write a Warp Tab Config (TOML) with a lead pane + one pane per slice,
-// then fire the deeplink to open it — no manual keystroke.
-const normPath = (p) => String(p).replace(/\\/g, "/");
-function tomlSplit(id, split, children) {
-  return `[[panes]]\nid = "${id}"\nsplit = "${split}"\nchildren = [${children.map((c) => `"${c}"`).join(", ")}]\n`;
-}
-function tomlLeaf(id, dir, cmd, focused) {
-  // directory: single-quoted TOML literal (no escaping; Windows paths have no '). command:
-  // double-quoted TOML basic string — claude/echo commands use only single quotes inside.
-  // shell=powershell forces a WINDOWS shell so the pane's git matches the (Windows-created)
-  // worktree — otherwise Warp's default shell (often WSL bash) reads the C:\ gitdir and fails.
-  return `[[panes]]\nid = "${id}"\ntype = "terminal"\nshell = "powershell"\ndirectory = '${normPath(dir)}'\ncommands = ["${cmd}"]${focused ? `\nis_focused = true` : ""}\n`;
-}
-function warpTabConfigToml() {
-  const ids = wave.map((_, i) => `s${i}`);
-  const L = [`name = "roadmap-wave${waveIdx}"`, `color = "blue"`, ``];
-  // lead on the left; slices stacked on the right (one pane each)
-  L.push(tomlSplit("root", "horizontal", wave.length === 1 ? ["lead", "s0"] : ["lead", "slices"]));
-  const leadCmd = leadClaude ? agentCmdFor(graph, { prompt: LEAD_PROMPT, mode: workerMode, quote: "'" }) : `echo 'LEAD - review + merge each slice PR; workers do NOT merge'`;
-  L.push(tomlLeaf("lead", repoRoot, leadCmd, true));
-  if (wave.length > 1) L.push(tomlSplit("slices", "vertical", ids));
-  wave.forEach((n, i) => L.push(tomlLeaf(`s${i}`, worktreeFor(n, graph), claudeCmdPwsh(n), false)));
-  return L.join("\n");
-}
-function warpScript() {
-  const stem = `roadmap-wave${waveIdx}`;
-  const L = [];
-  L.push(`# roadmap fanout — wave ${waveIdx}, terminal=warp (Tab Config + warp://tab_config deeplink)`);
-  L.push(`$ErrorActionPreference = 'Continue'`);   // git writes progress to stderr; 'Stop' would abort on it
-  L.push(`git fetch ${remoteOf(graph)} --quiet`);
-  L.push(``);
-  L.push(`# 1) one worktree + uncommitted kickoff brief per slice`);
-  for (const n of wave) {
-    L.push(...pwshWorktreeLines(worktreeFor(n, graph), branchFor(n, graph), baseRefOf(graph), synthesizeBrief(n, graph)));
-  }
-  L.push(``);
-  L.push(`# 2) write the Warp Tab Config, then open it via the warp:// deeplink`);
-  L.push(`$cfgDir = Join-Path $env:APPDATA 'warp\\Warp\\data\\tab_configs'`);
-  L.push(`New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null`);
-  L.push(`Set-Content -LiteralPath (Join-Path $cfgDir '${stem}.toml') -Encoding utf8 -Value @'`);
-  L.push(warpTabConfigToml().trimEnd());
-  L.push(`'@`);
-  L.push(`Start-Process "warp://tab_config/${stem}?new_window=true"`);
-  L.push(`Write-Host "Opened Warp tab config '${stem}' - lead + ${wave.length} slice pane(s)."`);
-  return L.join("\n") + "\n";
-}
-
-// ── render the artifact ───────────────────────────────────────────────────────
-let artifact;
-if (term === "tmux") artifact = tmuxScript();
-else if (term === "wt") artifact = wtScript();
-else if (term === "warp") artifact = warpScript();
-else if (term === "print") artifact = printCommands();
-else artifact = basicTerminalScript(term);   // background
-
-// PowerShell scripts (wt/warp) embed non-ASCII (briefs: → ✅ × §). Windows PowerShell reads
-// -File as ANSI unless the file has a UTF-8 BOM — so write those with a BOM. bash (tmux) must NOT
-// get a BOM (it would break the shebang).
-const psScript = term === "wt" || term === "warp";
-const withBom = (s) => (psScript ? "﻿" : "") + s;
-
-// Manual is the default. A locally authorized profile plus --launch is required to spawn.
-let decision;
+let settings, decision;
 try {
-  decision = outFile ? { spawn: false, mode: "wrote-script" } : dry ? { spawn: false, mode: "dry" }
-    : launchDecisionForProfile(profile, { requestedLaunch, autonomous });
-  if (autonomous && decision.spawn && !okAutonomous) decision = { spawn: false, mode: "autonomous-needs-ack" };
+  settings = launchSettings(graph, { root: process.cwd(), term: val("--term", null), workerMode: val("--worker-mode", null),
+    assistant: val("--assistant", null), lane: val("--lane", "max"), autonomous: has("--autonomous"), leadClaude: has("--lead-claude") });
+  decision = waveLaunchDecision(settings, { outFile, dry, requestedLaunch: has("--launch"), okAutonomous: has("--yes-spawn-autonomous") });
 } catch (e) { console.error(`fanout: ${e.message}`); process.exit(2); }
 
-console.error(`fanout: wave ${waveIdx}/${waves.length} · cap ${cap} (recommended ${rec.recommended}, bound by ${rec.binding.why.split(" — ")[0]}) · term=${term} · lane=${lane}${track ? ` · track=${track}` : ""} · ${decision.mode}`);
-console.error(`slices: ${wave.map((n) => n.invoke).join(", ")}`);
+const artifact = renderWaveScript(plan, settings);
+const term = settings.term;
+console.error(waveSummaryLine(plan, settings, decision));
+console.error(`slices: ${plan.wave.map((n) => n.invoke).join(", ")}`);
 
 if (outFile) {
-  writeFileSync(outFile, withBom(artifact), "utf8");
+  writeFileSync(outFile, withBom(term, artifact), "utf8");
   console.error(`\n✓ wrote launch script → ${outFile} (not launched — run it yourself, or drop --out to launch)`);
   process.exit(0);
 }
@@ -317,45 +93,23 @@ if (!decision.spawn) {
 }
 
 // LAUNCH (default).
-if (term === "tmux" || term === "background") {
-  if (term === "tmux" && !commandExists("tmux")) {
-    process.stdout.write(artifact);
-    console.error(`\n⚠ tmux not found on PATH from here (are you in PowerShell? tmux lives in WSL).`);
-    console.error(`  Above is the launch script. Run it in a tmux-capable shell, e.g.:`);
-    console.error(`    roadmap fan --wave ${waveIdx} --out wave${waveIdx}.sh   # then, in WSL:  bash wave${waveIdx}.sh`);
-    process.exit(0);
-  }
-  const p = spawn("bash", ["-c", artifact], { stdio: "inherit" });
-  p.on("exit", (code) => process.exit(code ?? 0));
-} else if (term === "wt" || term === "warp") {
-  // Both run a PowerShell script. wt opens the tabs directly; warp writes a launch config
-  // (no scriptable launch) + prints the one-keystroke open instruction.
-  if (term === "wt" && !commandExistsWin("wt")) {
-    process.stdout.write(artifact);
-    console.error(`\n⚠ Windows Terminal (wt) not found. Above is the PowerShell launch script —`);
-    console.error(`  install Windows Terminal, or 'roadmap fan --out wave${waveIdx}.ps1' and run it yourself.`);
-    process.exit(0);
-  }
-  const tmp = join(os.tmpdir(), `roadmap-wave${waveIdx}.ps1`);
-  writeFileSync(tmp, withBom(artifact), "utf8");
-  const p = spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", tmp], { stdio: "inherit" });
-  p.on("exit", (code) => process.exit(code ?? 0));
-} else {
-  // print / background → just print
+if (term === "tmux" && !commandExists("tmux")) {
   process.stdout.write(artifact);
+  console.error(`\n⚠ tmux not found on PATH from here (are you in PowerShell? tmux lives in WSL).`);
+  console.error(`  Above is the launch script. Run it in a tmux-capable shell, e.g.:`);
+  console.error(`    roadmap fan --wave ${waveIdx} --out wave${waveIdx}.sh   # then, in WSL:  bash wave${waveIdx}.sh`);
+  process.exit(0);
 }
-
-function commandExists(bin) {
-  try { return spawnSync("bash", ["-c", `command -v ${bin}`], { stdio: "ignore" }).status === 0; }
-  catch { return false; }
+if (term === "wt" && !commandExistsWin("wt")) {
+  process.stdout.write(artifact);
+  console.error(`\n⚠ Windows Terminal (wt) not found. Above is the PowerShell launch script —`);
+  console.error(`  install Windows Terminal, or 'roadmap fan --out wave${waveIdx}.ps1' and run it yourself.`);
+  process.exit(0);
 }
-function commandExistsWin(bin) {
-  // `where`/`Get-Command` miss Store App Execution Aliases (e.g. wt.exe lives in
-  // %LOCALAPPDATA%\Microsoft\WindowsApps and is a reparse point), so also Test-Path it.
-  try {
-    const r = spawnSync("powershell.exe", ["-NoProfile", "-Command",
-      `if (Get-Command ${bin} -ErrorAction SilentlyContinue) { exit 0 }; if (Test-Path (Join-Path $env:LOCALAPPDATA ('Microsoft\\WindowsApps\\${bin}.exe'))) { exit 0 }; exit 1`],
-      { stdio: "ignore" });
-    return r.status === 0;
-  } catch { return false; }
+if (term === "tmux" || term === "background" || term === "wt" || term === "warp") {
+  const code = await spawnLaunchScript(artifact, { term, tmpName: `roadmap-wave${waveIdx}` });
+  process.exit(code);
+} else {
+  // print → just print
+  process.stdout.write(artifact);
 }

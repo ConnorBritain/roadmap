@@ -12,31 +12,28 @@ Use `roadmap show <name>` to orient on a menu entry; `roadmap plan` computes rea
 Derived from the dependency graph: which slices can run concurrently right now, what waits behind them, and what is held on a human. Change the cap with `roadmap plan --cap N` or `roadmap fan --cap N`.
 
 **Wave 1** — launch concurrently (disjoint files, deps satisfied):
-- `/slice exec-engineering` — Move fanout/grab/wizard/cleanup/dispatch/doctor/watch-prs and their libs into exec-engineering as worktree-session and cloud-dispatch Executors; slice-scoper's grep becomes the engineering scoper; core keeps a doc-based scoper; contract test. · touches `packages/exec-engineering/`, `packages/core/`, `fanout.mjs`, `dispatch.mjs`, `slice-scoper.md`
-
-**Wave 2** — launch concurrently (disjoint files, deps satisfied):
 - `/slice profile-loader` — packages/cli/src/profile.mjs selects the executor package and adapters; default engineering; command/MCP/validator/skill registries merged by the loader; boundary check refuses any other read. · touches `packages/cli/`, `cli.mjs`, `mcp.mjs`, `cli-core.mjs`, `check-boundaries.mjs`, `roadmap.schema.json`
 
-**Wave 3** — launch concurrently (disjoint files, deps satisfied):
+**Wave 2** — launch concurrently (disjoint files, deps satisfied):
 - `/slice exec-general` — Build exec-general; gates as string arrays; no ceilings; validate a general roadmap with no touches round-trips plan / render / sync / gauntlet start-critic-ack-repair against a markdown artifact. · touches `packages/exec-general/`, `packages/core/`, `roadmap.schema.json`
 
-**Wave 4** — launch concurrently (disjoint files, deps satisfied):
+**Wave 3** — launch concurrently (disjoint files, deps satisfied):
 - `/slice skills-agents` — /init /imagine /prioritize /debrief /retro /sync /backlog stay core and work under both profiles; /fanout + /gauntlet PR text to engineering; /conduct + /assign for general; hooks/manifests re-pointed at packages/cli. · touches `skills/`, `agents/`, `hooks/`, `monitors/`, `.mcp.json`, `.claude-plugin/`
 
-**Wave 5** — launch concurrently (disjoint files, deps satisfied):
+**Wave 4** — launch concurrently (disjoint files, deps satisfied):
 - `/slice docs` — Retire the 600-line README into concepts + install + a pointer per profile; MIGRATION.md states no YAML changes are required (profile defaults to engineering). · touches `README.md`, `AGENTS.md`, `MIGRATION.md`, `README.md`, `DEPLOYMENT.md`
 
-**Wave 6** — launch concurrently (disjoint files, deps satisfied):
+**Wave 5** — launch concurrently (disjoint files, deps satisfied):
 - `/slice unshim` — Delete the scripts/lib re-export shims; run the full suite, the installation check, a dry fanout on a fixture repo (engineering) and a conduct loop on a markdown artifact (general). · touches `scripts/`, `packages/`, `scripts/test/`
 
 ---
 
 ## Roadmap — PIs → sprints
 
-### CORE-EXECUTOR-SPLIT — Core + executor packages — plan non-engineering work without a mode flag · 🟢 Active · ~14 sessions remaining
+### CORE-EXECUTOR-SPLIT — Core + executor packages — plan non-engineering work without a mode flag · 🟢 Active · ~11 sessions remaining
 > Split the flat scripts tree into packages/core (planning + ritual + gauntlet protocol) and executor packages (engineering, general) behind two interfaces, Executor and GauntletArtifact, as an npm-workspaces monorepo in this repo.
-> Sprints: S1 ✅ · S2 ✅ · S3 ✅ · S4 ✅ · S5 🟡 · S6 ⚪ · S7 ⚪ · S8 ⚪ · S9 ⚪ · S10 ⚪
-> Exec plan: S5→S6→S7→S8→S9→S10
+> Sprints: S1 ✅ · S2 ✅ · S3 ✅ · S4 ✅ · S5 ✅ · S6 🟡 · S7 ⚪ · S8 ⚪ · S9 ⚪ · S10 ⚪
+> Exec plan: S6→S7→S8→S9→S10
 > Exit: A general-profile roadmap.yaml with no touches and checklist gates round-trips plan / render / sync / gauntlet start-critic-ack-repair against a markdown artifact; existing engineering roadmaps work with zero edits; shims removed; full suite + packed install + both end-to-end loops green.
 
 | Sprint | Invoke | Status | Sessions | Deps | What |
@@ -45,8 +42,8 @@ Derived from the dependency graph: which slices can run concurrently right now, 
 | S2 | `/slice workspaces` | ✅ Complete | — | S1 | Create the four workspace packages with package.json + READMEs; root bin still works; decide the tarball `files` deliberately. |
 | S3 | `/slice core-extract` | ✅ Complete | — | S2 | Move the C-verdict modules and their test sections; re-export from scripts/lib paths; normalize hardcoded docs/roadmap/roadmap.yaml literals to REL. |
 | S4 | `/slice gauntlet-split` | ✅ Complete | — | S3 | Protocol, decisions, authorization, receipts, evaluation packets into core; githubClient becomes the github-pr adapter in exec-engineering; break the gauntlet/portfolio/evaluate/dispatch cycles; contract test. |
-| S5 | `/slice exec-engineering` | 🟡 Next | ~3 | S4 | Move fanout/grab/wizard/cleanup/dispatch/doctor/watch-prs and their libs into exec-engineering as worktree-session and cloud-dispatch Executors; slice-scoper's grep becomes the engineering scoper; core keeps a doc-based scoper; contract test. |
-| S6 | `/slice profile-loader` | ⚪ Scheduled | ~2 | S5 | packages/cli/src/profile.mjs selects the executor package and adapters; default engineering; command/MCP/validator/skill registries merged by the loader; boundary check refuses any other read. |
+| S5 | `/slice exec-engineering` | ✅ Complete | — | S4 | Move fanout/grab/wizard/cleanup/dispatch/doctor/watch-prs and their libs into exec-engineering as worktree-session and cloud-dispatch Executors; slice-scoper's grep becomes the engineering scoper; core keeps a doc-based scoper; contract test. |
+| S6 | `/slice profile-loader` | 🟡 Next | ~2 | S5 | packages/cli/src/profile.mjs selects the executor package and adapters; default engineering; command/MCP/validator/skill registries merged by the loader; boundary check refuses any other read. |
 | S7 | `/slice exec-general` | ⚪ Scheduled | ~4 | S6 | Build exec-general; gates as string arrays; no ceilings; validate a general roadmap with no touches round-trips plan / render / sync / gauntlet start-critic-ack-repair against a markdown artifact. |
 | S8 | `/slice skills-agents` | ⚪ Scheduled | ~2 | S7 | /init /imagine /prioritize /debrief /retro /sync /backlog stay core and work under both profiles; /fanout + /gauntlet PR text to engineering; /conduct + /assign for general; hooks/manifests re-pointed at packages/cli. |
 | S9 | `/slice docs` | ⚪ Scheduled | ~1 | S8 | Retire the 600-line README into concepts + install + a pointer per profile; MIGRATION.md states no YAML changes are required (profile defaults to engineering). |
@@ -64,17 +61,9 @@ npm test
 
 ## Detail — `/slice <name>` reads these
 
-### `exec-engineering`
-- **What:** Move fanout/grab/wizard/cleanup/dispatch/doctor/watch-prs and their libs into exec-engineering as worktree-session and cloud-dispatch Executors; slice-scoper's grep becomes the engineering scoper; core keeps a doc-based scoper; contract test.
-- **Status:** 🟡 Next (CORE-EXECUTOR-SPLIT · S5)
-- **Deps:** S4
-- **Read-order:**
-  1. docs/ARCHITECTURE.md (Executor)
-- **Gate:** default gate PLUS node scripts/check-boundaries.mjs
-
 ### `profile-loader`
 - **What:** packages/cli/src/profile.mjs selects the executor package and adapters; default engineering; command/MCP/validator/skill registries merged by the loader; boundary check refuses any other read.
-- **Status:** ⚪ Scheduled (CORE-EXECUTOR-SPLIT · S6)
+- **Status:** 🟡 Next (CORE-EXECUTOR-SPLIT · S6)
 - **Deps:** S5
 - **Read-order:**
   1. docs/ARCHITECTURE.md (profile loader, seams: CLI, MCP)

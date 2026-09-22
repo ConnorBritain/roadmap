@@ -113,7 +113,10 @@ import "../../packages/core/test/execution.mjs";
 import "../../packages/core/test/cli-core.mjs";
 import "../../packages/core/test/backlog-audit.mjs";
 import "../../packages/core/test/gauntlet-artifact.mjs";
+import "../../packages/core/test/executor.mjs";
 import "../../packages/exec-engineering/test/github-pr-artifact.mjs";
+import "../../packages/exec-engineering/test/executors.mjs";
+import "../../packages/exec-engineering/test/launchers.mjs";
 
 
 // WHY: an evaluation corpus is the durable hand-off from diagnosis to

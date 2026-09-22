@@ -16,7 +16,16 @@ artifact shape defined in `packages/core/src/gauntlet-artifact.mjs`; the GitHub 
 left the CLI file for `scripts/lib/gauntlet-runtime.mjs` so `gauntlet.mjs`, `gauntlet-portfolio-io.mjs`
 and `evaluate.mjs` no longer import each other in a cycle; and the contract test in
 `packages/core/test/contracts/gauntlet-artifact.mjs` runs against the in-memory reference
-implementation and the github-pr adapter (fake `gh`).
+implementation and the github-pr adapter (fake `gh`). The `exec-engineering` slice then moved every
+E-verdict library plus the gauntlet runtime into `packages/exec-engineering/src` (shims remain at
+`scripts/lib/*`), moved the bodies of `linear`, `estimate`, `cycle` (core: `*-io.mjs`) and
+`dispatch`, `evaluate` (engineering: `cloud-dispatch.mjs`, `evaluate-runtime.mjs`) out of their CLI
+files, defined the Executor interface in `packages/core/src/executor.mjs` with its contract test and
+the generic doc-based scoper, and turned `fanout`/`grab`/`cleanup` into thin CLIs over
+`packages/exec-engineering/src/worktree-session.mjs` (`worktreeSessionExecutor`) with
+`cloudDispatchExecutor` beside `runDispatch`; the engineering scoper (`scoper.mjs`) layers
+code-derived `touches` on the generic proposal. Golden dry-run fixtures under
+`scripts/test/fixtures/launchers/` pin the launcher CLIs' output byte for byte across the move.
 
 ## Why
 
@@ -120,7 +129,7 @@ named functions move the other way. Line numbers are as of `main@565f96c`.
 |---|---|---|
 | `scripts/*.mjs` | render, validate, show, set, backlog, promote, next, review, plate, cycle, estimate, init, prompt, linear (network only; one `git remote get-url` at 687), mcp (registration point), cli (router) | fanout, grab, wizard, cleanup, dispatch, gauntlet (IO layer + `githubClient`), evaluate, watch-prs, doctor, scheduler (uses recommend), assistant |
 | skills | backlog, cycle, prioritize, imagine, init, retro, debrief, slice (after dropping its git branch-state step into the executor) | fanout, gauntlet, sync (merged-PR reconciliation) |
-| agents | slice-scoper (grep-based today → engineering scoper; core keeps a doc-based generic scoper), roadmap-bootstrapper | roadmap-auditor, wave-shepherd |
+| agents | slice-scoper (its document step is core's `genericScope`; its grep step is exec-engineering's `engineeringScope`), roadmap-bootstrapper | roadmap-auditor, wave-shepherd |
 | hooks | session-start (ready wave, backlog count, Linear line) | session-start's `gh pr list` merge nudge; journal-post's git snapshot + estimate log |
 | monitors | — | roadmap-prs (`watch-prs.mjs`) |
 

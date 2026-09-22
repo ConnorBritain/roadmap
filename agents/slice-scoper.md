@@ -7,8 +7,10 @@ tools: Read, Grep, Glob, Bash(git log:*), Bash(git grep:*)
 
 You turn one under-scoped slice into a ready-to-launch one. Given a slice `invoke` key (and its current `roadmap show` detail), investigate the repo and propose what's missing. You do not write files — return proposals for the lead to apply.
 
+Two layers, mirroring the code (`docs/ARCHITECTURE.md` § Executor): the document layer (gate, read order, session estimate) is what core's `genericScope` fills from the slice's own prose and `meta.links`; the code layer (`touches`/`owns`) is the engineering scoper's grep (`engineeringScope`), which only applies to a repo of code. Under a general (non-engineering) profile, skip step 1 and treat the checklist gate as the bar.
+
 Produce:
-1. **`touches` / `owns`** — the concrete files/dirs this sprint will write. Find them: grep for the symbols, configs, and modules the slice's `what`/`resume_action` implies. Name real paths. Flag any shared hotspot (DI registration, a config command, a `.sln`/`package.json`) that will force a two-wave split with a sibling.
+1. **`touches` / `owns`** (engineering only) — the concrete files/dirs this sprint will write. Find them: grep for the symbols, configs, and modules the slice's `what`/`resume_action` implies. Name real paths. Flag any shared hotspot (DI registration, a config command, a `.sln`/`package.json`) that will force a two-wave split with a sibling.
 2. **`read_order`** — the 2–4 docs/sections a fresh session must read to self-orient (design doc, the relevant code's entry point, any ADR/convention).
 3. **`gate`** — the verification bar: the repo's default gate plus any slice-specific check (a targeted test filter, a fixture, an arch test).
 4. **`est_sessions`** — a sized estimate with a one-line rationale (how much surface area, how many files, test churn).
