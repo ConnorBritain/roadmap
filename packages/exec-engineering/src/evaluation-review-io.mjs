@@ -53,8 +53,8 @@ export function inspectCommittedEvaluationCorpus(root, manifest, state, pr) {
 async function postAttestation(github, pr, kind, payload, lead) {
   const existing = findEvaluationAttestation(pr.comments, kind, payload, lead, pr.url);
   if (existing) return existing;
-  await github.addComment(pr.number, evaluationAttestation(kind, payload));
-  const current = await github.getPr(pr.number);
+  await github.comment(pr.number, evaluationAttestation(kind, payload));
+  const current = await github.fetch(pr.number);
   const found = findEvaluationAttestation(current.comments, kind, payload, lead, pr.url);
   if (!found) throw new Error("lead GitHub attestation could not be verified; do not infer successful admission");
   return found;
@@ -70,11 +70,11 @@ export async function runEvaluationReviewAction(root, action, { manifest, store,
   if (!snapshot) throw new Error("evaluation review requires protected authorization");
   let state = snapshot.state;
   const lead = state.authorization.lead_actor;
-  if (await github.viewerLogin() !== lead) throw new Error("evaluation action requires the frozen lead identity");
+  if (await github.actor() !== lead) throw new Error("evaluation action requires the frozen lead identity");
   if (action === "attach") {
     if (!confirm || !Number.isInteger(prNumber) || prNumber <= 0) throw new Error("attach requires the lead evidence PR number and explicit confirmation");
-    const pr = await github.getPr(prNumber); assertHead(pr, expectedHead);
-    if (!(await github.isAncestor(manifest.base_sha, pr.currentHead))) throw new Error("evidence PR must descend from the frozen product source");
+    const pr = await github.fetch(prNumber); assertHead(pr, expectedHead);
+    if (!(await github.descendsFrom(manifest.base_sha, pr.currentHead))) throw new Error("evidence PR must descend from the frozen product source");
     inspectCommittedEvaluationCorpus(root, manifest, state, pr);
     const publication = { number: pr.number, url: pr.url, base_ref: pr.baseRef };
     await mutateAuthorization(store, manifest.run_id, (current) => {
@@ -89,8 +89,8 @@ export async function runEvaluationReviewAction(root, action, { manifest, store,
     return { action, run_id: manifest.run_id, pr: publication };
   }
   if (!state.evidence_pr) throw new Error("attach the single lead-owned evidence PR before adjudication/review");
-  let pr = await github.getPr(state.evidence_pr.number); assertHead(pr, expectedHead);
-  if (!(await github.isAncestor(manifest.base_sha, pr.currentHead))) throw new Error("evidence PR source ancestry is invalid");
+  let pr = await github.fetch(state.evidence_pr.number); assertHead(pr, expectedHead);
+  if (!(await github.descendsFrom(manifest.base_sha, pr.currentHead))) throw new Error("evidence PR source ancestry is invalid");
   if (action === "accept") {
     if (!confirm || !redactionInspected || !["accepted", "rejected"].includes(decision) || !HASH.test(packetDigest || "")
       || typeof reason !== "string" || !reason.trim() || reason.length > 4000 || prohibitedDataFindings(reason).length) {
@@ -103,7 +103,7 @@ export async function runEvaluationReviewAction(root, action, { manifest, store,
     if (decision === "accepted" && (!packet?.ok || packet.digest !== packetDigest)) throw new Error("accepted digest must match a valid packet committed at the evidence PR head");
     const payload = { run_id: manifest.run_id, authority_digest: state.authorization_digest, source_sha: manifest.base_sha,
       assignment: assignmentId, packet_digest: packetDigest, decision, reason: reason.trim(), redaction_inspected: true };
-    pr = await github.getPr(pr.number); assertHead(pr, expectedHead);
+    pr = await github.fetch(pr.number); assertHead(pr, expectedHead);
     const attestation = await postAttestation(github, pr, "admission", payload, lead);
     const updated = await mutateAuthorization(store, manifest.run_id, (current) => {
       if ((current.admissions || []).some((record) => authorizationDigest(record.payload) === authorizationDigest(payload))) return { state: current };
@@ -113,7 +113,7 @@ export async function runEvaluationReviewAction(root, action, { manifest, store,
       }] } };
     });
     return { action, run_id: manifest.run_id, assignment: assignmentId, decision, packet_digest: packetDigest,
-      comment_url: attestation.url, corpus: inspectCommittedEvaluationCorpus(root, manifest, updated.state, await github.getPr(pr.number)) };
+      comment_url: attestation.url, corpus: inspectCommittedEvaluationCorpus(root, manifest, updated.state, await github.fetch(pr.number)) };
   }
   const corpus = inspectCommittedEvaluationCorpus(root, manifest, state, pr);
   const review = evaluationReviewStatus(state, pr, { corpusDigest: corpus.corpus_digest });
@@ -134,10 +134,10 @@ export async function runEvaluationReviewAction(root, action, { manifest, store,
     if (!reserved.reserved) return { action, duplicate: true, reservation: reserved.reservation };
     let submissionAttempted = false;
     try {
-      pr = await github.getPr(pr.number); assertHead(pr, expectedHead);
+      pr = await github.fetch(pr.number); assertHead(pr, expectedHead);
       const currentReview = evaluationReviewStatus((await store.read(manifest.run_id)).state, pr, { corpusDigest: corpus.corpus_digest });
       validateEvaluationRepairPacket(repairPacket, { state, pr, review: currentReview });
-      await github.addComment(pr.number, renderGauntletLaunchMarker({ run: review.run, role: "repair", round, expectedHead, packetSha256: packet.digest }));
+      await github.comment(pr.number, renderGauntletLaunchMarker({ run: review.run, role: "repair", round, expectedHead, packetSha256: packet.digest }));
       const prompt = `You are a fresh documentation-only REPAIR worker for evaluation ${manifest.run_id}.\n`
         + `Evidence PR: #${pr.number}; exact expected evidence head: ${expectedHead}. Frozen product source: ${manifest.base_sha}. These SHAs have different meanings.\n`
         + `Frozen assignment evidence-type limits: ${JSON.stringify(manifest.assignments.map(({ id, evidence_types }) => ({ id, evidence_types: evidence_types || null })))}. Never relax these limits or use process self-description as unsupported source proof.\n`
@@ -166,11 +166,11 @@ export async function runEvaluationReviewAction(root, action, { manifest, store,
     if (candidate?.verdict === "PASS" && corpus.totals.unresolved) throw new Error("cannot acknowledge PASS while expected evidence remains unresolved");
     if (candidate?.valid) return { action, duplicate: true, comment_url: commentUrl, verdict: candidate.verdict };
     if (candidate?.invalidReason !== "unacknowledged_result") throw new Error("critic artifact is not safe to acknowledge at this head");
-    pr = await github.getPr(pr.number); assertHead(pr, expectedHead);
+    pr = await github.fetch(pr.number); assertHead(pr, expectedHead);
     const refreshed = evaluationReviewStatus(state, pr, { corpusDigest: corpus.corpus_digest }).results.find((r) => r.comment.url === commentUrl);
     if (refreshed?.commentSha256 !== candidate.commentSha256 || refreshed?.invalidReason !== "unacknowledged_result") throw new Error("critic artifact changed during acknowledgment");
-    await github.addComment(pr.number, renderGauntletVerdictAck({ run: review.run, comment: pr.comments.find((c) => c.url === commentUrl) }));
-    const current = await github.getPr(pr.number); assertHead(current, expectedHead);
+    await github.comment(pr.number, renderGauntletVerdictAck({ run: review.run, comment: pr.comments.find((c) => c.url === commentUrl) }));
+    const current = await github.fetch(pr.number); assertHead(current, expectedHead);
     if (!evaluationReviewStatus(state, current, { corpusDigest: corpus.corpus_digest }).results.some((r) => r.comment.url === commentUrl && r.acknowledged)) throw new Error("lead acknowledgment could not be verified");
     return { action, run_id: manifest.run_id, comment_url: commentUrl, verdict: candidate.verdict, head: expectedHead };
   }
@@ -194,8 +194,8 @@ export async function runEvaluationReviewAction(root, action, { manifest, store,
     if (!reserved.reserved) return { action, duplicate: true, reservation: reserved.reservation };
     let submissionAttempted = false;
     try {
-      pr = await github.getPr(pr.number); assertHead(pr, expectedHead);
-      await github.addComment(pr.number, renderGauntletLaunchMarker({ run: review.run, role: "critic", criticRole: role, round, expectedHead, nonce }));
+      pr = await github.fetch(pr.number); assertHead(pr, expectedHead);
+      await github.comment(pr.number, renderGauntletLaunchMarker({ run: review.run, role: "critic", criticRole: role, round, expectedHead, nonce }));
       const prompt = buildCriticPrompt({ run: review.run, pr, expectedHead, criticRole: role, round, nonce })
         + `\n\nPacket digest/admission register (verify against actual committed files):\n${JSON.stringify(corpus.records.map(({ assignment, digest, status }) => ({ assignment, digest, status })), null, 2)}`
         + (corpus.totals.unresolved ? "\nThis is an explicitly requested diagnostic review of an incomplete corpus. Independently inspect missing/invalid evidence and identify documentation repairs; do not invent a packet or treat unresolved coverage as PASS. A PASS cannot be acknowledged or sealed until every expected packet is adjudicated. The normal exact-head REVISE, lead inspection/acknowledgment and scoped repair protocol still applies." : "");
@@ -215,7 +215,7 @@ export async function runEvaluationReviewAction(root, action, { manifest, store,
   if (action === "seal") {
     if (!confirm) throw new Error("seal requires explicit confirmation after lead inspection of all required PASS verdicts");
     const payload = sealEvaluationPayload(state, pr, corpus, review);
-    pr = await github.getPr(pr.number); assertHead(pr, expectedHead);
+    pr = await github.fetch(pr.number); assertHead(pr, expectedHead);
     // Refresh comment reality as well as head; deleted acknowledgments revoke PASS.
     const refreshedCorpus = inspectCommittedEvaluationCorpus(root, manifest, state, pr);
     sealEvaluationPayload(state, pr, refreshedCorpus, evaluationReviewStatus(state, pr, { corpusDigest: refreshedCorpus.corpus_digest }));
@@ -224,7 +224,7 @@ export async function runEvaluationReviewAction(root, action, { manifest, store,
       if ((current.seals || []).some((seal) => authorizationDigest(seal.payload) === authorizationDigest(payload))) return { state: current };
       return { state: { ...current, seals: [...(current.seals || []), { payload, comment_url: attestation.url }] } };
     });
-    assertHead(await github.getPr(pr.number), expectedHead);
+    assertHead(await github.fetch(pr.number), expectedHead);
     return { action, sealed: true, ...payload, comment_url: attestation.url };
   }
   throw new Error(`evaluation review action not implemented: ${action}`);

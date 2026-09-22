@@ -8,7 +8,7 @@ which is exactly what the flat package did. Every command, MCP tool, skill and h
 | Before | After |
 |---|---|
 | one flat package, `scripts/lib/*.mjs` | four workspace packages: `@connorbritain/roadmap-core` (planning + the protocol), `-exec-engineering`, `-exec-general`, `-cli` (the profile loader). The root `@connorbritain/roadmap` still owns the `roadmap` bin. |
-| `scripts/lib/<module>.mjs` imports | `@connorbritain/roadmap-core/<module>.mjs` or `@connorbritain/roadmap-exec-engineering/<module>.mjs`. The old paths re-export until the `unshim` slice removes them; move now. |
+| `scripts/lib/<module>.mjs` imports | `@connorbritain/roadmap-core/<module>.mjs` or `@connorbritain/roadmap-exec-engineering/<module>.mjs`. The old paths are gone. |
 | engineering only | `meta.profile: general` loads `exec-general`: `human` / `doc-agent` executors, the `git-file` artifact, checklist gates, `roadmap conduct` / `roadmap assign`, `/conduct` / `/assign`, MCP `conduct_*`. |
 | `gate` is a command string | also a **checklist** (a list of criteria). Both profiles accept both; engineering embeds a command in the brief, general renders the list for the reviewer. |
 | — | `artifact` (optional sprint field): the deliverable path. Default `docs/roadmap/artifacts/<invoke>.md`. |

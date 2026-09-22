@@ -166,12 +166,12 @@ export async function runEvaluation(root, args, opts = {}) {
     }
     if (!flag(args, "--confirm")) return { action, run_id: runId, applied: false, authorization_digest: snapshot.state.authorization_digest,
       evidence_pr: snapshot.state.evidence_pr || null, limits: authorizationStatus(snapshot.state) };
-    if (await github.viewerLogin() !== snapshot.state.authorization.lead_actor) throw new Error("recovery requires the frozen lead GitHub identity");
+    if (await github.actor() !== snapshot.state.authorization.lead_actor) throw new Error("recovery requires the frozen lead GitHub identity");
     if (existsSync(runPath(root, runId, artifactRoot))) throw new Error("a local manifest already exists; recovery will not overwrite it");
     let recovered = { ...snapshot.state.authorization.scope.snapshot, created_at: snapshot.state.authorization.created_at,
       state: "recovered", assignments: snapshot.state.authorization.scope.snapshot.assignments.map(normalizeAssignment) };
     if (snapshot.state.evidence_pr) {
-      const pr = await github.getPr(snapshot.state.evidence_pr.number);
+      const pr = await github.fetch(snapshot.state.evidence_pr.number);
       const head = evaluationCommand(root, "git", ["rev-parse", "HEAD"]).trim();
       if (head !== pr.currentHead) throw new Error("checkout the exact evidence PR head in an isolated lead checkout before manifest recovery");
       const prior = normalizeRunManifest(parseInput(evaluationCommand(root, "git", ["show", `${head}:${evaluationDirectory(runId, artifactRoot)}/RUN.yaml`]), { legacyManifest: true }), runId, artifactRoot, { recovering: true });
@@ -229,7 +229,7 @@ export async function runEvaluation(root, args, opts = {}) {
     let review = null, corpus = null, publication = null;
     if (authority?.state.evidence_pr) {
       try {
-        const pr = await (normalizingGauntletClient(opts.github || githubClient(root))).getPr(authority.state.evidence_pr.number);
+        const pr = await (normalizingGauntletClient(opts.github || githubClient(root))).fetch(authority.state.evidence_pr.number);
         publication = { ...authority.state.evidence_pr, current_head: pr.currentHead, state: pr.state };
         review = evaluationReviewStatus(authority.state, pr);
         try { corpus = inspectCommittedEvaluationCorpus(root, manifest, authority.state, pr); }
@@ -259,7 +259,7 @@ export async function runEvaluation(root, args, opts = {}) {
     if (authorizationDigest(state.authorization.scope.snapshot) !== authorizationDigest(evaluationScopeSnapshot(manifest))) {
       throw new Error("local evaluation scope differs from protected authorization; restore it, do not silently adopt or relaunch");
     }
-    const actor = await (normalizingGauntletClient(opts.github || githubClient(root))).viewerLogin();
+    const actor = await (normalizingGauntletClient(opts.github || githubClient(root))).actor();
     if (actor !== state.authorization.lead_actor) throw new Error("evaluation actuator requires the frozen lead GitHub actor");
   };
   if (action === "decision") {
@@ -295,7 +295,7 @@ export async function runEvaluation(root, args, opts = {}) {
     await verifyAuthority(snapshot.state);
     const reservation = snapshot.state.reservations.find((r) => r.key === value(args, "--launch-key") && r.role === "repair");
     if (!reservation?.receipt) throw new Error("repair collection needs an exact durably recorded receipt");
-    const pr = await (normalizingGauntletClient(opts.github || githubClient(root))).getPr(snapshot.state.evidence_pr.number);
+    const pr = await (normalizingGauntletClient(opts.github || githubClient(root))).fetch(snapshot.state.evidence_pr.number);
     if (pr.state !== "OPEN" || pr.currentHead !== reservation.expected_head) throw new Error("repair evidence PR head moved before collection");
     const diff = (opts.cloudDiff || ((id) => run("codex", ["cloud", "diff", id], root)))(reservation.receipt.external_id);
     const apply = flag(args, "--apply");
@@ -325,7 +325,7 @@ export async function runEvaluation(root, args, opts = {}) {
     }
     const policy = parseInput(readFileSync(resolve(file), "utf8"));
     const initial = freezeAuthorization({ ...policy, version: 1, run_id: runId, mode: "evaluation", source_sha: manifest.base_sha,
-      lead_actor: await github.viewerLogin(), scope: { description: policy?.scope?.description,
+      lead_actor: await github.actor(), scope: { description: policy?.scope?.description,
         snapshot: evaluationScopeSnapshot(manifest) } }, { now: prior?.state.authorization.created_at || now() });
     if (initial.authorization.providers.evaluator !== "codex") throw new Error("this evaluation transport supports Codex Cloud evaluators only; no provider substitution was made");
     const result = prior ? { written: false, current: prior } : await store.compareAndSwap(runId, null, initial);

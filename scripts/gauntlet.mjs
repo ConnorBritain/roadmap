@@ -1,19 +1,19 @@
 #!/usr/bin/env node
-// roadmap gauntlet — the CLI entry. The runtime (senses + actuators) is scripts/lib/gauntlet-runtime.mjs,
-// the portfolio view is scripts/lib/gauntlet-portfolio-io.mjs, and this file wires them; it re-exports
+// roadmap gauntlet — the CLI entry. The runtime (senses + actuators) is packages/exec-engineering/src/gauntlet-runtime.mjs,
+// the portfolio view is packages/exec-engineering/src/gauntlet-portfolio-io.mjs, and this file wires them; it re-exports
 // the runtime so mcp.mjs and the tests keep one import path.
 import { readFileSync, existsSync, realpathSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readDecisionFile } from "./lib/gauntlet-decisions.mjs";
-import { runGauntletPortfolio } from "./lib/gauntlet-portfolio-io.mjs";
+import { readDecisionFile } from "@connorbritain/roadmap-core/gauntlet-decisions.mjs";
+import { runGauntletPortfolio } from "@connorbritain/roadmap-exec-engineering/gauntlet-portfolio-io.mjs";
 import {
   runGauntletStart, runGauntletStatus, runGauntletObserve, runGauntletContinuation, runGauntletReconcile,
   runGauntletDecision, runGauntletAcknowledge, runGauntletCritic, runGauntletRepair, runGauntletCancel,
   formatGauntletStatus, formatGauntletLaunchResult,
-} from "./lib/gauntlet-runtime.mjs";
-export * from "./lib/gauntlet-runtime.mjs";
+} from "@connorbritain/roadmap-exec-engineering/gauntlet-runtime.mjs";
+export * from "@connorbritain/roadmap-exec-engineering/gauntlet-runtime.mjs";
 
 // ── CLI ──────────────────────────────────────────────────────────────────────
 const isMain = process.argv[1] && existsSync(process.argv[1])

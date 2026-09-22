@@ -32,8 +32,8 @@ executor: nothing here knows about CPUs, disks, branches, worktrees, PRs or clou
 | `subject-marker` | the `roadmap: slice=<key>` identity grammar |
 | `gauntlet-store`, `evaluation-core`, `evaluation-packet` | local ledger; evaluation run policy; evidence-packet schema |
 
-Import a module as `@connorbritain/roadmap-core/<module>.mjs`. Until the `unshim` slice, the
-old `scripts/lib/<module>.mjs` paths re-export from here.
+Import a module as `@connorbritain/roadmap-core/<module>.mjs`. The old `scripts/lib/<module>.mjs`
+paths are gone (removed by the `unshim` slice).
 
 ## Tests
 

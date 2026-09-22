@@ -11,17 +11,14 @@ Use `roadmap show <name>` to orient on a menu entry; `roadmap plan` computes rea
 
 Derived from the dependency graph: which slices can run concurrently right now, what waits behind them, and what is held on a human. Change the cap with `roadmap plan --cap N` or `roadmap fan --cap N`.
 
-**Wave 1** — launch concurrently (disjoint files, deps satisfied):
-- `/slice unshim` — Delete the scripts/lib re-export shims; run the full suite, the installation check, a dry fanout on a fixture repo (engineering) and a conduct loop on a markdown artifact (general). · touches `scripts/`, `packages/`, `scripts/test/`
-
+_No agent-runnable slices right now._
 ---
 
 ## Roadmap — PIs → sprints
 
-### CORE-EXECUTOR-SPLIT — Core + executor packages — plan non-engineering work without a mode flag · 🟢 Active · ~2 sessions remaining
+### CORE-EXECUTOR-SPLIT — Core + executor packages — plan non-engineering work without a mode flag · ✅ Complete
 > Split the flat scripts tree into packages/core (planning + ritual + gauntlet protocol) and executor packages (engineering, general) behind two interfaces, Executor and GauntletArtifact, as an npm-workspaces monorepo in this repo.
-> Sprints: S1 ✅ · S2 ✅ · S3 ✅ · S4 ✅ · S5 ✅ · S6 ✅ · S7 ✅ · S8 ✅ · S9 ✅ · S10 🟡
-> Exec plan: S10
+> Sprints: S1 ✅ · S2 ✅ · S3 ✅ · S4 ✅ · S5 ✅ · S6 ✅ · S7 ✅ · S8 ✅ · S9 ✅ · S10 ✅
 > Exit: A general-profile roadmap.yaml with no touches and checklist gates round-trips plan / render / sync / gauntlet start-critic-ack-repair against a markdown artifact; existing engineering roadmaps work with zero edits; shims removed; full suite + packed install + both end-to-end loops green.
 
 | Sprint | Invoke | Status | Sessions | Deps | What |
@@ -35,7 +32,7 @@ Derived from the dependency graph: which slices can run concurrently right now, 
 | S7 | `/slice exec-general` | ✅ Complete | — | S6 | Build exec-general; gates as string arrays; no ceilings; validate a general roadmap with no touches round-trips plan / render / sync / gauntlet start-critic-ack-repair against a markdown artifact. |
 | S8 | `/slice skills-agents` | ✅ Complete | — | S7 | /init /imagine /prioritize /debrief /retro /sync /backlog stay core and work under both profiles; /fanout + /gauntlet PR text to engineering; /conduct + /assign for general; hooks/manifests re-pointed at packages/cli. |
 | S9 | `/slice docs` | ✅ Complete | — | S8 | Retire the 600-line README into concepts + install + a pointer per profile; MIGRATION.md states no YAML changes are required (profile defaults to engineering). |
-| S10 | `/slice unshim` | 🟡 Next | ~2 | S9 | Delete the scripts/lib re-export shims; run the full suite, the installation check, a dry fanout on a fixture repo (engineering) and a conduct loop on a markdown artifact (general). |
+| S10 | `/slice unshim` | ✅ Complete | — | S9 | Delete the scripts/lib re-export shims; run the full suite, the installation check, a dry fanout on a fixture repo (engineering) and a conduct loop on a markdown artifact (general). |
 
 ---
 
@@ -48,15 +45,6 @@ npm test
 ---
 
 ## Detail — `/slice <name>` reads these
-
-### `unshim`
-- **What:** Delete the scripts/lib re-export shims; run the full suite, the installation check, a dry fanout on a fixture repo (engineering) and a conduct loop on a markdown artifact (general).
-- **Status:** 🟡 Next (CORE-EXECUTOR-SPLIT · S10)
-- **Deps:** S9
-- **Read-order:**
-  1. docs/roadmap/STATUS.md
-  2. docs/ARCHITECTURE.md
-- **Gate:** default gate PLUS node scripts/check-boundaries.mjs PLUS npm pack && node scripts/test/packed.mjs <tgz> PLUS roadmap fan --dry on the engineering fixture; roadmap conduct on the markdown fixture
 
 ---
 

@@ -4,9 +4,10 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { authorizationFixture, memoryAuthorityStore } from "./authorization.mjs";
 import { evaluationRepositoryFixture } from "./evaluation.mjs";
-import { evaluationScopeSnapshot } from "../lib/evaluation-core.mjs";
-import { authorizationDigest } from "../lib/gauntlet-authorization.mjs";
-import { runGauntletPortfolio, authorizationReport, evaluationSafeActions } from "../lib/gauntlet-portfolio.mjs";
+import { evaluationScopeSnapshot } from "@connorbritain/roadmap-core/evaluation-core.mjs";
+import { authorizationDigest } from "@connorbritain/roadmap-core/gauntlet-authorization.mjs";
+import { runGauntletPortfolio } from "@connorbritain/roadmap-exec-engineering/gauntlet-portfolio-io.mjs";
+import { authorizationReport, evaluationSafeActions } from "@connorbritain/roadmap-core/gauntlet-portfolio-core.mjs";
 
 export function registerPortfolioTests(test) {
   test("portfolio CLI entrypoint completes dynamic discovery without top-level-await deadlock", async () => {

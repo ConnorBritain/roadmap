@@ -4,14 +4,16 @@
 import { spawnSync } from "node:child_process";
 import { assertAuthorizationState, assertAuthorizationTransition, authorizationDigest } from "@connorbritain/roadmap-core/gauntlet-authorization.mjs";
 import { authorizationClaimKey } from "@connorbritain/roadmap-core/gauntlet-authority.mjs";
+import { asGauntletArtifact } from "@connorbritain/roadmap-core/gauntlet-artifact.mjs";
 import { prohibitedDataFindings } from "@connorbritain/roadmap-core/evaluation-packet.mjs";
 
 const STATE_PATH = ".roadmap-gauntlet-authority.json";
 const MAX_BYTES = 4 * 1024 * 1024;
 
-export function githubAuthorizationStore(root, { github, execImpl = spawnSync } = {}) {
-  if (!github) throw new Error("authenticated GitHub adapter required");
-  const actor = () => (github.actor ? github.actor() : github.viewerLogin());
+export function githubAuthorizationStore(root, { github: client, execImpl = spawnSync } = {}) {
+  if (!client) throw new Error("authenticated GitHub adapter required");
+  const github = asGauntletArtifact(client);   // canonical names whether the caller passed the adapter or a legacy-named client
+  const actor = () => github.actor();
   const call = (args, input) => execImpl("gh", args, { cwd: root, input, encoding: "utf8", maxBuffer: 16 * 1024 * 1024, timeout: 15000 });
   const api = (endpoint, payload) => {
     const r = call(["api", endpoint, ...(payload ? ["--method", "POST", "--input", "-"] : [])], payload ? JSON.stringify(payload) : undefined);
@@ -27,13 +29,13 @@ export function githubAuthorizationStore(root, { github, execImpl = spawnSync } 
   }
   async function check(runId, state = null) {
     await github.assertAvailable();
-    const protection = await github.assertClaimProtection(authorizationClaimKey(runId), runId);
+    const protection = await github.assertClaimSafety(authorizationClaimKey(runId), runId);
     if (protection?.unsafe) throw new Error("bounded authorization refuses unsafe/unprotected claim branches");
     if (state && await actor() !== state.authorization.lead_actor) throw new Error("authority mutation requires the frozen lead GitHub actor");
   }
   async function read(runId) {
     await github.assertAvailable();
-    const claim = await github.getLaunchClaim(authorizationClaimKey(runId), runId);
+    const claim = await github.readClaim(authorizationClaimKey(runId), runId);
     if (!claim) return null;
     await check(runId);
     return readClaim(claim, runId);

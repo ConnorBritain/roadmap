@@ -21,7 +21,7 @@ It is an npm-workspaces monorepo ([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)):
 - [`packages/cli`](packages/cli) — the profile loader, the ONLY reader of `meta.profile`
 - the CLI in [`scripts/cli.mjs`](scripts/cli.mjs), the MCP server in [`scripts/mcp.mjs`](scripts/mcp.mjs)
   (server name `graph`; core tools plus the loaded profile's), thin command scripts in `scripts/`
-- `scripts/lib/*` are re-export shims of the packages until the `unshim` slice; import the packages.
+- there is no `scripts/lib/` any more: import the packages by name.
 
 The Claude plugin assets live under `.claude-plugin/`, `skills/`, `agents/`, `hooks/`, and `monitors/`.
 

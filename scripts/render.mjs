@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 // roadmap — render roadmap.yaml → SLICES.md (+ backlog.yaml → BACKLOG.md when present).
-// Thin file-writer around lib/render-core.mjs / lib/backlog-core.mjs (the pure renderers).
+// Thin file-writer around packages/core/src/render-core.mjs / packages/core/src/backlog-core.mjs (the pure renderers).
 // Usage:
 //   node render.mjs [--in docs/roadmap/roadmap.yaml] [--out docs/SLICES.md] [--cap N] [--stdout]
 // Default: in=docs/roadmap/roadmap.yaml, out=docs/SLICES.md. --stdout prints SLICES only.
 
 import { writeFileSync } from "node:fs";
-import { loadGraph } from "./lib/graph.mjs";
-import { renderMarkdown } from "./lib/render-core.mjs";
-import { loadBacklog, slicesRenderOpts, backlogPaths } from "./lib/store.mjs";
-import { renderBacklogMarkdown } from "./lib/backlog-core.mjs";
-import { REL } from "./lib/cli-core.mjs";
+import { loadGraph } from "@connorbritain/roadmap-core/graph.mjs";
+import { renderMarkdown } from "@connorbritain/roadmap-core/render-core.mjs";
+import { loadBacklog, slicesRenderOpts, backlogPaths } from "@connorbritain/roadmap-core/store.mjs";
+import { renderBacklogMarkdown } from "@connorbritain/roadmap-core/backlog-core.mjs";
+import { REL } from "@connorbritain/roadmap-core/cli-core.mjs";
 import { join } from "node:path";
 
 const args = process.argv.slice(2);

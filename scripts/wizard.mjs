@@ -9,11 +9,11 @@ import os from "node:os";
 import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadGraph, flatten, computeWaves, readyNodes } from "./lib/graph.mjs";
-import { recommendConcurrency } from "./lib/recommend.mjs";
-import { terminalChoices, buildFanArgs, autoOutName } from "./lib/wizard-core.mjs";
+import { loadGraph, flatten, computeWaves, readyNodes } from "@connorbritain/roadmap-core/graph.mjs";
+import { recommendConcurrency } from "@connorbritain/roadmap-exec-engineering/recommend.mjs";
+import { terminalChoices, buildFanArgs, autoOutName } from "@connorbritain/roadmap-exec-engineering/wizard-core.mjs";
 import { select, number, confirm } from "./prompt.mjs";
-import { REL } from "./lib/cli-core.mjs";
+import { REL } from "@connorbritain/roadmap-core/cli-core.mjs";
 
 const SCRIPTS = dirname(fileURLToPath(import.meta.url));
 const INPATH = join(...REL);

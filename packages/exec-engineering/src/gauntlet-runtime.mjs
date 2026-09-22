@@ -170,8 +170,8 @@ function providerClaimKey(launchKey, provider, attempt) {
 }
 
 async function assertFrozenLeadActor(github, run) {
-  if (!github.viewerLogin) throw new Error("GitHub client cannot verify the frozen lead actor");
-  const actor = await github.viewerLogin();
+  if (!github.actor) throw new Error("GitHub client cannot verify the frozen lead actor");
+  const actor = await github.actor();
   if (actor !== run.lead_actor) {
     throw new Error(`authenticated GitHub actor ${actor || "unknown"} does not match frozen Gauntlet lead ${run.lead_actor}; use that identity or begin an explicit new run`);
   }
@@ -180,22 +180,22 @@ async function assertFrozenLeadActor(github, run) {
 async function assertClaimProtection(github, claimKey, runId) {
   // Injected clients in pure/integration tests may omit the deployment probe.
   // The production GitHub client always provides it and refuses unsafe rules.
-  if (github.assertClaimProtection) await github.assertClaimProtection(claimKey, runId);
+  if (github.assertClaimSafety) await github.assertClaimSafety(claimKey, runId);
 }
 
 async function claimDurableCancellation(github, run, claimKey) {
   await assertFrozenLeadActor(github, run);
   await assertClaimProtection(github, claimKey, run.run_id);
-  if (!github.claimLaunch) throw new Error("GitHub client cannot durably claim a Gauntlet cancellation");
+  if (!github.claim) throw new Error("GitHub client cannot durably claim a Gauntlet cancellation");
   let claim;
-  try { claim = await github.claimLaunch(claimKey, run.base_sha, run.run_id); }
+  try { claim = await github.claim(claimKey, run.base_sha, run.run_id); }
   catch (e) { throw new Error(`cancellation claim outcome is ambiguous; no local cancellation was recorded: ${e.message}`); }
   return claim;
 }
 
 async function recordDurableCancellation(github, pr, run, reason) {
   const claim = await claimDurableCancellation(github, run, cancellationClaimKey(run));
-  await github.addComment(pr.number, renderGauntletCancellationMarker({ run, reason }));
+  await github.comment(pr.number, renderGauntletCancellationMarker({ run, reason }));
   return claim;
 }
 
@@ -389,11 +389,11 @@ async function observeGauntlet(root, idOrKey, opts = {}) {
     if (pr.baseRef !== run.base_ref) {
       throw new Error(`PR #${pr.number} targets ${pr.baseRef || "an unknown base"}, not frozen base branch ${run.base_ref}`);
     }
-    if (!github.isAncestor) {
+    if (!github.descendsFrom) {
       baseAncestryFailure = `PR #${pr.number} head ${pr.currentHead || "unknown"} cannot be proven to descend from frozen base ${run.base_sha}`;
     } else {
       try {
-        if (!(await github.isAncestor(run.base_sha, pr.currentHead))) {
+        if (!(await github.descendsFrom(run.base_sha, pr.currentHead))) {
           baseAncestryFailure = `PR #${pr.number} head ${pr.currentHead || "unknown"} does not descend from frozen base ${run.base_sha}`;
         }
       } catch (e) {
@@ -426,12 +426,12 @@ async function observeGauntlet(root, idOrKey, opts = {}) {
     // compare failures are themselves recoverable infrastructure state so an
     // explicit durable cancellation can still be reconstructed or recorded.
     if (!baseAncestryFailure) for (const repairHead of repairHeads) {
-      if (!github.isAncestor) {
+      if (!github.descendsFrom) {
         repairHistoryFailure = `PR #${pr.number} repair ancestry from ${repairHead} cannot be proven`;
         break;
       }
       try {
-        if (!(await github.isAncestor(repairHead, pr.currentHead))) {
+        if (!(await github.descendsFrom(repairHead, pr.currentHead))) {
           repairHistoryFailure = `PR #${pr.number} head ${pr.currentHead} does not descend from repair expected head ${repairHead}; possible force-push/history rewrite`;
           break;
         }
@@ -440,8 +440,8 @@ async function observeGauntlet(root, idOrKey, opts = {}) {
         break;
       }
     }
-    if (github.listRunClaims) runClaims = await github.listRunClaims(run.run_id);
-    if (github.listRunClaims && github.claimRef) {
+    if (github.listClaims) runClaims = await github.listClaims(run.run_id);
+    if (github.listClaims && github.claimRef) {
       const launchClaims = runClaims.filter((claim) => ["critic", "repair"].includes(claim.kind));
       const expected = new Map(durableLaunches.map((launch) => {
         const key = `${launch.key}:attempt:${launch.attempt || 1}`;
@@ -472,8 +472,8 @@ async function observeGauntlet(root, idOrKey, opts = {}) {
       ? runClaims.find((claim) => claim.kind === "tombstone" && claim.ref === expectedTombstoneRef) || null
       : null;
     let cancellationClaim = null;
-    if (github.getLaunchClaim) {
-      cancellationClaim = await github.getLaunchClaim(cancellationClaimKey(run), run.run_id);
+    if (github.readClaim) {
+      cancellationClaim = await github.readClaim(cancellationClaimKey(run), run.run_id);
     }
     if (cancellationClaim && remoteCancellation) {
       if (cancellationClaim.sha !== run.base_sha) {
@@ -497,7 +497,7 @@ async function observeGauntlet(root, idOrKey, opts = {}) {
   }
   if (run.reconstructed && ((run.launches || []).length > 0 || run.cancelled_via_github)) {
     let actor = null;
-    try { actor = github.viewerLogin ? await github.viewerLogin() : null; } catch { actor = null; }
+    try { actor = github.actor ? await github.actor() : null; } catch { actor = null; }
     if (actor !== run.lead_actor) {
       recoveryActorMismatch = { expected: run.lead_actor, actual: actor };
       // The PR body is builder-authored. Durable lead events become a trust
@@ -671,9 +671,9 @@ export async function runGauntletStart(root, key, opts = {}) {
   const implementationProvider = gauntletProvider(metaCfg, opts, "implementation");
   const criticProvider = gauntletProvider(metaCfg, opts, "critic");
   const repairProvider = gauntletProvider(metaCfg, opts, "repair");
-  const leadActor = await github.viewerLogin();
+  const leadActor = await github.actor();
   try {
-    if (!github.claimLaunch) throw new Error("GitHub client cannot atomically claim a Gauntlet launch");
+    if (!github.claim) throw new Error("GitHub client cannot atomically claim a Gauntlet launch");
     await assertClaimProtection(github, implementationClaimKey, runId);
   } catch (e) {
     throw new Error(`implementation claim-protection preflight failed; no local reservation, GitHub lock, or Routine was created and retry is safe after configuration: ${e.message}`);
@@ -737,7 +737,7 @@ export async function runGauntletStart(root, key, opts = {}) {
 
   let claim;
   try {
-    claim = await github.claimLaunch(implementationClaimKey, baseSha, runId);
+    claim = await github.claim(implementationClaimKey, baseSha, runId);
   } catch (e) {
     updateLaunch(root, runId, launchKey, { status: "ambiguous", maybe_claimed: true, error: e.message, updated_at: nowIso(opts) });
     throw new Error(`implementation launch lock outcome is ambiguous; no Routine was fired, but retry is unsafe until the GitHub lock is reconciled: ${e.message}`);
@@ -873,7 +873,7 @@ export async function runGauntletAcknowledge(root, idOrKey, opts = {}) {
       && ack.commentUrlSha256 === candidate.commentUrlSha256 && ack.verdict === candidate.verdict);
   if (existing) return { duplicate: true, runId: run.run_id, commentUrl,
     verdict: candidate.verdict, head: candidate.head, acknowledged: true };
-  await github.addComment(pr.number, renderGauntletVerdictAck({ run, comment: source }));
+  await github.comment(pr.number, renderGauntletVerdictAck({ run, comment: source }));
   return { runId: run.run_id, commentUrl, verdict: candidate.verdict,
     head: candidate.head, acknowledged: true };
 }
@@ -1026,7 +1026,7 @@ export async function runGauntletCritic(root, idOrKey, opts = {}) {
 
   // Optimistic concurrency recheck after reservation, immediately before spending a launch.
   let current;
-  try { current = await github.getPr(pr.number); }
+  try { current = await github.fetch(pr.number); }
   catch (e) {
     updateLaunch(root, run.run_id, launchRecord, { status: "preflight_failed", error: e.message, updated_at: nowIso(opts) });
     throw new Error(`critic preflight could not refresh PR #${pr.number}; no Routine was fired and retry is safe: ${e.message}`);
@@ -1046,7 +1046,7 @@ export async function runGauntletCritic(root, idOrKey, opts = {}) {
     throw new Error(`critic lead-identity preflight failed; no GitHub launch lock was claimed and retry is safe: ${e.message}`);
   }
   try {
-    if (!github.claimLaunch) throw new Error("GitHub client cannot atomically claim a Gauntlet launch");
+    if (!github.claim) throw new Error("GitHub client cannot atomically claim a Gauntlet launch");
     await assertClaimProtection(github, providerClaimKey(launchKey, provider, attempt), run.run_id);
   } catch (e) {
     updateLaunch(root, run.run_id, launchRecord, { status: "preflight_failed", error: e.message, updated_at: nowIso(opts) });
@@ -1063,7 +1063,7 @@ export async function runGauntletCritic(root, idOrKey, opts = {}) {
   }
   let claim;
   try {
-    claim = await github.claimLaunch(providerClaimKey(launchKey, provider, attempt), expectedHead, run.run_id);
+    claim = await github.claim(providerClaimKey(launchKey, provider, attempt), expectedHead, run.run_id);
   } catch (e) {
     updateLaunch(root, run.run_id, launchRecord, { status: "ambiguous", maybe_claimed: true, error: e.message, updated_at: nowIso(opts) });
     throw new Error(`critic launch lock outcome is ambiguous; no Routine was fired, but retry is unsafe until the GitHub lock is reconciled: ${e.message}`);
@@ -1074,7 +1074,7 @@ export async function runGauntletCritic(root, idOrKey, opts = {}) {
   }
   updateLaunch(root, run.run_id, launchRecord, { status: "claimed", claim_ref: claim.ref, updated_at: nowIso(opts) });
   try {
-    await github.addComment(pr.number, renderGauntletLaunchMarker({
+    await github.comment(pr.number, renderGauntletLaunchMarker({
       run, role: "critic", criticRole, round, attempt, expectedHead, nonce,
     }));
   } catch (e) {
@@ -1137,7 +1137,7 @@ export async function runGauntletRepair(root, idOrKey, opts = {}) {
   if (reservation) return { duplicate: true, runId: run.run_id, launch: reservation };
 
   let current;
-  try { current = await github.getPr(pr.number); }
+  try { current = await github.fetch(pr.number); }
   catch (e) {
     updateLaunch(root, run.run_id, launchKey, { status: "preflight_failed", error: e.message, updated_at: nowIso(opts) });
     throw new Error(`repair preflight could not refresh PR #${pr.number}; no Routine was fired and retry is safe: ${e.message}`);
@@ -1157,7 +1157,7 @@ export async function runGauntletRepair(root, idOrKey, opts = {}) {
     throw new Error(`repair lead-identity preflight failed; no GitHub launch lock was claimed and retry is safe: ${e.message}`);
   }
   try {
-    if (!github.claimLaunch) throw new Error("GitHub client cannot atomically claim a Gauntlet launch");
+    if (!github.claim) throw new Error("GitHub client cannot atomically claim a Gauntlet launch");
     await assertClaimProtection(github, providerClaimKey(launchKey, provider, attempt), run.run_id);
   } catch (e) {
     updateLaunch(root, run.run_id, launchKey, { status: "preflight_failed", error: e.message, updated_at: nowIso(opts) });
@@ -1174,7 +1174,7 @@ export async function runGauntletRepair(root, idOrKey, opts = {}) {
   }
   let claim;
   try {
-    claim = await github.claimLaunch(providerClaimKey(launchKey, provider, attempt), expectedHead, run.run_id);
+    claim = await github.claim(providerClaimKey(launchKey, provider, attempt), expectedHead, run.run_id);
   } catch (e) {
     updateLaunch(root, run.run_id, launchKey, { status: "ambiguous", maybe_claimed: true, error: e.message, updated_at: nowIso(opts) });
     throw new Error(`repair launch lock outcome is ambiguous; no Routine was fired, but retry is unsafe until the GitHub lock is reconciled: ${e.message}`);
@@ -1185,7 +1185,7 @@ export async function runGauntletRepair(root, idOrKey, opts = {}) {
   }
   updateLaunch(root, run.run_id, launchKey, { status: "claimed", claim_ref: claim.ref, updated_at: nowIso(opts) });
   try {
-    await github.addComment(pr.number, renderGauntletLaunchMarker({
+    await github.comment(pr.number, renderGauntletLaunchMarker({
       run, role: "repair", round, attempt, expectedHead, packetSha256,
     }));
   } catch (e) {

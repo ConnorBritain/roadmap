@@ -1,6 +1,6 @@
 // roadmap — portfolio reporting (PURE, core): attributable authorization reports and the safe-action
 // derivation for evaluation runs. Discovery/IO lives with the engineering runtime
-// (scripts/lib/gauntlet-portfolio-io.mjs).
+// (packages/exec-engineering/src/gauntlet-portfolio-io.mjs).
 import { authorizationStatus } from "./gauntlet-authorization.mjs";
 import { decisionReport } from "./gauntlet-decisions.mjs";
 

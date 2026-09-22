@@ -4,11 +4,11 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { parse, stringify } from "yaml";
 import { runEvaluation } from "../evaluate.mjs";
-import { evaluationScopeSnapshot } from "../lib/evaluation-core.mjs";
+import { evaluationScopeSnapshot } from "@connorbritain/roadmap-core/evaluation-core.mjs";
 import { authorizationFixture, memoryAuthorityStore, continuationFixtureReceipt } from "./authorization.mjs";
-import { authorizationDigest } from "../lib/gauntlet-authorization.mjs";
-import { evaluationReviewRun } from "../lib/evaluation-review-core.mjs";
-import { renderCriticMarker } from "../lib/gauntlet-core.mjs";
+import { authorizationDigest } from "@connorbritain/roadmap-core/gauntlet-authorization.mjs";
+import { evaluationReviewRun } from "@connorbritain/roadmap-core/evaluation-review-core.mjs";
+import { renderCriticMarker } from "@connorbritain/roadmap-core/gauntlet-core.mjs";
 import { evaluationRepositoryFixture } from "./evaluation.mjs";
 
 function git(root, args) {

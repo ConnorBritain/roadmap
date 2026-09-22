@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { roleModelPreference, qualifyModelPreference, recordActualModel } from "../lib/model-policy.mjs";
-import { cloudProviderCapabilities } from "../lib/cloud-agent-providers.mjs";
+import { roleModelPreference, qualifyModelPreference, recordActualModel } from "@connorbritain/roadmap-core/model-policy.mjs";
+import { cloudProviderCapabilities } from "@connorbritain/roadmap-exec-engineering/cloud-agent-providers.mjs";
 import { npmCommand } from "./npm-command.mjs";
 
 export function registerModelPolicyTests(test) {

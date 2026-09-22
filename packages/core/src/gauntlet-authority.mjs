@@ -27,7 +27,7 @@ export async function mutateAuthorization(store, runId, transition, { retries = 
 // as a legacy alias until the runtime moves into the engineering package.
 export async function recordRunContinuation({ store, runId, artifact, github, record, confirm, now = new Date().toISOString() }) {
   const adapter = artifact || github;
-  const actor = await (adapter.actor ? adapter.actor() : adapter.viewerLogin());
+  const actor = await adapter.actor();
   const result = await mutateAuthorization(store, runId, (state) => ({ state: recordContinuation(state, record, { actor, confirm, now }) }));
   return { action: "continuation", run_id: runId, continuation: continuationStatus(result.state, { now: Date.parse(now) }) };
 }

@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { authorizationFixture } from "./authorization.mjs";
-import { authorizationDigest, reserveAuthorizedLaunch } from "../lib/gauntlet-authorization.mjs";
+import { authorizationDigest, reserveAuthorizedLaunch } from "@connorbritain/roadmap-core/gauntlet-authorization.mjs";
 import { evaluationReviewRun, evaluationReviewStatus, assertNextEvaluationReviewer, evaluationAdmissionTotals,
-  sealEvaluationPayload, evaluationAttestation, findEvaluationAttestation } from "../lib/evaluation-review-core.mjs";
-import { renderCriticMarker, renderGauntletLaunchMarker, renderGauntletVerdictAck } from "../lib/gauntlet-core.mjs";
+  sealEvaluationPayload, evaluationAttestation, findEvaluationAttestation } from "@connorbritain/roadmap-core/evaluation-review-core.mjs";
+import { renderCriticMarker, renderGauntletLaunchMarker, renderGauntletVerdictAck } from "@connorbritain/roadmap-core/gauntlet-core.mjs";
 
 const HEAD = "b".repeat(40), SOURCE = "a".repeat(40), NONCE = "c".repeat(32);
 const TIME = "2026-09-05T10:01:00Z";

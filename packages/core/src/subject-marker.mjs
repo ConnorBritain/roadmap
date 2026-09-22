@@ -1,7 +1,7 @@
 // roadmap — the canonical subject marker (PURE, core): the one machine line that ties an artifact
 // (PR body, document header, commit message) to a roadmap subject. Exact markers are identity;
 // loose prose and substring matches are not. Branch-convention matching lives with the
-// engineering executor (scripts/lib/pr-identity.mjs).
+// engineering executor (packages/exec-engineering/src/pr-identity.mjs).
 
 import { FROZEN_BAR_END, FROZEN_BAR_START } from "./gauntlet-core.mjs";
 

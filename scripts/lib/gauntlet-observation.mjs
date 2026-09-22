@@ -1,2 +1,0 @@
-// Compatibility shim — gauntlet-observation now lives in packages/exec-engineering (@connorbritain/roadmap-exec-engineering). Removed in the `unshim` slice.
-export * from "@connorbritain/roadmap-exec-engineering/gauntlet-observation.mjs";

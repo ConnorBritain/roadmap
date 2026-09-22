@@ -1,7 +1,7 @@
 // roadmap — scope-discipline brain (PURE, core). The sprawl guardrail surfaced in /sync, /debrief
 // and the review digest. The PR-matching half of the old sync-core (findUnrecordedMerges,
 // underParallelizedWarnings, reconcileNudge) is engineering-executor logic and lives in
-// reconcile-core.mjs; the scripts/lib shim re-exports both so existing importers see one module.
+// reconcile-core.mjs (exec-engineering); importers pick the half they need.
 
 // Scope-discipline knob: max (captured items + added sprints) per completed slice per review
 // window before the sprawl warning fires. The knob is meta.discipline.capture_ratio.

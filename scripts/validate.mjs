@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // roadmap — validate a roadmap.yaml AND its sibling backlog.yaml.
 //
-// Thin wrapper around lib/validate-core.mjs (roadmap graph) + lib/backlog-core.mjs
-// (parsed-object schema) + lib/backlog-audit.mjs (raw-text damage). Exits
+// Thin wrapper around packages/core/src/validate-core.mjs (roadmap graph) + packages/core/src/backlog-core.mjs
+// (parsed-object schema) + packages/core/src/backlog-audit.mjs (raw-text damage). Exits
 // non-zero on any error surfaced by any layer.
 //
 // Usage: node validate.mjs [path-to-roadmap.yaml]   (default: docs/roadmap/roadmap.yaml)
@@ -14,11 +14,11 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { parse as parseYaml } from "yaml";
-import { loadGraph } from "./lib/graph.mjs";
-import { validateGraph } from "./lib/validate-core.mjs";
-import { validateBacklog } from "./lib/backlog-core.mjs";
-import { auditBacklog, AUDIT_CODES, knownDamageOf } from "./lib/backlog-audit.mjs";
-import { REL } from "./lib/cli-core.mjs";
+import { loadGraph } from "@connorbritain/roadmap-core/graph.mjs";
+import { validateGraph } from "@connorbritain/roadmap-core/validate-core.mjs";
+import { validateBacklog } from "@connorbritain/roadmap-core/backlog-core.mjs";
+import { auditBacklog, AUDIT_CODES, knownDamageOf } from "@connorbritain/roadmap-core/backlog-audit.mjs";
+import { REL } from "@connorbritain/roadmap-core/cli-core.mjs";
 import { loadProfile } from "@connorbritain/roadmap-cli/profile.mjs";
 
 const path = process.argv[2] || join(...REL);

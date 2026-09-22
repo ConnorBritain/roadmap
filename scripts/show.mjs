@@ -2,10 +2,10 @@
 // roadmap show <invoke> — print one slice's detail (what / deps / read-order / next / gate
 // + branch/worktree), for /slice orientation. Read-only.
 
-import { loadGraph, flatten, statusDisplay, resolveGate } from "./lib/graph.mjs";
-import { branchFor, worktreeFor } from "./lib/brief.mjs";
-import { executionDirectiveLines } from "./lib/execution.mjs";
-import { REL } from "./lib/cli-core.mjs";
+import { loadGraph, flatten, statusDisplay, resolveGate } from "@connorbritain/roadmap-core/graph.mjs";
+import { branchFor, worktreeFor } from "@connorbritain/roadmap-exec-engineering/brief.mjs";
+import { executionDirectiveLines } from "@connorbritain/roadmap-core/execution.mjs";
+import { REL } from "@connorbritain/roadmap-core/cli-core.mjs";
 import { join } from "node:path";
 
 const args = process.argv.slice(2);

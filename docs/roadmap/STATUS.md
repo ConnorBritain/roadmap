@@ -55,10 +55,19 @@ README is concepts + quickstart + work profiles + install (~200 lines) with a po
 the long-form engineering reference moved verbatim to `docs/REFERENCE.md`; `MIGRATION.md` states
 that no YAML changes are required and lists the import-path moves; AGENTS.md, CONTRIBUTING.md,
 DEPLOYMENT.md and the package READMEs point at the packages; the plugin-assets test pins the doc
-set. Next is `unshim` (remove `scripts/lib/*` shims, switch the gauntlet runtime to canonical
-artifact names, full suite, packed install, e2e dry fanout + e2e conduct loop).
+set. Slice 10 `unshim` is complete: the 49 `scripts/lib/*` shims are deleted and every script,
+hook and test imports the packages by name; the gauntlet runtime, the evaluation IO and the GitHub
+authority store call the artifact by its canonical names (`fetch`, `actor`, `comment`,
+`descendsFrom`, `claim`, `readClaim`, `listClaims`, `assertClaimSafety`; legacy-named clients are
+still accepted through `asGauntletArtifact`); `npm run test:e2e` runs the dry-fanout goldens and
+the general conduct loop on their own. **The PI is complete.** Gates at the last commit: 524 tests,
+boundary check clean, packed install of all five tarballs green, e2e green.
 
-Next command: `roadmap show unshim`.
+Open follow-ups live in [`backlog.yaml`](backlog.yaml): b1 (schema meta drift), b2 (fold the
+remaining inline git/gh probe copies in watch-prs.mjs into external-state; session-start's copy is
+already folded).
+
+Next command: `roadmap next`.
 
 ## Slices
 
@@ -72,8 +81,8 @@ Next command: `roadmap show unshim`.
 | 6 | `profile-loader` | complete | `75ce038` | 504 tests; single reader + rule 1c in the boundary check |
 | 7 | `exec-general` | complete | `5330492` | 522 tests; git-file + human + doc-agent on the contracts; round-trip exit test |
 | 8 | `skills-agents` | complete | `71d0e4b` | 524 tests; skills pinned to the registries; hooks per profile |
-| 9 | `docs` | complete | (this branch, slice 9 commit) | README 618 → 202 lines; REFERENCE.md; MIGRATION.md |
-| 10 | `unshim` | next | — | |
+| 9 | `docs` | complete | `7f0ec68` | README 618 → 202 lines; REFERENCE.md; MIGRATION.md |
+| 10 | `unshim` | complete | (this branch, slice 10 commit) | shims gone; canonical artifact names; test:e2e |
 
 ## Decisions log
 

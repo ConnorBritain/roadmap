@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // roadmap — wave scheduler CLI (print-only; spawns nothing).
-// Builds the execution plan via lib/plan.mjs (recommended cap + waves) and prints it,
+// Builds the execution plan via packages/core/src/plan.mjs (recommended cap + waves) and prints it,
 // or emits it as JSON (consumed by fanout.mjs / adapters / the MCP read tools).
 //
 // Usage:
@@ -11,11 +11,11 @@
 //   --use-free-ram  size RAM off currently-free memory instead of 75% of total
 //   --wave N        when printing, mark the launch detail for wave N (default 1)
 
-import { loadGraph, commandLaneActive, commandLaneMembers, isDone } from "./lib/graph.mjs";
-import { buildPlan } from "./lib/plan.mjs";
+import { loadGraph, commandLaneActive, commandLaneMembers, isDone } from "@connorbritain/roadmap-core/graph.mjs";
+import { buildPlan } from "@connorbritain/roadmap-core/plan.mjs";
 import { loadProfile } from "@connorbritain/roadmap-cli/profile.mjs";
-import { tierBadge } from "./lib/priority.mjs";
-import { REL } from "./lib/cli-core.mjs";
+import { tierBadge } from "@connorbritain/roadmap-core/priority.mjs";
+import { REL } from "@connorbritain/roadmap-core/cli-core.mjs";
 import { join } from "node:path";
 
 const args = process.argv.slice(2);

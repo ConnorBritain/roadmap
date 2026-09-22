@@ -7,35 +7,36 @@
 import {
   flatten, detectCycle, computeWaves, execPlan, sessionsRemaining, resolveGate, isDone, readyNodes, coherenceEnabled,
   commandLaneMembers, commandLaneActive,
-} from "../lib/graph.mjs";
-import { parseWorktrees } from "../lib/external-state.mjs";
-import { buildPlan } from "../lib/plan.mjs";
-import { nodeWeight, recommendConcurrency, probeDisk, probeReviewDebt } from "../lib/recommend.mjs";
-import { synthesizeBrief, branchFor, worktreeFor, baseRefOf, baseBranchOf, remoteOf, launchPrompt, agentCmdFor, DEFAULT_AGENT_CMD } from "../lib/brief.mjs";
-import { route, classify, buildArgs, findRepoRoot, missingRoadmapHelp, expandShort, REL } from "../lib/cli-core.mjs";
-import { launchDecision } from "../lib/fanout-core.mjs";
-import { configuredProfiles, resolveProfile, commandFor, launchDecisionForProfile, safeConfig, BUILTIN_PROFILES } from "../lib/assistant-core.mjs";
-import { terminalChoices, moveSelection, parseCap, buildFanArgs, autoOutName } from "../lib/wizard-core.mjs";
-import { TOOLS, addSprint, setStatus, setFields, bulkSet, prune, validateDocOrThrow, readValidate, serialize } from "../lib/mcp-core.mjs";
-import { parseAssignments } from "../lib/cli-core.mjs";
-import { diffPrStates, matchesRoadmapBranches, checksOf, criticSignalOf } from "../lib/pr-watch-core.mjs";
-import { findUnrecordedMerges, reconcileNudge, underParallelizedWarnings, sprawlWarnings, captureRatio } from "../lib/sync-core.mjs";
+} from "@connorbritain/roadmap-core/graph.mjs";
+import { parseWorktrees } from "@connorbritain/roadmap-exec-engineering/external-state.mjs";
+import { buildPlan } from "@connorbritain/roadmap-core/plan.mjs";
+import { nodeWeight, recommendConcurrency, probeDisk, probeReviewDebt } from "@connorbritain/roadmap-exec-engineering/recommend.mjs";
+import { synthesizeBrief, branchFor, worktreeFor, baseRefOf, baseBranchOf, remoteOf, launchPrompt, agentCmdFor, DEFAULT_AGENT_CMD } from "@connorbritain/roadmap-exec-engineering/brief.mjs";
+import { route, classify, buildArgs, findRepoRoot, missingRoadmapHelp, expandShort, REL } from "@connorbritain/roadmap-core/cli-core.mjs";
+import { launchDecision } from "@connorbritain/roadmap-exec-engineering/fanout-core.mjs";
+import { configuredProfiles, resolveProfile, commandFor, launchDecisionForProfile, safeConfig, BUILTIN_PROFILES } from "@connorbritain/roadmap-exec-engineering/assistant-core.mjs";
+import { terminalChoices, moveSelection, parseCap, buildFanArgs, autoOutName } from "@connorbritain/roadmap-exec-engineering/wizard-core.mjs";
+import { TOOLS, addSprint, setStatus, setFields, bulkSet, prune, validateDocOrThrow, readValidate, serialize } from "@connorbritain/roadmap-core/mcp-core.mjs";
+import { parseAssignments } from "@connorbritain/roadmap-core/cli-core.mjs";
+import { diffPrStates, matchesRoadmapBranches, checksOf, criticSignalOf } from "@connorbritain/roadmap-exec-engineering/pr-watch-core.mjs";
+import { findUnrecordedMerges, reconcileNudge, underParallelizedWarnings } from "@connorbritain/roadmap-exec-engineering/reconcile-core.mjs";
+import { sprawlWarnings, captureRatio } from "@connorbritain/roadmap-core/sync-core.mjs";
 import {
   validateExecution, suggestedConcurrency, executionDirectiveLines, normalizeExecution,
   teamSize, filterByTrack, dirClusters, EXEC_MODES, EXEC_ROLES,
-} from "../lib/execution.mjs";
-import { renderMarkdown } from "../lib/render-core.mjs";
-import { comparePriority, laneComparator, validatePriority, tierBadge, TIERS } from "../lib/priority.mjs";
+} from "@connorbritain/roadmap-core/execution.mjs";
+import { renderMarkdown } from "@connorbritain/roadmap-core/render-core.mjs";
+import { comparePriority, laneComparator, validatePriority, tierBadge, TIERS } from "@connorbritain/roadmap-core/priority.mjs";
 import {
   validateBacklog, addItem, setItemFields, validateBacklogDocOrThrow, sortByPriority,
   openCount, renderBacklogMarkdown, backlogItemToNode, pickNext, BACKLOG_TOOLS, readBacklogList,
   performPromotion,
-} from "../lib/backlog-core.mjs";
-import { validateGraph } from "../lib/validate-core.mjs";
-import { estimationConfig, estimateArgs, parseEstimateRecord, applyEstimate, validateEstimation, timelinePlan, calendarFromMinutes, logArgs, alreadyLogged } from "../lib/estimate-core.mjs";
+} from "@connorbritain/roadmap-core/backlog-core.mjs";
+import { validateGraph } from "@connorbritain/roadmap-core/validate-core.mjs";
+import { estimationConfig, estimateArgs, parseEstimateRecord, applyEstimate, validateEstimation, timelinePlan, calendarFromMinutes, logArgs, alreadyLogged } from "@connorbritain/roadmap-core/estimate-core.mjs";
 import { runEstimate, resolveEngine, runTimeline, runLog, resolveHistory, resolveUserHistory, resolveSessionId, readSession } from "../estimate.mjs";
-import * as estimator from "../lib/estimator-core.mjs";
-import { mutateRoadmap, mutateBacklog, mutateBoth } from "../lib/store.mjs";
+import * as estimator from "@connorbritain/roadmap-core/estimator-core.mjs";
+import { mutateRoadmap, mutateBacklog, mutateBoth } from "@connorbritain/roadmap-core/store.mjs";
 import {
   normalizeLinearConfig, effectiveGranularity, effectiveVerbosity, linearState, checkPiOverrideAck,
   resolvePushState, resolveProjectStatus, pullStatusFor, priorityToLinear, LINEAR_TO_PRIORITY,
@@ -44,20 +45,20 @@ import {
   projectColorFor, projectIconFor, MARKER_LABEL, PLATE_LABEL, LINEAR_PROJECT_NAME_MAX, LINEAR_PROJECT_DESC_MAX,
   initiativePlan, initiativeStyle, startStampTargets, milestonePlan, HELD_STATUSES, cyclePlan,
   provisionPlan, manualViewChecklist, dispatchGuidance, STANDARD_VIEWS,
-} from "../lib/linear-core.mjs";
-import { platedKeys, plateDrainKeys, setPlateDoc, validatePlate } from "../lib/plate-core.mjs";
-import { addPi, setPlate, addPlate, removePlate } from "../lib/mcp-core.mjs";
+} from "@connorbritain/roadmap-core/linear-core.mjs";
+import { platedKeys, plateDrainKeys, setPlateDoc, validatePlate } from "@connorbritain/roadmap-core/plate-core.mjs";
+import { addPi, setPlate, addPlate, removePlate } from "@connorbritain/roadmap-core/mcp-core.mjs";
 import { runSync, runProvision, syncInitiatives, syncMilestones, readCursor, runNote, runNotes, runProjectUpdate } from "../linear.mjs";
-import { noteBody, sliceForBranch, gitSnapshot, autoPostPlan } from "../lib/journal-core.mjs";
+import { noteBody, sliceForBranch, gitSnapshot, autoPostPlan } from "@connorbritain/roadmap-core/journal-core.mjs";
 import { runDispatch, runFanCloud, resolveRoutine, fireRoutine, routineEndpoint, checkInFlightDispatch, markerFor, DEFAULT_IN_FLIGHT_WINDOW_MS, resolveInFlightWindowMs, dispatchStatus } from "../dispatch.mjs";
-import { githubAdapter, gitlabAdapter, gitNativeAdapter, resolveProvider, BUILTIN_PROVIDERS } from "../lib/dispatch-providers.mjs";
+import { githubAdapter, gitlabAdapter, gitNativeAdapter, resolveProvider, BUILTIN_PROVIDERS } from "@connorbritain/roadmap-exec-engineering/dispatch-providers.mjs";
 import {
   buildCodexCloudExecArgs, cloudProviderCapabilities, diagnoseCodexCloud, launchCodexCloud,
   normalizeCloudProvider, observeCodexCloudTask, parseCodexCloudSubmission, resolveCodexEnvironment,
-} from "../lib/cloud-agent-providers.mjs";
-import { electionPlan, outOfCycle } from "../lib/cycle-core.mjs";
+} from "@connorbritain/roadmap-exec-engineering/cloud-agent-providers.mjs";
+import { electionPlan, outOfCycle } from "@connorbritain/roadmap-core/cycle-core.mjs";
 import { runCyclePlan, runCycleLock } from "../cycle.mjs";
-import { readReadyWave } from "../lib/mcp-core.mjs";
+import { readReadyWave } from "@connorbritain/roadmap-core/mcp-core.mjs";
 import {
   buildCriticPrompt, buildImplementationPrompt, buildRepairPrompt, criticResultForCurrentHead,
   deriveCriticResults, deriveRunStatus, freezeQualityBar, makeRunId, parseCriticMarker, parseFrozenBarBlock,
@@ -66,20 +67,20 @@ import {
   reconstructCancellationFromComments, reconstructLaunchesFromComments,
   renderCriticMarker, renderGauntletCancellationMarker, renderGauntletLaunchMarker,
   renderGauntletPrMarkers, renderGauntletVerdictAck,
-} from "../lib/gauntlet-core.mjs";
+} from "@connorbritain/roadmap-core/gauntlet-core.mjs";
 import {
   belongsToRoadmapPr, parseRoadmapMarker, renderRoadmapMarker, roadmapSubjectMarkers,
-} from "../lib/pr-identity.mjs";
-import { launchReceipt, mutateGauntletLedger, readGauntletLedger } from "../lib/gauntlet-store.mjs";
+} from "@connorbritain/roadmap-exec-engineering/pr-identity.mjs";
+import { launchReceipt, mutateGauntletLedger, readGauntletLedger } from "@connorbritain/roadmap-core/gauntlet-store.mjs";
 import { formatGauntletLaunchResult, formatGauntletStatus, githubClient,
   runGauntletAcknowledge, runGauntletCancel, runGauntletCritic, runGauntletRepair,
   runGauntletStart, runGauntletStatus, runGauntletReconcile } from "../gauntlet.mjs";
-import { freezeImplementationAuthority, reserveImplementationCapacity } from "../lib/implementation-authorization.mjs";
-import { recordLaunchOutcome, recordLaunchNotSubmitted, recordContinuation } from "../lib/gauntlet-authorization.mjs";
-import { mutateAuthorization } from "../lib/gauntlet-authorization-io.mjs";
-import { loadGraph } from "../lib/graph.mjs";
+import { freezeImplementationAuthority, reserveImplementationCapacity } from "@connorbritain/roadmap-core/implementation-authorization.mjs";
+import { recordLaunchOutcome, recordLaunchNotSubmitted, recordContinuation } from "@connorbritain/roadmap-core/gauntlet-authorization.mjs";
+import { mutateAuthorization } from "@connorbritain/roadmap-core/gauntlet-authority.mjs";
+import { loadGraph } from "@connorbritain/roadmap-core/graph.mjs";
 import { runEvaluation } from "../evaluate.mjs";
-import { buildEvaluationPrompt } from "../lib/evaluation-core.mjs";
+import { buildEvaluationPrompt } from "@connorbritain/roadmap-core/evaluation-core.mjs";
 import { registerEvaluationTests } from "./evaluation.mjs";
 import { registerAuthorizationTests } from "./authorization.mjs";
 import { memoryAuthorityStore, continuationFixtureReceipt } from "./authorization.mjs";
@@ -89,14 +90,14 @@ import { registerAuthorizationIoTests } from "./authorization-io.mjs";
 import { registerModelPolicyTests } from "./model-policy.mjs";
 import { registerPortfolioTests } from "./portfolio.mjs";
 import { registerDecisionTests } from "./decisions.mjs";
-import { graphDiff, backlogDiff, reviewDigest, pisInFlight } from "../lib/review-core.mjs";
-import { doctorReport } from "../lib/doctor-core.mjs";
-import { auditBacklog, collectEntries, AUDIT_CODES, signatureOf, knownDamageOf } from "../lib/backlog-audit.mjs";
+import { graphDiff, backlogDiff, reviewDigest, pisInFlight } from "@connorbritain/roadmap-core/review-core.mjs";
+import { doctorReport } from "@connorbritain/roadmap-exec-engineering/doctor-core.mjs";
+import { auditBacklog, collectEntries, AUDIT_CODES, signatureOf, knownDamageOf } from "@connorbritain/roadmap-core/backlog-audit.mjs";
 import {
   SLUG_RE, validators, suggestProgramName, planInit,
   renderRoadmapYaml, renderBacklogYaml, renderLocalConfig,
   planGitignore, appendToGitignore,
-} from "../lib/init-core.mjs";
+} from "@connorbritain/roadmap-core/init-core.mjs";
 import { parseDocument } from "yaml";
 import { join, resolve } from "node:path";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";

@@ -1,6 +1,7 @@
 # Architecture: core + executor packages
 
-Status: **plan of record for the core/executor split** (Step 1 of the re-architecture, 2026-09-22).
+Status: **implemented** — all ten slices of the core/executor split landed on this branch (2026-09-22); the
+paragraph below records what each slice did. Originally the plan of record for Step 1.
 Tracked as PI `core-executor-split` in [`docs/roadmap/roadmap.yaml`](roadmap/roadmap.yaml);
 live state in [`docs/roadmap/STATUS.md`](roadmap/STATUS.md). The dependency map describes `main`
 as of `565f96c`; the `core-extract` slice has since moved every C-verdict module (plus
@@ -56,6 +57,11 @@ The `docs` slice then rewrote the README as concepts + quickstart + work profile
 pointer per profile, moved the long-form engineering reference to `docs/REFERENCE.md`, added
 `MIGRATION.md` (no YAML edits required; import-path moves; the enforced rules), and re-pointed
 AGENTS.md, CONTRIBUTING.md, DEPLOYMENT.md and the package READMEs at the packages.
+The `unshim` slice then deleted the 49 `scripts/lib/*` shims (every script, hook and test imports
+the packages by name), switched the gauntlet runtime, the evaluation IO and the GitHub authority
+store to the canonical artifact method names (legacy-named clients still work through
+`asGauntletArtifact`), and added `npm run test:e2e` for the dry-fanout goldens and the general
+conduct loop.
 
 ## Why
 

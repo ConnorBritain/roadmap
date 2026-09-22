@@ -19,7 +19,7 @@ meta:
 pis:
   - id: core-executor-split
     title: Core + executor packages — plan non-engineering work without a mode flag
-    status: active
+    status: complete
     theme: >-
       Split the flat scripts tree into packages/core (planning + ritual + gauntlet protocol) and executor packages (engineering, general) behind two interfaces, Executor and GauntletArtifact, as an npm-workspaces monorepo in this repo.
     exit_criteria: >-
@@ -228,7 +228,7 @@ pis:
           basis: UNCALIBRATED (static prior 3.0 min/round; only 0 logged outcomes) · sparse-data widening ×1.75 (n=0)
       - id: s10
         title: Remove shims; full suite, packed install, end-to-end fanout and conduct loops
-        status: next
+        status: complete
         invoke: unshim
         what: Delete the scripts/lib re-export shims; run the full suite, the installation check, a dry fanout on a fixture repo (engineering) and a conduct loop on a markdown artifact (general).
         deps: [s9]

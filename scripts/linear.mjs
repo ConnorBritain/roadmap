@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // roadmap linear <status|auth|setup|sync> — the ONLY file that talks to Linear's API.
-// The brain is lib/linear-core.mjs (pure); this layer does GraphQL IO (global fetch,
-// injectable for tests), the sync cursor, and the YAML write-backs via lib/store.mjs.
+// The brain is packages/core/src/linear-core.mjs (pure); this layer does GraphQL IO (global fetch,
+// injectable for tests), the sync cursor, and the YAML write-backs via packages/core/src/store.mjs.
 //
 //   roadmap linear status [--probe] [--json]   state check (probe = one networked viewer query)
 //   roadmap linear auth                        how to set LINEAR_API_KEY (never stored in files)

@@ -8,10 +8,10 @@
 
 import { spawnSync } from "node:child_process";
 import YAML from "yaml";
-import { loadGraph } from "./lib/graph.mjs";
-import { loadBacklog } from "./lib/store.mjs";
-import { graphDiff, backlogDiff, reviewDigest } from "./lib/review-core.mjs";
-import { REL } from "./lib/cli-core.mjs";
+import { loadGraph } from "@connorbritain/roadmap-core/graph.mjs";
+import { loadBacklog } from "@connorbritain/roadmap-core/store.mjs";
+import { graphDiff, backlogDiff, reviewDigest } from "@connorbritain/roadmap-core/review-core.mjs";
+import { REL } from "@connorbritain/roadmap-core/cli-core.mjs";
 import { join } from "node:path";
 
 const args = process.argv.slice(2);

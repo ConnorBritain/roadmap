@@ -2,14 +2,14 @@
 // roadmap — the roadmap shell CLI.
 // Dispatches `roadmap <command> [args]` from ANYWHERE inside a repo: it walks up from cwd
 // to find docs/roadmap/roadmap.yaml and runs the target script with cwd = that repo root,
-// so every relative default (--in, --out) just works. Pure logic lives in lib/cli-core.mjs.
+// so every relative default (--in, --out) just works. Pure logic lives in packages/core/src/cli-core.mjs.
 
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { route, classify, buildArgs, findRepoRoot, missingRoadmapHelp, expandShort, REL } from "./lib/cli-core.mjs";
-import { loadGraph } from "./lib/graph.mjs";
+import { route, classify, buildArgs, findRepoRoot, missingRoadmapHelp, expandShort, REL } from "@connorbritain/roadmap-core/cli-core.mjs";
+import { loadGraph } from "@connorbritain/roadmap-core/graph.mjs";
 import { loadProfileForRoot } from "@connorbritain/roadmap-cli/profile.mjs";
 
 const SCRIPTS = dirname(fileURLToPath(import.meta.url));

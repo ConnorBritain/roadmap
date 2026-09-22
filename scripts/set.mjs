@@ -6,9 +6,9 @@
 
 import { readFileSync } from "node:fs";
 import YAML from "yaml";
-import { parseAssignments } from "./lib/cli-core.mjs";
-import { mutateRoadmap } from "./lib/store.mjs";
-import { setFields } from "./lib/mcp-core.mjs";
+import { parseAssignments } from "@connorbritain/roadmap-core/cli-core.mjs";
+import { mutateRoadmap } from "@connorbritain/roadmap-core/store.mjs";
+import { setFields } from "@connorbritain/roadmap-core/mcp-core.mjs";
 
 const args = process.argv.slice(2);
 const invoke = args.find((a) => !a.includes("=") && !a.startsWith("-"));

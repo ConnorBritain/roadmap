@@ -4,9 +4,9 @@
 //   roadmap estimate --all [--force]        estimate every classified, un-estimated slice
 //   roadmap estimate timeline [--now DATE]  roll durations up into projected_target_date per PI
 //   roadmap estimate log <slice> --status … log a completed slice's outcome → calibration
-// The pricing model is lib/estimator-core.mjs (pure; a port of agent-time's estimator.py). This layer
+// The pricing model is packages/core/src/estimator-core.mjs (pure; a port of agent-time's estimator.py). This layer
 // owns the IO: the JSONL calibration history (byte-compatible with agent-time's history.jsonl, so an
-// existing history keeps calibrating), session activity files, and the YAML write-back via lib/store.mjs.
+// existing history keeps calibrating), session activity files, and the YAML write-back via packages/core/src/store.mjs.
 // An external estimator.py is used ONLY when explicitly configured (meta.estimation.engine or
 // $AGENT_TIME_ENGINE); otherwise estimation is native and needs no Python.
 // CLI shell: the body lives in @connorbritain/roadmap-core/estimate-io.mjs; this file parses argv and re-exports it.

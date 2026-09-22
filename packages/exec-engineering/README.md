@@ -4,8 +4,8 @@ Engineering executors for roadmap: the worktree-session and cloud-dispatch Execu
 github-pr GauntletArtifact, machine ceilings, doctor, PR watch, providers, and the code-grepping
 scoper. Depends on `@connorbritain/roadmap-core` only.
 
-Status: the `exec-engineering` slice landed the Executors and moved every engineering library in.
-`scripts/lib/*` still re-exports these modules until the `unshim` slice.
+Status: complete — the Executors, the artifact adapter, the runtime and every engineering library
+live here; the `scripts/lib/*` shims are gone.
 
 ## Executors (`docs/ARCHITECTURE.md` § Executor)
 

@@ -8,16 +8,16 @@
 // Bundled in the plugin via .mcp.json; also runnable as `roadmap mcp` for debugging.
 
 import { createInterface } from "node:readline";
-import { findRepoRoot, REL } from "./lib/cli-core.mjs";
-import { loadGraph } from "./lib/graph.mjs";
-import { mutateRoadmap, mutateBacklog, mutateBoth, loadBacklog, roadmapPaths, originBacklogIds } from "./lib/store.mjs";
-import { TOOLS, READ_HANDLERS, MUTATION_HANDLERS } from "./lib/mcp-core.mjs";
-import { BACKLOG_TOOLS, BACKLOG_READ_HANDLERS, BACKLOG_MUTATION_HANDLERS, performPromotion } from "./lib/backlog-core.mjs";
-import { linearState, linearStatusLine, normalizeLinearConfig } from "./lib/linear-core.mjs";
-import { platedKeys } from "./lib/plate-core.mjs";
+import { findRepoRoot, REL } from "@connorbritain/roadmap-core/cli-core.mjs";
+import { loadGraph } from "@connorbritain/roadmap-core/graph.mjs";
+import { mutateRoadmap, mutateBacklog, mutateBoth, loadBacklog, roadmapPaths, originBacklogIds } from "@connorbritain/roadmap-core/store.mjs";
+import { TOOLS, READ_HANDLERS, MUTATION_HANDLERS } from "@connorbritain/roadmap-core/mcp-core.mjs";
+import { BACKLOG_TOOLS, BACKLOG_READ_HANDLERS, BACKLOG_MUTATION_HANDLERS, performPromotion } from "@connorbritain/roadmap-core/backlog-core.mjs";
+import { linearState, linearStatusLine, normalizeLinearConfig } from "@connorbritain/roadmap-core/linear-core.mjs";
+import { platedKeys } from "@connorbritain/roadmap-core/plate-core.mjs";
 import { runSync, runNote, runNotes, runProjectUpdate } from "./linear.mjs";
 import { runEstimate, runTimeline, runLog } from "./estimate.mjs";
-import { LOG_STATUSES } from "./lib/estimate-core.mjs";
+import { LOG_STATUSES } from "@connorbritain/roadmap-core/estimate-core.mjs";
 import { loadProfileForRoot } from "@connorbritain/roadmap-cli/profile.mjs";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
