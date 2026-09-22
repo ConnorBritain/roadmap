@@ -112,6 +112,8 @@ import "../../packages/core/test/graph.mjs";
 import "../../packages/core/test/execution.mjs";
 import "../../packages/core/test/cli-core.mjs";
 import "../../packages/core/test/backlog-audit.mjs";
+import "../../packages/core/test/gauntlet-artifact.mjs";
+import "../../packages/exec-engineering/test/github-pr-artifact.mjs";
 
 
 // WHY: an evaluation corpus is the durable hand-off from diagnosis to
@@ -3861,9 +3863,9 @@ function gauntletFixture(maxRounds = 2) {
 function acknowledgedCriticComments(run, body, { url = "https://github.test/comment/critic",
   criticCreatedAt = "2026-08-08T12:01:00Z", ackCreatedAt = "2026-08-08T12:02:00Z" } = {}) {
   const critic = { body, author: "critic-worker", createdAt: criticCreatedAt,
-    updatedAt: criticCreatedAt, includesCreatedEdit: false, url };
+    updatedAt: criticCreatedAt, edited: false, url };
   const ack = { body: renderGauntletVerdictAck({ run, comment: critic }), author: run.lead_actor,
-    createdAt: ackCreatedAt, updatedAt: ackCreatedAt, includesCreatedEdit: false,
+    createdAt: ackCreatedAt, updatedAt: ackCreatedAt, edited: false,
     url: `${url}-ack` };
   return [critic, ack];
 }
@@ -3909,8 +3911,8 @@ test("Gauntlet PR protocol round-trips a hashed frozen bar and reconstructable r
   eq(parseGauntletPrMarkers(markerBarBody).key, "auth-login", "marker-like frozen-bar prose cannot collide with the protocol header");
   const releasePrompt = buildImplementationPrompt({ run: { ...run, base_ref: "release/next" },
     frozenBar: frozen });
-  ok(releasePrompt.includes("Required PR base branch: release/next")
-    && releasePrompt.includes("open exactly one PR targeting release/next"),
+  ok(releasePrompt.includes("Required base branch: release/next")
+    && releasePrompt.includes("targeting release/next"),
   "implementation workers receive the explicit non-default PR base branch");
 });
 
@@ -3934,7 +3936,7 @@ test("Gauntlet launch precommit recovers only the authenticated lead's nonce has
   "changing the repair ceiling invalidates the full-protocol launch attestation");
   eq(reconstructLaunchesFromComments({ run: { ...run, reconstructed: true },
     comments: [{ body, author: "roadmap-lead", createdAt: "2026-08-08T12:00:00Z",
-      updatedAt: "2026-08-08T12:01:00Z", includesCreatedEdit: true }] }), [],
+      updatedAt: "2026-08-08T12:01:00Z", edited: true }] }), [],
   "an edited lead comment cannot be transformed into a launch attestation");
 });
 
@@ -3956,7 +3958,7 @@ test("Gauntlet cancellation is a lead-authored full-protocol durable event", () 
     "a protocol mutation invalidates cancellation authority");
   eq(reconstructCancellationFromComments({ run, comments: [{ body, author: "roadmap-lead",
     createdAt: "2026-08-08T12:30:00Z", updatedAt: "2026-08-08T12:31:00Z",
-    includesCreatedEdit: true }] }), null,
+    edited: true }] }), null,
   "an edited lead comment cannot be transformed into a cancellation event");
 });
 
@@ -4019,7 +4021,7 @@ test("an edited placeholder cannot forge an earlier critic verdict after the non
   const marker = renderCriticMarker({ run, criticRole: "critic", round: 1, head: GAUNTLET_SHA_A,
     nonce: GAUNTLET_NONCE, verdict: "PASS" });
   const edited = deriveCriticResults({ run, currentHead: GAUNTLET_SHA_A, commits: [GAUNTLET_SHA_A], comments: [{
-    body: marker, author: "builder", createdAt: "2026-08-08T12:01:00Z", includesCreatedEdit: true,
+    body: marker, author: "builder", createdAt: "2026-08-08T12:01:00Z", edited: true,
   }] })[0];
   eq([edited.valid, edited.invalidReason], [false, "edited_result"],
     "GitHub edit metadata defeats the pre-created-placeholder attack");
@@ -4033,7 +4035,7 @@ test("delete-and-replay cannot reuse an acknowledgment bound to a deleted GitHub
     nonce: GAUNTLET_NONCE, verdict: "PASS" });
   const [, oldAck] = acknowledgedCriticComments(run, body, { url: "https://github.test/comment/deleted" });
   const replay = { body, author: "builder", createdAt: "2026-08-08T12:03:00Z",
-    updatedAt: "2026-08-08T12:03:00Z", includesCreatedEdit: false, url: "https://github.test/comment/replay" };
+    updatedAt: "2026-08-08T12:03:00Z", edited: false, url: "https://github.test/comment/replay" };
   const status = deriveRunStatus({ run, pr: { state: "OPEN", currentHead: GAUNTLET_SHA_A, checks: "passing" },
     comments: [oldAck, replay], commits: [GAUNTLET_SHA_A] });
   eq([status.state, status.canMerge, status.criticResults[0].invalidReason],
@@ -4041,7 +4043,7 @@ test("delete-and-replay cannot reuse an acknowledgment bound to a deleted GitHub
     "a public nonce and old acknowledgment are insufficient after the exact comment is deleted");
   const replayAck = { body: renderGauntletVerdictAck({ run, comment: replay }), author: run.lead_actor,
     createdAt: "2026-08-08T12:04:00Z", updatedAt: "2026-08-08T12:04:00Z",
-    includesCreatedEdit: false, url: "https://github.test/comment/replay-ack" };
+    edited: false, url: "https://github.test/comment/replay-ack" };
   const reacknowledged = deriveRunStatus({ run,
     pr: { state: "OPEN", currentHead: GAUNTLET_SHA_A, checks: "passing" },
     comments: [oldAck, replay, replayAck], commits: [GAUNTLET_SHA_A] });
@@ -4254,7 +4256,7 @@ for (const bounded of [false, true]) test(`Gauntlet lifecycle${bounded ? " with 
     getLaunchClaim: async (key) => remoteClaims.get(key) || null,
     addComment: async (_number, body) => {
       currentPr.comments.push({ body, author: "roadmap-lead", createdAt: leadCommentTimes.shift(),
-        includesCreatedEdit: false, url: `https://github.test/comment/lead-${currentPr.comments.length + 1}` });
+        edited: false, url: `https://github.test/comment/lead-${currentPr.comments.length + 1}` });
       return true;
     },
   };
@@ -4305,7 +4307,7 @@ for (const bounded of [false, true]) test(`Gauntlet lifecycle${bounded ? " with 
   const prHeadA = "1".repeat(40);
   const prHeadB = "2".repeat(40);
   currentPr = { number: 42, url: "https://github.test/pr/42", title: "Login", state: "OPEN", isDraft: false,
-    mergeStateStatus: "CLEAN", headRefName: "gauntlet/auth", baseRefName: "main", headRefOid: prHeadA, currentHead: prHeadA,
+    mergeStateStatus: "CLEAN", headRefName: "gauntlet/auth", baseRef: "main", headRefOid: prHeadA, currentHead: prHeadA,
     checks: "passing", comments: [], commits: [prHeadA], createdAt: "2026-08-08T12:01:00Z", updatedAt: "2026-08-08T12:01:00Z",
     body: renderGauntletPrMarkers({ run: localRun, subjectType: "slice", key: "auth-login", baseSha: base,
       barMarkdown: localRun.frozen_bar_markdown, barSha256: localRun.bar_sha256 }) };
@@ -4341,14 +4343,14 @@ for (const bounded of [false, true]) test(`Gauntlet lifecycle${bounded ? " with 
   const invalidBody = renderCriticMarker({ runId: started.runId, criticRole: "critic", round: 1,
     head: prHeadA, nonce: GAUNTLET_NONCE, verdict: "INVALID_OR_STALE" });
   currentPr.comments.push({ body: invalidBody,
-    author: "critic-worker", createdAt: "2026-08-08T12:02:00Z", includesCreatedEdit: false,
+    author: "critic-worker", createdAt: "2026-08-08T12:02:00Z", edited: false,
     url: "https://github.test/comment/invalid" });
   eq((await runGauntletStatus(root, started.runId, opts)).state, "awaiting_lead_ack", "worker verdict cannot drive the loop before lead judgment");
   await runGauntletAcknowledge(root, started.runId, { ...opts, commentUrl: "https://github.test/comment/invalid", confirm: true });
   eq((await runGauntletStatus(root, started.runId, opts)).state, "awaiting_critic", "attested INVALID_OR_STALE permits a fresh attempt");
   currentPr.comments = currentPr.comments.filter((comment) => comment.url !== "https://github.test/comment/invalid");
   currentPr.comments.push({ body: invalidBody, author: "critic-worker", createdAt: "2026-08-08T12:02:15Z",
-    includesCreatedEdit: false, url: "https://github.test/comment/invalid-replay" });
+    edited: false, url: "https://github.test/comment/invalid-replay" });
   eq((await runGauntletStatus(root, started.runId, opts)).state, "awaiting_lead_ack",
     "deleting and identically reposting a critic comment cannot reuse its old URL-bound acknowledgment");
   const replayAck = await runGauntletAcknowledge(root, started.runId, { ...opts,
@@ -4359,7 +4361,7 @@ for (const bounded of [false, true]) test(`Gauntlet lifecycle${bounded ? " with 
   const retryNonce = "d".repeat(32);
   await runGauntletCritic(root, started.runId, { ...opts, nonce: retryNonce, expectedHead: prHeadA });
   currentPr.comments.push({ body: renderCriticMarker({ runId: started.runId, criticRole: "critic", round: 1, head: prHeadA, nonce: retryNonce, verdict: "REVISE" }),
-    author: "critic-worker", createdAt: "2026-08-08T12:02:30Z", includesCreatedEdit: false,
+    author: "critic-worker", createdAt: "2026-08-08T12:02:30Z", edited: false,
     url: "https://github.test/comment/revise" });
   await runGauntletAcknowledge(root, started.runId, { ...opts, commentUrl: "https://github.test/comment/revise", confirm: true });
   const revisedStatus = await runGauntletStatus(root, started.runId, opts);
@@ -4409,7 +4411,7 @@ for (const bounded of [false, true]) test(`Gauntlet lifecycle${bounded ? " with 
   const criticB = await runGauntletCritic(root, started.runId, { ...opts, expectedHead: prHeadB });
   eq(criticB.round, 2, "repair advances the critic round");
   currentPr.comments.push({ body: renderCriticMarker({ runId: started.runId, criticRole: "critic", round: 2, head: prHeadB, nonce: GAUNTLET_NONCE, verdict: "PASS" }),
-    author: "critic-worker", createdAt: "2026-08-08T12:04:00Z", includesCreatedEdit: false,
+    author: "critic-worker", createdAt: "2026-08-08T12:04:00Z", edited: false,
     url: "https://github.test/comment/pass" });
   await runGauntletAcknowledge(root, started.runId, { ...opts, commentUrl: "https://github.test/comment/pass", confirm: true });
   const passed = await runGauntletStatus(root, started.runId, opts);
@@ -4422,7 +4424,7 @@ for (const bounded of [false, true]) test(`Gauntlet lifecycle${bounded ? " with 
     "profile:p:default#repair#critic/high",
     "profile:p:default#critic#Opus-4.1",
   ], "separate tiered role routines conducted the loop");
-  ok(launched[1].prompt.includes(`Exact expected head SHA: ${prHeadA}`), "critic sees the artifact SHA and bar");
+  ok(launched[1].prompt.includes(`Exact expected head: ${prHeadA}`) && launched[1].prompt.includes("PR #"), "critic sees the artifact head, the bar, and the backend-specific fetch wording");
   ok(launched[3].prompt.includes("Lead-synthesized repair packet") && launched[3].prompt.includes("same branch"), "repair sees lead scope and same-PR rule");
   eq(JSON.stringify(passed.run).includes(GAUNTLET_NONCE), false, "status does not expose an in-flight critic capability");
 
@@ -4500,7 +4502,7 @@ test("Gauntlet ambiguous launch stays locked and explicit cancellation preserves
   eq(cancelled.durable, true, "a pre-PR cancellation creates a protected shared tombstone");
   eq(readGauntletLedger(root).runs[run.run_id].launches[0].status, "ambiguous", "cancellation never erases the ambiguous receipt");
   currentPr = { number: 92, state: "OPEN", isDraft: false, mergeStateStatus: "CLEAN",
-    headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRefName: "main", checks: "passing",
+    headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRef: "main", checks: "passing",
     comments: [], commits: [GAUNTLET_SHA_A], createdAt: "2026-08-08T13:05:00Z",
     body: renderGauntletPrMarkers({ run, subjectType: "slice", key: "auth-login",
       barMarkdown: run.frozen_bar_markdown, barSha256: run.bar_sha256 }) };
@@ -4543,7 +4545,7 @@ test("PR-backed Gauntlet cancellation survives local-ledger loss and requires th
   const started = await runGauntletStart(root, "auth-login", opts);
   const localRun = readGauntletLedger(root).runs[started.runId];
   currentPr = { number: 91, url: "https://github.test/pr/91", title: "Login", state: "OPEN", isDraft: false,
-    mergeStateStatus: "CLEAN", headRefName: "gauntlet/auth", baseRefName: "main",
+    mergeStateStatus: "CLEAN", headRefName: "gauntlet/auth", baseRef: "main",
     headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, checks: "passing", comments: [],
     commits: [GAUNTLET_SHA_A], createdAt: "2026-08-08T14:01:00Z", updatedAt: "2026-08-08T14:01:00Z",
     body: renderGauntletPrMarkers({ run: localRun, subjectType: "slice", key: "auth-login",
@@ -4604,7 +4606,7 @@ test("repair-history compare errors remain diagnostic and explicitly cancelable"
     getLaunchClaim: async (key) => claims.get(key) || null,
     addComment: async (_number, body) => { currentPr.comments.push({ body, author: "roadmap-lead",
       createdAt: "2026-08-08T15:02:00Z", updatedAt: "2026-08-08T15:02:00Z",
-      includesCreatedEdit: false, url: `https://github.test/comment/${currentPr.comments.length + 1}` }); } };
+      edited: false, url: `https://github.test/comment/${currentPr.comments.length + 1}` }); } };
   const opts = { github, allowLocalBase: true,
     profiles: { p: { account: "a@b.c", routines: {
       "default#implementation": { trigger: "impl", token: "ki" },
@@ -4619,7 +4621,7 @@ test("repair-history compare errors remain diagnostic and explicitly cancelable"
   });
   const run = readGauntletLedger(root).runs[started.runId];
   currentPr = { number: 93, state: "OPEN", isDraft: false, mergeStateStatus: "CLEAN",
-    headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRefName: "main", checks: "passing",
+    headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRef: "main", checks: "passing",
     comments: [], commits: [GAUNTLET_SHA_A], createdAt: "2026-08-08T15:01:30Z",
     body: renderGauntletPrMarkers({ run, subjectType: "slice", key: "auth-login",
       barMarkdown: run.frozen_bar_markdown, barSha256: run.bar_sha256 }) };
@@ -4655,7 +4657,7 @@ test("confirmed GitHub recovery re-freezes every immutable PR field", async () =
     created_at: "2026-08-08T12:00:00Z", updated_at: "2026-08-08T13:00:00Z" };
   mutateGauntletLedger(root, (ledger) => { ledger.runs[run.run_id] = run; });
   const pr = { number: 7, state: "OPEN", isDraft: false, mergeStateStatus: "CLEAN",
-    headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRefName: "main", checks: "passing",
+    headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRef: "main", checks: "passing",
     comments: [], commits: [GAUNTLET_SHA_A], createdAt: run.created_at,
     body: renderGauntletPrMarkers({ run, subjectType: "slice", key: "auth-login", qualityBar: frozen }) };
   const github = { assertAvailable: () => true, findPrByRun: async () => pr, isAncestor: async () => true };
@@ -4681,7 +4683,7 @@ test("fresh status fails closed on critic and repair claims whose lead attestati
     const claimRef = `refs/heads/roadmap-gauntlet-locks/test-${kind}`;
     let cancellationClaim = null;
     const pr = { number: 66, state: "OPEN", isDraft: false, mergeStateStatus: "CLEAN",
-      headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRefName: "main", checks: "passing",
+      headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRef: "main", checks: "passing",
       comments: [], commits: [GAUNTLET_SHA_A], createdAt: "2026-08-08T12:00:00Z",
       body: renderGauntletPrMarkers({ run, subjectType: "slice", key: "auth-login", qualityBar: frozen }) };
     const github = { assertAvailable: () => true, viewerLogin: async () => "roadmap-lead",
@@ -4697,7 +4699,7 @@ test("fresh status fails closed on critic and repair claims whose lead attestati
     pr.comments.push({ body: renderGauntletCancellationMarker({ run,
       reason: "Lead reconciled the missing launch attestation and abandoned the run." }),
     author: "roadmap-lead", createdAt: "2026-08-08T12:00:30Z", updatedAt: "2026-08-08T12:00:30Z",
-    includesCreatedEdit: false, url: `https://github.test/comment/cancel-${kind}` });
+    edited: false, url: `https://github.test/comment/cancel-${kind}` });
     const cancelled = await runGauntletStatus(root, run.run_id, { github });
     eq([cancelled.state, cancelled.run.cancelledViaGithub], ["cancelled", true],
       `a valid claim-backed cancellation can terminate a ${kind} attestation crash gap`);
@@ -4709,7 +4711,7 @@ test("fresh status fails closed on critic and repair claims whose lead attestati
       : renderGauntletLaunchMarker({ run, role: "repair", round: 1,
         attempt: 1, expectedHead: GAUNTLET_SHA_A, packetSha256: "d".repeat(64) });
     pr.comments.push({ body: marker, author: "roadmap-lead", createdAt: "2026-08-08T12:01:00Z",
-      updatedAt: "2026-08-08T12:01:00Z", includesCreatedEdit: false,
+      updatedAt: "2026-08-08T12:01:00Z", edited: false,
       url: `https://github.test/comment/${kind}` });
     const restored = await runGauntletStatus(root, run.run_id, { github });
     ok(restored.state !== "infrastructure_failure", `${kind} recovers when claim and immutable lead attestation agree`);
@@ -4776,7 +4778,7 @@ test("a distributed implementation loser adopts only the confirmed winner protoc
     },
     addComment: async (_number, body) => { currentPr.comments.push({ body, author: "roadmap-lead",
       createdAt: "2026-08-08T11:03:00Z", updatedAt: "2026-08-08T11:03:00Z",
-      includesCreatedEdit: false, url: `https://github.test/comment/lead-${currentPr.comments.length + 1}` }); } };
+      edited: false, url: `https://github.test/comment/lead-${currentPr.comments.length + 1}` }); } };
   const common = { github, allowLocalBase: true,
     execImpl: (command, args, options) => command === "git" && args[0] === "rev-parse"
       ? { status: 0, stdout: `${baseline}\n`, stderr: "" }
@@ -4801,7 +4803,7 @@ test("a distributed implementation loser adopts only the confirmed winner protoc
   await runGauntletCancel(rootB, loser.runId, { ...common, confirm: true,
     reason: "Cancel only this losing pre-election candidate." });
   currentPr = { number: 73, state: "OPEN", isDraft: false, mergeStateStatus: "CLEAN",
-    headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRefName: "main", checks: "passing",
+    headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRef: "main", checks: "passing",
     comments: [], commits: [GAUNTLET_SHA_A], createdAt: "2026-08-08T11:02:00Z",
     body: renderGauntletPrMarkers({ run: winnerRun, subjectType: "slice", key: "auth-login",
       barMarkdown: winnerRun.frozen_bar_markdown, barSha256: winnerRun.bar_sha256 }) };
@@ -4861,7 +4863,7 @@ test("a local conductor persists and retries another machine's invalid critic la
     },
     addComment: async (_number, body) => { currentPr.comments.push({ body, author: "roadmap-lead",
       createdAt: "2026-08-08T11:20:00Z", updatedAt: "2026-08-08T11:20:00Z",
-      includesCreatedEdit: false, url: `https://github.test/comment/lead-${currentPr.comments.length + 1}` }); } };
+      edited: false, url: `https://github.test/comment/lead-${currentPr.comments.length + 1}` }); } };
   const opts = { github, allowLocalBase: true,
     profiles: { p: { account: "a@b.c", routines: {
       "default#implementation": { trigger: "impl", token: "ki" },
@@ -4875,18 +4877,18 @@ test("a local conductor persists and retries another machine's invalid critic la
   const remoteLaunch = { body: renderGauntletLaunchMarker({ run, role: "critic",
     criticRole: "critic", round: 1, attempt: 1, expectedHead: GAUNTLET_SHA_A,
     nonce: remoteNonce }), author: "roadmap-lead", createdAt: "2026-08-08T11:10:00Z",
-    updatedAt: "2026-08-08T11:10:00Z", includesCreatedEdit: false,
+    updatedAt: "2026-08-08T11:10:00Z", edited: false,
     url: "https://github.test/comment/remote-launch" };
   const invalid = { body: renderCriticMarker({ run, criticRole: "critic", round: 1,
     head: GAUNTLET_SHA_A, nonce: remoteNonce, verdict: "INVALID_OR_STALE" }),
     author: "critic-worker", createdAt: "2026-08-08T11:11:00Z",
-    updatedAt: "2026-08-08T11:11:00Z", includesCreatedEdit: false,
+    updatedAt: "2026-08-08T11:11:00Z", edited: false,
     url: "https://github.test/comment/remote-invalid" };
   const ack = { body: renderGauntletVerdictAck({ run, comment: invalid }), author: "roadmap-lead",
     createdAt: "2026-08-08T11:12:00Z", updatedAt: "2026-08-08T11:12:00Z",
-    includesCreatedEdit: false, url: "https://github.test/comment/remote-invalid-ack" };
+    edited: false, url: "https://github.test/comment/remote-invalid-ack" };
   currentPr = { number: 74, state: "OPEN", isDraft: false, mergeStateStatus: "CLEAN",
-    headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRefName: "main", checks: "passing",
+    headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRef: "main", checks: "passing",
     comments: [remoteLaunch, invalid, ack], commits: [GAUNTLET_SHA_A],
     createdAt: "2026-08-08T11:05:00Z",
     body: renderGauntletPrMarkers({ run, subjectType: "slice", key: "auth-login",
@@ -4920,7 +4922,7 @@ test("ledger-loss recovery advances past two acknowledged invalid critic attempt
     },
     addComment: async (_number, body) => { currentPr.comments.push({ body, author: "roadmap-lead",
       createdAt: "2026-08-08T12:20:00Z", updatedAt: "2026-08-08T12:20:00Z",
-      includesCreatedEdit: false, url: `https://github.test/comment/lead-${currentPr.comments.length + 1}` }); } };
+      edited: false, url: `https://github.test/comment/lead-${currentPr.comments.length + 1}` }); } };
   const opts = { github, allowLocalBase: true,
     profiles: { p: { account: "a@b.c", routines: {
       "default#implementation": { trigger: "impl", token: "ki" },
@@ -4935,19 +4937,19 @@ test("ledger-loss recovery advances past two acknowledged invalid critic attempt
     comments.push({ body: renderGauntletLaunchMarker({ run, role: "critic",
       criticRole: "critic", round: 1, attempt, expectedHead: GAUNTLET_SHA_A, nonce }),
     author: "roadmap-lead", createdAt: `2026-08-08T12:${minute}:00Z`,
-    updatedAt: `2026-08-08T12:${minute}:00Z`, includesCreatedEdit: false,
+    updatedAt: `2026-08-08T12:${minute}:00Z`, edited: false,
     url: `https://github.test/comment/launch-${attempt}` });
     const invalid = { body: renderCriticMarker({ run, criticRole: "critic", round: 1,
       head: GAUNTLET_SHA_A, nonce, verdict: "INVALID_OR_STALE" }), author: "critic-worker",
     createdAt: `2026-08-08T12:${minute + 1}:00Z`, updatedAt: `2026-08-08T12:${minute + 1}:00Z`,
-    includesCreatedEdit: false, url: `https://github.test/comment/invalid-${attempt}` };
+    edited: false, url: `https://github.test/comment/invalid-${attempt}` };
     comments.push(invalid, { body: renderGauntletVerdictAck({ run, comment: invalid }),
       author: "roadmap-lead", createdAt: `2026-08-08T12:${minute + 2}:00Z`,
-      updatedAt: `2026-08-08T12:${minute + 2}:00Z`, includesCreatedEdit: false,
+      updatedAt: `2026-08-08T12:${minute + 2}:00Z`, edited: false,
       url: `https://github.test/comment/ack-${attempt}` });
   }
   currentPr = { number: 75, state: "OPEN", isDraft: false, mergeStateStatus: "CLEAN",
-    headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRefName: "main", checks: "passing",
+    headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRef: "main", checks: "passing",
     comments, commits: [GAUNTLET_SHA_A], createdAt: "2026-08-08T12:05:00Z",
     body: renderGauntletPrMarkers({ run, subjectType: "slice", key: "auth-login",
       barMarkdown: run.frozen_bar_markdown, barSha256: run.bar_sha256 }) };
@@ -4978,7 +4980,7 @@ test("a ledgerless conductor advances past a closed same-base implementation att
     base_sha: base, base_ref: "main", lead_actor: "roadmap-lead", bar_sha256: frozen.sha256,
     frozen_bar_markdown: frozen.markdown, max_rounds: 2, critic_tier: null, repair_tier: null,
     launches: [], created_at: "2026-08-08T10:00:00Z", updated_at: "2026-08-08T11:00:00Z" };
-  const closedPr = { number: 17, state: "CLOSED", baseRefName: "main", currentHead: GAUNTLET_SHA_A,
+  const closedPr = { number: 17, state: "CLOSED", baseRef: "main", currentHead: GAUNTLET_SHA_A,
     comments: [], commits: [GAUNTLET_SHA_A], createdAt: firstRun.created_at,
     body: renderGauntletPrMarkers({ run: firstRun, subjectType: "slice", key: "auth-login",
       qualityBar: frozen }) };
@@ -5038,7 +5040,7 @@ test("two independent conductors elect exactly one GitHub launch-lock winner", a
     base_sha: base, base_ref: "main", lead_actor: "roadmap-lead", bar_sha256: frozen.sha256,
     frozen_bar_markdown: frozen.markdown, max_rounds: 2, critic_tier: null, repair_tier: null, launches: [] };
   const pr = { number: 88, state: "OPEN", isDraft: false, mergeStateStatus: "CLEAN",
-    headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRefName: "main", checks: "passing",
+    headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRef: "main", checks: "passing",
     comments: [], commits: [GAUNTLET_SHA_A], createdAt: "2026-08-08T12:00:00Z",
     body: renderGauntletPrMarkers({ run, subjectType: "slice", key: "auth-login", qualityBar: frozen }) };
   const claims = new Set();
@@ -5052,7 +5054,7 @@ test("two independent conductors elect exactly one GitHub launch-lock winner", a
       claims.add(key); return { claimed: true, ref };
     },
     addComment: async (_number, body) => { pr.comments.push({ body, author: "roadmap-lead",
-      createdAt: leadTimes.shift(), includesCreatedEdit: false,
+      createdAt: leadTimes.shift(), edited: false,
       url: `https://github.test/comment/lead-${pr.comments.length + 1}` }); } };
   let fires = 0;
   const common = { github, confirmRecoveredBar: true, expectedHead: GAUNTLET_SHA_A,

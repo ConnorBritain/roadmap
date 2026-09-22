@@ -7,7 +7,16 @@ as of `565f96c`; the `core-extract` slice has since moved every C-verdict module
 `model-policy`, `gauntlet-store`, `evaluation-core`, `evaluation-packet`) into `packages/core/src`
 and cut the seven mixed edges: `plan` takes `capacity`/`annotate` from the executor
 (`scripts/lib/plan-engineering.mjs`), `journal-core` takes `branchFor`, `init-core` takes the
-profile table, and `sync-core`'s PR half became `scripts/lib/reconcile-core.mjs`.
+profile table, and `sync-core`'s PR half became `scripts/lib/reconcile-core.mjs`. The
+`gauntlet-split` slice then moved the protocol into core (`gauntlet-core`, `gauntlet-decisions`,
+`gauntlet-authorization`, `gauntlet-authority` (the store-agnostic journal), `implementation-authorization`,
+`evaluation-review-core`, `gauntlet-portfolio-core`, `subject-marker`) reading only the neutral
+artifact shape defined in `packages/core/src/gauntlet-artifact.mjs`; the GitHub client became
+`packages/exec-engineering/src/github-pr-artifact.mjs` (+ `github-authority-store.mjs`); the runtime
+left the CLI file for `scripts/lib/gauntlet-runtime.mjs` so `gauntlet.mjs`, `gauntlet-portfolio-io.mjs`
+and `evaluate.mjs` no longer import each other in a cycle; and the contract test in
+`packages/core/test/contracts/gauntlet-artifact.mjs` runs against the in-memory reference
+implementation and the github-pr adapter (fake `gh`).
 
 ## Why
 
@@ -217,6 +226,16 @@ GauntletArtifact {
   workerFetchInstructions(head) // text a remote critic/repair worker needs to fetch exactly this head
 }
 ```
+
+As implemented (`packages/core/src/gauntlet-artifact.mjs`): the neutral `Artifact` shape is
+`{ id, number, url, title, body, state, draft, mergeable, headRef, baseRef, currentHead, checks,
+comments[], commits[], createdAt, updatedAt }` with `Comment { body, author, createdAt, updatedAt,
+edited, url }`; `asGauntletArtifact()` maps the GitHub-era method names (`getPr`, `viewerLogin`,
+`addComment`, `isAncestor`, `claimLaunch`, …) onto the canonical ones so the runtime and its test
+fakes keep working until the runtime moves into exec-engineering; `workerFetchInstructions()` feeds
+the critic/repair prompts their backend-specific "fetch this exact head" wording; a lead actor is
+any single bounded identity token, not a GitHub login; a decision's comment locator is
+`<artifact locator>#<comment id>` on every backend.
 
 Notes that shape the implementations:
 

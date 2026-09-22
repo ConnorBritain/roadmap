@@ -56,6 +56,23 @@ export function checkBoundaries(root = process.cwd()) {
     }
   }
 
+  // Rule 1b — an executor package is self-contained too: it may import core (and, for exec packages,
+  // nothing else by name), never a relative path outside itself and never the scripts/ tree.
+  for (const pkg of ["exec-engineering", "exec-general", "cli"]) {
+    const dir = join(root, "packages", pkg);
+    for (const file of walk(dir)) {
+      if (rel(root, file).startsWith(`packages/${pkg}/test/`)) continue;   // tests may reach core's harness
+      for (const spec of importsOf(readFileSync(file, "utf8"))) {
+        if (spec.startsWith(".")) {
+          const abs = resolve(dirname(file), spec);
+          if (!inside(dir, abs)) violations.push(`${rel(root, file)} -> ${spec} (escapes packages/${pkg})`);
+        } else if (pkg.startsWith("exec-") && /^@connorbritain\/roadmap-(exec-|cli)/.test(spec)) {
+          violations.push(`${rel(root, file)} -> ${spec} (an executor imports another executor)`);
+        }
+      }
+    }
+  }
+
   // Rule 2 — meta.profile has exactly one reader.
   const self = rel(root, fileURLToPath(import.meta.url));
   const scan = [...walk(join(root, "scripts")), ...walk(join(root, "hooks")), ...walk(join(root, "packages"))];

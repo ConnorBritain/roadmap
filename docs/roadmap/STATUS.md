@@ -18,9 +18,15 @@ complete: 24 modules live in `packages/core/src` (shims at `scripts/lib/*`), the
 are cut (boundary check: 0 known edges), and the core-only test sections (1,710 lines) run from
 `packages/core/test` through a shared harness. Sections still in `scripts/test/run.mjs` that
 exercise core through the shims are the mixed ones (they assert on branches, PRs, `linear.mjs` or
-`estimate.mjs`); they migrate with their engineering halves. Next is `gauntlet-split`.
+`estimate.mjs`); they migrate with their engineering halves. Slice 4 `gauntlet-split` is complete:
+the protocol lives in core and reads only the neutral artifact shape; the github-pr adapter and the
+protected authority store live in exec-engineering; the runtime is `scripts/lib/gauntlet-runtime.mjs`
+(no import cycles left); the contract test passes on the in-memory reference and the github-pr
+adapter. The runtime still calls the adapter by its GitHub-era method names through
+`asGauntletArtifact`; it switches to the canonical names when it moves in `exec-engineering`. Next
+is `exec-engineering`.
 
-Next command: `roadmap show gauntlet-split`.
+Next command: `roadmap show exec-engineering`.
 
 ## Slices
 
@@ -28,9 +34,9 @@ Next command: `roadmap show gauntlet-split`.
 |---|---|---|---|---|
 | 1 | `estimate-native` | complete | `682b575` | 462 tests; agent-time's test suite ported |
 | 2 | `workspaces` | complete | `d32b04d` | packages scaffolded; packed check covers all tarballs |
-| 3 | `core-extract` | complete | (this branch, slice 3 commit) | 24 modules + core tests moved; 7 edges cut; shims remain |
-| 4 | `gauntlet-split` | next | — | protocol never learns it's GitHub |
-| 5 | `exec-engineering` | scheduled | — | |
+| 3 | `core-extract` | complete | `384282d` | 24 modules + core tests moved; 7 edges cut; shims remain |
+| 4 | `gauntlet-split` | complete | (this branch, slice 4 commit) | 475 tests; contract on memory + github-pr |
+| 5 | `exec-engineering` | next | — | |
 | 6 | `profile-loader` | scheduled | — | single `meta.profile` reader |
 | 7 | `exec-general` | scheduled | — | general round-trip fixture is the exit test |
 | 8 | `skills-agents` | scheduled | — | |

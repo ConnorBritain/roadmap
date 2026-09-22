@@ -16,7 +16,8 @@ import {
 } from "./lib/evaluation-core.mjs";
 import { applyEvaluationPatch, inspectEvaluationPatch, inspectLocalEvaluationPacket, assertNoSymlinkAncestors, evaluationCommand,
   inspectEvaluationRepairPatch, applyEvaluationRepairPatch } from "./lib/evaluation-io.mjs";
-import { githubClient } from "./gauntlet.mjs";
+import { githubPrArtifact, normalizingGauntletClient } from "@connorbritain/roadmap-exec-engineering/github-pr-artifact.mjs";
+const githubClient = (root) => githubPrArtifact(root);
 import { freezeAuthorization, authorizationDigest, reserveAuthorizedLaunch, recordLaunchOutcome, recordLaunchNotSubmitted, recordLaunchObservation, authorizationStatus, reconcileLaunchReceipt, continuationStatus } from "./lib/gauntlet-authorization.mjs";
 import { githubAuthorizationStore, mutateAuthorization, recordRunContinuation } from "./lib/gauntlet-authorization-io.mjs";
 import { runEvaluationReviewAction, inspectCommittedEvaluationCorpus } from "./lib/evaluation-review-io.mjs";
@@ -156,7 +157,7 @@ export async function runEvaluation(root, args, opts = {}) {
   }
   const runId = requiredRunId(value(args, "--run") || args.find((arg) => !arg.startsWith("-")));
   if (action === "recover") {
-    const github = opts.github || githubClient(root);
+    const github = normalizingGauntletClient(opts.github || githubClient(root));
     const store = opts.authorityStore || githubAuthorizationStore(root, { github });
     const snapshot = await store.read(runId);
     if (!snapshot) throw new Error("no protected authorization exists for this run; recovery cannot invent one");
@@ -215,7 +216,7 @@ export async function runEvaluation(root, args, opts = {}) {
     let authorityStatus = manifest.version === EVALUATION_VERSION ? "not_authorized" : "legacy_unverified";
     if (manifest.version === EVALUATION_VERSION) {
       try {
-        authority = await (opts.authorityStore || githubAuthorizationStore(root, { github: opts.github || githubClient(root) })).read(runId);
+        authority = await (opts.authorityStore || githubAuthorizationStore(root, { github: normalizingGauntletClient(opts.github || githubClient(root)) })).read(runId);
         if (authority) authorityStatus = "protected";
       } catch { authorityStatus = "observation_failed"; }
     }
@@ -228,7 +229,7 @@ export async function runEvaluation(root, args, opts = {}) {
     let review = null, corpus = null, publication = null;
     if (authority?.state.evidence_pr) {
       try {
-        const pr = await (opts.github || githubClient(root)).getPr(authority.state.evidence_pr.number);
+        const pr = await (normalizingGauntletClient(opts.github || githubClient(root))).getPr(authority.state.evidence_pr.number);
         publication = { ...authority.state.evidence_pr, current_head: pr.currentHead, state: pr.state };
         review = evaluationReviewStatus(authority.state, pr);
         try { corpus = inspectCommittedEvaluationCorpus(root, manifest, authority.state, pr); }
@@ -253,19 +254,19 @@ export async function runEvaluation(root, args, opts = {}) {
           : { state: reservation.state === "not_submitted" ? "not_submitted" : "reserved_without_receipt" } })) };
   }
   if (manifest.version !== EVALUATION_VERSION) throw new Error("legacy evaluation is unverified; use eval migrate --run <id> --confirm before mutation or admission");
-  const authorityStore = () => opts.authorityStore || githubAuthorizationStore(root, { github: opts.github || githubClient(root) });
+  const authorityStore = () => opts.authorityStore || githubAuthorizationStore(root, { github: normalizingGauntletClient(opts.github || githubClient(root)) });
   const verifyAuthority = async (state) => {
     if (authorizationDigest(state.authorization.scope.snapshot) !== authorizationDigest(evaluationScopeSnapshot(manifest))) {
       throw new Error("local evaluation scope differs from protected authorization; restore it, do not silently adopt or relaunch");
     }
-    const actor = await (opts.github || githubClient(root)).viewerLogin();
+    const actor = await (normalizingGauntletClient(opts.github || githubClient(root))).viewerLogin();
     if (actor !== state.authorization.lead_actor) throw new Error("evaluation actuator requires the frozen lead GitHub actor");
   };
   if (action === "decision") {
     const store = authorityStore(), snapshot = await store.read(runId);
     if (!snapshot?.state.evidence_pr) throw new Error("decision needs protected authorization and the lead-owned evidence PR");
     await verifyAuthority(snapshot.state);
-    return recordDecisionForPr({ store, runId, github: opts.github || githubClient(root), prNumber: snapshot.state.evidence_pr.number,
+    return recordDecisionForPr({ store, runId, github: normalizingGauntletClient(opts.github || githubClient(root)), prNumber: snapshot.state.evidence_pr.number,
       expectedHead: value(args, "--expected-head"), input: opts.decisionRecord || readDecisionFile(value(args, "--record-file")),
       confirm: flag(args, "--confirm"), now: now() });
   }
@@ -273,14 +274,14 @@ export async function runEvaluation(root, args, opts = {}) {
     const store = authorityStore(), snapshot = await store.read(runId);
     if (!snapshot) throw new Error("continuation requires protected evaluation authorization");
     await verifyAuthority(snapshot.state);
-    return recordRunContinuation({ store, runId, github: opts.github || githubClient(root),
+    return recordRunContinuation({ store, runId, github: normalizingGauntletClient(opts.github || githubClient(root)),
       record: opts.continuationRecord || readDecisionFile(value(args, "--receipt-file")), confirm: flag(args, "--confirm"), now: now() });
   }
   if (["attach", "accept", "critic", "ack", "seal", "repair"].includes(action)) {
     const store = authorityStore(); const snapshot = await store.read(runId);
     if (!snapshot) throw new Error("evaluation review requires protected authorization");
     await verifyAuthority(snapshot.state);
-    return runEvaluationReviewAction(root, action, { manifest, store, github: opts.github || githubClient(root),
+    return runEvaluationReviewAction(root, action, { manifest, store, github: normalizingGauntletClient(opts.github || githubClient(root)),
       expectedHead: value(args, "--expected-head"), prNumber: Number(value(args, "--pr")), assignmentId: value(args, "--assignment"),
       decision: value(args, "--decision") || "accepted", packetDigest: value(args, "--packet-digest"), reason: value(args, "--reason"),
       redactionInspected: flag(args, "--redaction-inspected"), commentUrl: value(args, "--comment-url"), criticRole: value(args, "--critic-role"),
@@ -294,7 +295,7 @@ export async function runEvaluation(root, args, opts = {}) {
     await verifyAuthority(snapshot.state);
     const reservation = snapshot.state.reservations.find((r) => r.key === value(args, "--launch-key") && r.role === "repair");
     if (!reservation?.receipt) throw new Error("repair collection needs an exact durably recorded receipt");
-    const pr = await (opts.github || githubClient(root)).getPr(snapshot.state.evidence_pr.number);
+    const pr = await (normalizingGauntletClient(opts.github || githubClient(root))).getPr(snapshot.state.evidence_pr.number);
     if (pr.state !== "OPEN" || pr.currentHead !== reservation.expected_head) throw new Error("repair evidence PR head moved before collection");
     const diff = (opts.cloudDiff || ((id) => run("codex", ["cloud", "diff", id], root)))(reservation.receipt.external_id);
     const apply = flag(args, "--apply");
@@ -316,7 +317,7 @@ export async function runEvaluation(root, args, opts = {}) {
   if (action === "authorize") {
     const file = value(args, "--authorization");
     if (!file || !flag(args, "--confirm")) throw new Error("authorize requires --authorization <policy.yaml> --confirm for the approved scope and limits");
-    const github = opts.github || githubClient(root);
+    const github = normalizingGauntletClient(opts.github || githubClient(root));
     const store = authorityStore();
     const prior = await store.read(runId);
     if (!prior && (manifest.legacy || manifest.assignments.some((assignment) => assignment.receipt))) {

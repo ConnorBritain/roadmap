@@ -5,17 +5,8 @@
 
 import { parseCriticMarker, parseGauntletRunMarker } from "./gauntlet-core.mjs";
 export { roadmapBranches, matchesRoadmapBranches, belongsToRoadmapPr } from "./pr-identity.mjs";
-
-// Reduce a PR's statusCheckRollup (raw `gh` JSON) to one of: none | passing | pending | failing.
-// Pure, so the rollup-to-enum mapping that prPhase keys off is unit-testable without calling gh.
-export function checksOf(pr) {
-  const rollup = (pr && pr.statusCheckRollup) || [];
-  if (!rollup.length) return "none";
-  const states = rollup.map((c) => String(c.conclusion || c.state || c.status || "").toUpperCase());
-  if (states.some((s) => ["FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE"].includes(s))) return "failing";
-  if (states.some((s) => ["PENDING", "IN_PROGRESS", "QUEUED", "WAITING", "REQUESTED", ""].includes(s))) return "pending";
-  return "passing";
-}
+// The statusCheckRollup → enum mapping is GitHub-specific and lives with the github-pr artifact.
+export { checksOf } from "@connorbritain/roadmap-exec-engineering/github-pr-artifact.mjs";
 
 // The single phase we'd tell the lead about. Derived from the normalized PR fields
 // { state, isDraft, mergeStateStatus, checks }.

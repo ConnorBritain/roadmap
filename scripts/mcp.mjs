@@ -18,6 +18,7 @@ import { linearState, linearStatusLine, normalizeLinearConfig } from "./lib/line
 import { platedKeys } from "./lib/plate-core.mjs";
 import { runSync, runNote, runNotes, runProjectUpdate } from "./linear.mjs";
 import { runDispatch, runFanCloud } from "./dispatch.mjs";
+import { runGauntletPortfolio } from "./lib/gauntlet-portfolio-io.mjs";
 import { runGauntletStart, runGauntletStatus, runGauntletObserve, runGauntletContinuation, runGauntletReconcile, runGauntletDecision, runGauntletAcknowledge, runGauntletCritic, runGauntletRepair, runGauntletCancel } from "./gauntlet.mjs";
 import { runEvaluation } from "./evaluate.mjs";
 import { runEstimate, runTimeline, runLog } from "./estimate.mjs";
@@ -245,7 +246,7 @@ function callTool(name, args) {
       continuationRecord: args.continuation_record, confirmContinuation: args.confirm_continuation === true,
     });
   }
-  if (name === "gauntlet_status") return runGauntletStatus(repoRoot(), args.run, { all: args.all === true });
+  if (name === "gauntlet_status") return args.all === true ? runGauntletPortfolio(repoRoot(), {}) : runGauntletStatus(repoRoot(), args.run, {});
   if (name === "gauntlet_observe") return runGauntletObserve(repoRoot(), args.run);
   if (name === "gauntlet_continuation") return runGauntletContinuation(repoRoot(), args.run, { record: args.record, confirm: args.confirm === true });
   if (name === "gauntlet_decision") return runGauntletDecision(repoRoot(), args.run, { expectedHead: args.expected_head, record: args.record, confirm: args.confirm === true });

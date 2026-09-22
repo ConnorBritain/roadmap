@@ -13,7 +13,7 @@ function fixture(roles = ["critic"]) {
   state.authorization.required_review_roles = roles;
   state.authorization_digest = authorizationDigest(state.authorization);
   state.evidence_pr = { number: 42, url: "https://github.com/owner/repo/pull/42", base_ref: "main" };
-  return { state, pr: { number: 42, url: state.evidence_pr.url, baseRefName: "main", state: "OPEN", currentHead: HEAD, comments: [], commits: [HEAD] } };
+  return { state, pr: { number: 42, url: state.evidence_pr.url, baseRef: "main", state: "OPEN", currentHead: HEAD, comments: [], commits: [HEAD] } };
 }
 function comment(pr, body, author = "lead") {
   const c = { body, author, url: `${pr.url}#issuecomment-${pr.comments.length + 1}`, createdAt: TIME, updatedAt: TIME };

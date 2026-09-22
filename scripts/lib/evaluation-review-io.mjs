@@ -76,7 +76,7 @@ export async function runEvaluationReviewAction(root, action, { manifest, store,
     const pr = await github.getPr(prNumber); assertHead(pr, expectedHead);
     if (!(await github.isAncestor(manifest.base_sha, pr.currentHead))) throw new Error("evidence PR must descend from the frozen product source");
     inspectCommittedEvaluationCorpus(root, manifest, state, pr);
-    const publication = { number: pr.number, url: pr.url, base_ref: pr.baseRefName };
+    const publication = { number: pr.number, url: pr.url, base_ref: pr.baseRef };
     await mutateAuthorization(store, manifest.run_id, (current) => {
       if (current.evidence_pr) {
         if (authorizationDigest(current.evidence_pr) !== authorizationDigest(publication)) throw new Error("this run already owns a different evidence PR");

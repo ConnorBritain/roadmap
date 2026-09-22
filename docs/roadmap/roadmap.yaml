@@ -69,7 +69,7 @@ pis:
         read_order: ["docs/ARCHITECTURE.md (dependency map, seams)"]
       - id: s4
         title: Split gauntlet into core protocol and the github-pr GauntletArtifact adapter
-        status: next
+        status: complete
         invoke: gauntlet-split
         what: Protocol, decisions, authorization, receipts, evaluation packets into core; githubClient becomes the github-pr adapter in exec-engineering; break the gauntlet/portfolio/evaluate/dispatch cycles; contract test.
         deps: [s3]
@@ -82,7 +82,7 @@ pis:
         read_order: ["docs/ARCHITECTURE.md (GauntletArtifact)", "docs/GAUNTLET.md", "scripts/gauntlet.mjs"]
       - id: s5
         title: Engineering executor — fanout, providers, ceilings, doctor, pr-watch, code scoper
-        status: scheduled
+        status: next
         invoke: exec-engineering
         what: Move fanout/grab/wizard/cleanup/dispatch/doctor/watch-prs and their libs into exec-engineering as worktree-session and cloud-dispatch Executors; slice-scoper's grep becomes the engineering scoper; core keeps a doc-based scoper; contract test.
         deps: [s4]

@@ -24,7 +24,7 @@ async function fixture() {
   state.authorization.run_id = manifest.run_id; state.authorization.source_sha = manifest.base_sha;
   state.authorization_digest = authorizationDigest(state.authorization);
   const store = memoryAuthorityStore(state);
-  const pr = { number: 42, url: "https://github.com/owner/repo/pull/42", baseRefName: "main", state: "OPEN", checks: "none",
+  const pr = { number: 42, url: "https://github.com/owner/repo/pull/42", baseRef: "main", state: "OPEN", checks: "none",
     currentHead: git(r.root, ["rev-parse", "HEAD"]), comments: [], commits: [] };
   const github = { viewerLogin: () => "lead", isAncestor: () => true, getPr: () => structuredClone(pr),
     addComment(number, body) {
