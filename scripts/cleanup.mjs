@@ -5,8 +5,9 @@
 // own) — never the main checkout or your manual worktrees.
 
 import { spawnSync } from "node:child_process";
-import { resolve, sep } from "node:path";
+import { resolve, sep, join } from "node:path";
 import { loadGraph } from "./lib/graph.mjs";
+import { REL } from "./lib/cli-core.mjs";
 
 const args = process.argv.slice(2);
 const has = (n) => args.includes(n);
@@ -16,7 +17,7 @@ const force = has("--force");
 const git = (...a) => spawnSync("git", a, { encoding: "utf8" });
 
 let meta = {};
-try { meta = loadGraph("docs/roadmap/roadmap.yaml").meta || {}; } catch { /* no roadmap — fall back to defaults */ }
+try { meta = loadGraph(join(...REL)).meta || {}; } catch { /* no roadmap — fall back to defaults */ }
 const remote = meta.remote || "origin";
 const base = meta.base_branch || "main";
 const wtRoot = resolve(meta.worktree_root || resolve(process.cwd(), "..", "_worktrees"));

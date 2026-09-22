@@ -11,6 +11,8 @@ import YAML from "yaml";
 import { loadGraph } from "./lib/graph.mjs";
 import { loadBacklog } from "./lib/store.mjs";
 import { graphDiff, backlogDiff, reviewDigest } from "./lib/review-core.mjs";
+import { REL } from "./lib/cli-core.mjs";
+import { join } from "node:path";
 
 const args = process.argv.slice(2);
 const val = (n) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : undefined; };
@@ -37,7 +39,7 @@ function yamlAt(commit, rel) {
   return r.status === 0 ? YAML.parse(r.stdout) : null;   // file didn't exist at that rev
 }
 
-const graph = loadGraph("docs/roadmap/roadmap.yaml");
+const graph = loadGraph(join(...REL));
 const backlog = loadBacklog(process.cwd());
 const anchor = resolveAnchor(graph);
 let note = null;
@@ -46,7 +48,7 @@ let oldBacklog = null;
 if (!anchor) {
   note = "no anchor commit found (young repo?) — diffing against an empty roadmap";
 } else {
-  oldGraph = yamlAt(anchor.commit, "docs/roadmap/roadmap.yaml") || { meta: {}, pis: [] };
+  oldGraph = yamlAt(anchor.commit, REL.join("/")) || { meta: {}, pis: [] };
   oldBacklog = yamlAt(anchor.commit, "docs/roadmap/backlog.yaml");
 }
 

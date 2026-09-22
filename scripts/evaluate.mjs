@@ -23,6 +23,7 @@ import { runEvaluationReviewAction, inspectCommittedEvaluationCorpus } from "./l
 import { evaluationReviewStatus, findEvaluationAttestation, sealEvaluationPayload } from "./lib/evaluation-review-core.mjs";
 import { roleModelPreference, qualifyModelPreference } from "./lib/model-policy.mjs";
 import { recordDecisionForPr, decisionReport, readDecisionFile } from "./lib/gauntlet-decisions.mjs";
+import { REL } from "./lib/cli-core.mjs";
 
 function value(args, name) { const i = args.indexOf(name); return i < 0 ? null : args[i + 1] || null; }
 function flag(args, name) { return args.includes(name); }
@@ -131,7 +132,7 @@ export async function runEvaluation(root, args, opts = {}) {
       ...(flag(args, "--strict-model") ? { strict: true } : {}) } : opts.modelPreference || null;
   opts = { ...opts, modelPreference };
   const action = args.shift() || "status";
-  const graph = loadGraph(join(root, "docs", "roadmap", "roadmap.yaml"));
+  const graph = loadGraph(join(root, ...REL));
   const artifactRoot = configuredArtifactRoot(graph);
   const runIdForLock = requiredRunId(value(args, "--run") || args.find((arg) => !arg.startsWith("-")));
   const mutating = ["init", "launch", "accept", "repair", "critic", "ack", "seal", "authorize", "observe", "attach", "reconcile", "decision", "continuation"].includes(action)

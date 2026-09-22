@@ -12,6 +12,7 @@ import { findRepoRoot, REL } from "./lib/cli-core.mjs";
 import { loadGraph } from "./lib/graph.mjs";
 import { mutateRoadmap, mutateBacklog, mutateBoth, loadBacklog, roadmapPaths, originBacklogIds } from "./lib/store.mjs";
 import { TOOLS, READ_HANDLERS, MUTATION_HANDLERS } from "./lib/mcp-core.mjs";
+import { engineeringPlanContext } from "./lib/plan-engineering.mjs";
 import { BACKLOG_TOOLS, BACKLOG_READ_HANDLERS, BACKLOG_MUTATION_HANDLERS, performPromotion } from "./lib/backlog-core.mjs";
 import { linearState, linearStatusLine, normalizeLinearConfig } from "./lib/linear-core.mjs";
 import { platedKeys } from "./lib/plate-core.mjs";
@@ -194,7 +195,7 @@ function callTool(name, args) {
   }
   if (READ_HANDLERS[name]) {
     const graph = loadGraph(roadmapPaths(repoRoot()).yaml);
-    return READ_HANDLERS[name](graph, args || {});
+    return READ_HANDLERS[name](graph, args || {}, engineeringPlanContext({ cwd: repoRoot() }));
   }
   if (MUTATION_HANDLERS[name]) {
     // mutateRoadmap = read → mutate → validate → write → re-render; a throw leaves files untouched.

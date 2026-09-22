@@ -25,12 +25,13 @@ import { launchDecision, bashWorktreeLines, pwshWorktreeLines, diskBlockLines } 
 import { terminalChoices } from "./lib/wizard-core.mjs";
 import { filterByTrack } from "./lib/execution.mjs";
 import { readLocalConfig, resolveProfile, commandFor, launchDecisionForProfile } from "./lib/assistant-core.mjs";
+import { REL } from "./lib/cli-core.mjs";
 
 const args = process.argv.slice(2);
 const val = (n, d) => { const i = args.indexOf(n); return i >= 0 && args[i + 1] && !args[i + 1].startsWith("--") ? args[i + 1] : d; };
 const has = (n) => args.includes(n);
 
-const inPath = val("--in", "docs/roadmap/roadmap.yaml");
+const inPath = val("--in", join(...REL));
 const waveIdx = Number(val("--wave", 1));
 const track = val("--track", null);             // forward-compat: fan out only one lane of the three-track partition
 const lane = val("--lane", "max");              // max (subscription) | api (ANTHROPIC_API_KEY)

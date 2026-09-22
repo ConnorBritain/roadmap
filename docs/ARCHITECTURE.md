@@ -2,8 +2,12 @@
 
 Status: **plan of record for the core/executor split** (Step 1 of the re-architecture, 2026-09-22).
 Tracked as PI `core-executor-split` in [`docs/roadmap/roadmap.yaml`](roadmap/roadmap.yaml);
-live state in [`docs/roadmap/STATUS.md`](roadmap/STATUS.md). Nothing described under
-"Target layout" exists yet; the dependency map describes `main` as of `565f96c`.
+live state in [`docs/roadmap/STATUS.md`](roadmap/STATUS.md). The dependency map describes `main`
+as of `565f96c`; the `core-extract` slice has since moved every C-verdict module (plus
+`model-policy`, `gauntlet-store`, `evaluation-core`, `evaluation-packet`) into `packages/core/src`
+and cut the seven mixed edges: `plan` takes `capacity`/`annotate` from the executor
+(`scripts/lib/plan-engineering.mjs`), `journal-core` takes `branchFor`, `init-core` takes the
+profile table, and `sync-core`'s PR half became `scripts/lib/reconcile-core.mjs`.
 
 ## Why
 

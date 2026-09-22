@@ -13,9 +13,10 @@ import { loadGraph, flatten, computeWaves, readyNodes } from "./lib/graph.mjs";
 import { recommendConcurrency } from "./lib/recommend.mjs";
 import { terminalChoices, buildFanArgs, autoOutName } from "./lib/wizard-core.mjs";
 import { select, number, confirm } from "./prompt.mjs";
+import { REL } from "./lib/cli-core.mjs";
 
 const SCRIPTS = dirname(fileURLToPath(import.meta.url));
-const INPATH = "docs/roadmap/roadmap.yaml";
+const INPATH = join(...REL);
 const S = { reset: "\x1b[0m", bold: "\x1b[1m", dim: "\x1b[2m", cyan: "\x1b[36m", green: "\x1b[32m", red: "\x1b[31m" };
 
 const TERM_HINTS = {

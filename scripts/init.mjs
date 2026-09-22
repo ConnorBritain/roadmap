@@ -23,7 +23,7 @@ import { basename, join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { LOCAL_CONFIG_REL, BUILTIN_PROFILES } from "./lib/assistant-core.mjs";
+import { LOCAL_CONFIG_REL, BUILTIN_PROFILES } from "./lib/assistant-core.mjs";   // the engineering executor's profile table
 import {
   BACKLOG_REL, LOCAL_REL, REL,
   appendToGitignore, planGitignore, planInit, suggestProgramName, validators,
@@ -101,7 +101,7 @@ async function interactiveInit() {
   const withLocal = await confirm(`Also scaffold ${LOCAL_REL.join("/")} (assistant config, gitignored)?`, true);
 
   const existingFiles = detectExistingFiles(root, { includeGitignore: true });
-  const files = planInit({ program, piTitle, sprintTitle, assistant, withBacklog, withLocal }, { existingFiles });
+  const files = planInit({ program, piTitle, sprintTitle, assistant, withBacklog, withLocal }, { existingFiles, profiles: BUILTIN_PROFILES });
   const gi = planGitignore({ currentText: readTextOrEmpty(join(root, ".gitignore")) });
 
   console.log("");
@@ -147,7 +147,7 @@ async function nonInteractiveInit() {
   const sprintTitle = value("--sprint-title", "Bootstrap the roadmap");
 
   const existingFiles = detectExistingFiles(root, { includeGitignore: true });
-  const files = planInit({ program, piTitle, sprintTitle, assistant, withBacklog, withLocal }, { existingFiles });
+  const files = planInit({ program, piTitle, sprintTitle, assistant, withBacklog, withLocal }, { existingFiles, profiles: BUILTIN_PROFILES });
   const gi = planGitignore({ currentText: readTextOrEmpty(join(root, ".gitignore")) });
 
   if (!has("--yes")) {

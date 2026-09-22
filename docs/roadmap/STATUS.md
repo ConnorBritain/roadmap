@@ -13,18 +13,23 @@ ported to `scripts/lib/estimator-core.mjs`, `roadmap estimate` prices natively (
 history stays agent-time's `history.jsonl` format, and an external `estimator.py` is used only when
 `meta.estimation.engine` / `$AGENT_TIME_ENGINE` is set. Slice 2 `workspaces` is complete: four
 workspace packages scaffolded, the root depends on them by exact version, `npm run pack:all` +
-`npm run test:packed -- dist` install all five tarballs together. Next is `core-extract`.
+`npm run test:packed -- dist` install all five tarballs together. Slice 3 `core-extract` is
+complete: 24 modules live in `packages/core/src` (shims at `scripts/lib/*`), the seven mixed edges
+are cut (boundary check: 0 known edges), and the core-only test sections (1,710 lines) run from
+`packages/core/test` through a shared harness. Sections still in `scripts/test/run.mjs` that
+exercise core through the shims are the mixed ones (they assert on branches, PRs, `linear.mjs` or
+`estimate.mjs`); they migrate with their engineering halves. Next is `gauntlet-split`.
 
-Next command: `roadmap show core-extract`.
+Next command: `roadmap show gauntlet-split`.
 
 ## Slices
 
 | # | Slice | Status | Commit | Note |
 |---|---|---|---|---|
 | 1 | `estimate-native` | complete | `682b575` | 462 tests; agent-time's test suite ported |
-| 2 | `workspaces` | complete | (this branch, slice 2 commit) | packages scaffolded; packed check covers all tarballs |
-| 3 | `core-extract` | next | — | shims at old paths |
-| 4 | `gauntlet-split` | scheduled | — | protocol never learns it's GitHub |
+| 2 | `workspaces` | complete | `d32b04d` | packages scaffolded; packed check covers all tarballs |
+| 3 | `core-extract` | complete | (this branch, slice 3 commit) | 24 modules + core tests moved; 7 edges cut; shims remain |
+| 4 | `gauntlet-split` | next | — | protocol never learns it's GitHub |
 | 5 | `exec-engineering` | scheduled | — | |
 | 6 | `profile-loader` | scheduled | — | single `meta.profile` reader |
 | 7 | `exec-general` | scheduled | — | general round-trip fixture is the exit test |

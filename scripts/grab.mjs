@@ -17,6 +17,7 @@ import { synthesizeBrief, branchFor, worktreeFor, launchPrompt, baseRefOf, remot
 import { probeDisk } from "./lib/recommend.mjs";
 import { bashWorktreeLines, pwshWorktreeLines, diskBlockLines } from "./lib/fanout-core.mjs";
 import { terminalChoices } from "./lib/wizard-core.mjs";
+import { REL } from "./lib/cli-core.mjs";
 
 const args = process.argv.slice(2);
 const val = (n, d) => { const i = args.indexOf(n); return i >= 0 && args[i + 1] && !args[i + 1].startsWith("--") ? args[i + 1] : d; };
@@ -38,7 +39,7 @@ if (item.status !== "open" && item.status !== "in_progress") {
   process.exit(1);
 }
 
-const graph = loadGraph("docs/roadmap/roadmap.yaml");
+const graph = loadGraph(join(...REL));
 
 // Disk hard-block (skipped on --dry: previewing costs nothing).
 if (!dry) {

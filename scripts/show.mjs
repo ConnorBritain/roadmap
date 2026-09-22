@@ -5,10 +5,12 @@
 import { loadGraph, flatten, statusDisplay, resolveGate } from "./lib/graph.mjs";
 import { branchFor, worktreeFor } from "./lib/brief.mjs";
 import { executionDirectiveLines } from "./lib/execution.mjs";
+import { REL } from "./lib/cli-core.mjs";
+import { join } from "node:path";
 
 const args = process.argv.slice(2);
 const val = (n, d) => { const i = args.indexOf(n); return i >= 0 && args[i + 1] && !args[i + 1].startsWith("--") ? args[i + 1] : d; };
-const inPath = val("--in", "docs/roadmap/roadmap.yaml");
+const inPath = val("--in", join(...REL));
 const invoke = args.find((a) => !a.startsWith("--"));
 
 if (!invoke) { console.error("usage: roadmap show <slice-invoke>"); process.exit(2); }

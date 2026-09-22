@@ -13,8 +13,11 @@
 
 import { loadGraph, commandLaneActive, commandLaneMembers, isDone } from "./lib/graph.mjs";
 import { buildPlan } from "./lib/plan.mjs";
+import { engineeringPlanContext } from "./lib/plan-engineering.mjs";
 import { baseRefOf, remoteOf } from "./lib/brief.mjs";
 import { tierBadge } from "./lib/priority.mjs";
+import { REL } from "./lib/cli-core.mjs";
+import { join } from "node:path";
 
 const args = process.argv.slice(2);
 const val = (name, def) => {
@@ -23,7 +26,7 @@ const val = (name, def) => {
 };
 const has = (name) => args.includes(name);
 
-const inPath = val("--in", "docs/roadmap/roadmap.yaml");
+const inPath = val("--in", join(...REL));
 const asJson = has("--json");
 const useFree = has("--use-free-ram");
 const reviewCeiling = Number(val("--review-ceiling", 5));
@@ -37,7 +40,7 @@ const today = new Date().toISOString().slice(0, 10);   // one clock read for the
 
 let plan;
 try {
-  plan = buildPlan(graph, { cap: hasCap && Number.isFinite(capVal) ? capVal : undefined, useFree, reviewCeiling, today });
+  plan = buildPlan(graph, { cap: hasCap && Number.isFinite(capVal) ? capVal : undefined, useFree, reviewCeiling, today, ...engineeringPlanContext() });
 } catch (e) {
   console.error(`✗ ${e.message}`);
   process.exit(1);

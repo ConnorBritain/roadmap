@@ -18,8 +18,9 @@ import { loadGraph } from "./lib/graph.mjs";
 import { validateGraph } from "./lib/validate-core.mjs";
 import { validateBacklog } from "./lib/backlog-core.mjs";
 import { auditBacklog, AUDIT_CODES, knownDamageOf } from "./lib/backlog-audit.mjs";
+import { REL } from "./lib/cli-core.mjs";
 
-const path = process.argv[2] || "docs/roadmap/roadmap.yaml";
+const path = process.argv[2] || join(...REL);
 
 let graph;
 try {

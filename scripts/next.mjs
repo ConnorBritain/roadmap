@@ -10,8 +10,9 @@ import { loadGraph } from "./lib/graph.mjs";
 import { loadBacklog } from "./lib/store.mjs";
 import { pickNext } from "./lib/backlog-core.mjs";
 import { tierBadge } from "./lib/priority.mjs";
+import { REL } from "./lib/cli-core.mjs";
 
-const graph = loadGraph("docs/roadmap/roadmap.yaml");
+const graph = loadGraph(join(...REL));
 const backlog = loadBacklog(process.cwd());
 const next = pickNext(graph, backlog, new Date().toISOString().slice(0, 10));
 

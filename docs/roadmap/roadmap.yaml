@@ -56,7 +56,7 @@ pis:
         read_order: ["docs/ARCHITECTURE.md (target layout)", "scripts/test/packed.mjs"]
       - id: s3
         title: Extract pure core modules and tests into packages/core with shims
-        status: next
+        status: complete
         invoke: core-extract
         what: Move the C-verdict modules and their test sections; re-export from scripts/lib paths; normalize hardcoded docs/roadmap/roadmap.yaml literals to REL.
         deps: [s2]
@@ -69,7 +69,7 @@ pis:
         read_order: ["docs/ARCHITECTURE.md (dependency map, seams)"]
       - id: s4
         title: Split gauntlet into core protocol and the github-pr GauntletArtifact adapter
-        status: scheduled
+        status: next
         invoke: gauntlet-split
         what: Protocol, decisions, authorization, receipts, evaluation packets into core; githubClient becomes the github-pr adapter in exec-engineering; break the gauntlet/portfolio/evaluate/dispatch cycles; contract test.
         deps: [s3]

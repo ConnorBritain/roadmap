@@ -4,10 +4,11 @@ import { join } from "node:path";
 import { stringify } from "yaml";
 import { loadGraph } from "./lib/graph.mjs";
 import { LOCAL_CONFIG_REL, BUILTIN_PROFILES, readLocalConfig, configuredProfiles } from "./lib/assistant-core.mjs";
+import { REL } from "./lib/cli-core.mjs";
 
 const args = process.argv.slice(2);
 const action = args[0] || "list";
-const graph = loadGraph("docs/roadmap/roadmap.yaml");
+const graph = loadGraph(join(...REL));
 const root = process.cwd();
 const { path, config } = readLocalConfig(root);
 if (action === "list") {
