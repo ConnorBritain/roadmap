@@ -1,19 +1,19 @@
 #!/usr/bin/env node
 // roadmap doctor — reconcile the roadmap against reality and report DRIFT. READ-ONLY: it never
 // writes the YAML, the docs, or Linear. It gathers merged PRs, open PRs, fanout worktrees, a
-// rendered-vs-disk doc diff, and the Linear pull deltas, then lib/doctor-core.mjs classifies
+// rendered-vs-disk doc diff, and the Linear pull deltas, then packages/exec-engineering/src/doctor-core.mjs classifies
 // them. Every gatherer is guarded: gh/git/Linear missing or slow → that section degrades to
 // empty (like the SessionStart hook), so doctor stays fast and never throws on a bare checkout.
 // Usage: roadmap doctor [--json]   (--json like review.mjs; exits 1 when drift is found.)
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { loadGraph } from "./lib/graph.mjs";
-import { loadBacklog, roadmapPaths, backlogPaths, slicesRenderOpts } from "./lib/store.mjs";
-import { renderMarkdown } from "./lib/render-core.mjs";
-import { renderBacklogMarkdown } from "./lib/backlog-core.mjs";
-import { mergedPrs, allPrs, worktrees } from "./lib/external-state.mjs";
-import { doctorReport } from "./lib/doctor-core.mjs";
+import { loadGraph } from "@connorbritain/roadmap-core/graph.mjs";
+import { loadBacklog, roadmapPaths, backlogPaths, slicesRenderOpts } from "@connorbritain/roadmap-core/store.mjs";
+import { renderMarkdown } from "@connorbritain/roadmap-core/render-core.mjs";
+import { renderBacklogMarkdown } from "@connorbritain/roadmap-core/backlog-core.mjs";
+import { mergedPrs, allPrs, worktrees } from "@connorbritain/roadmap-exec-engineering/external-state.mjs";
+import { doctorReport } from "@connorbritain/roadmap-exec-engineering/doctor-core.mjs";
 import { dispatchStatus } from "./dispatch.mjs";
 
 const root = process.cwd();

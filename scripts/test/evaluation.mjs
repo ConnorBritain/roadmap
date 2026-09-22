@@ -4,9 +4,9 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { stringify, parse } from "yaml";
-import { validateEvaluationPacket, packetDigest } from "../lib/evaluation-packet.mjs";
-import { inspectEvaluationPatch } from "../lib/evaluation-io.mjs";
-import { buildEvaluationRun, buildEvaluationPrompt, normalizeAssignment, assertEvaluationDiffPaths, sealableWave } from "../lib/evaluation-core.mjs";
+import { validateEvaluationPacket, packetDigest } from "@connorbritain/roadmap-core/evaluation-packet.mjs";
+import { inspectEvaluationPatch } from "@connorbritain/roadmap-exec-engineering/evaluation-io.mjs";
+import { buildEvaluationRun, buildEvaluationPrompt, normalizeAssignment, assertEvaluationDiffPaths, sealableWave } from "@connorbritain/roadmap-core/evaluation-core.mjs";
 import { runEvaluation } from "../evaluate.mjs";
 
 const NOW = Date.parse("2026-09-05T12:00:00Z");

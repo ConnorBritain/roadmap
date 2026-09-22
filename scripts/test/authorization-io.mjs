@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { authorizationFixture } from "./authorization.mjs";
-import { githubAuthorizationStore } from "../lib/gauntlet-authorization-io.mjs";
-import { reserveAuthorizedLaunch } from "../lib/gauntlet-authorization.mjs";
+import { githubAuthorizationStore } from "@connorbritain/roadmap-exec-engineering/github-authority-store.mjs";
+import { reserveAuthorizedLaunch } from "@connorbritain/roadmap-core/gauntlet-authorization.mjs";
 
 function fixture() {
   const refs = new Map(), blobs = new Map(), trees = new Map(), commits = new Map();

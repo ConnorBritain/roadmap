@@ -7,34 +7,36 @@
 import {
   flatten, detectCycle, computeWaves, execPlan, sessionsRemaining, resolveGate, isDone, readyNodes, coherenceEnabled,
   commandLaneMembers, commandLaneActive,
-} from "../lib/graph.mjs";
-import { parseWorktrees } from "../lib/external-state.mjs";
-import { buildPlan } from "../lib/plan.mjs";
-import { nodeWeight, recommendConcurrency, probeDisk, probeReviewDebt } from "../lib/recommend.mjs";
-import { synthesizeBrief, branchFor, worktreeFor, baseRefOf, baseBranchOf, remoteOf, launchPrompt, agentCmdFor, DEFAULT_AGENT_CMD } from "../lib/brief.mjs";
-import { route, classify, buildArgs, findRepoRoot, missingRoadmapHelp, expandShort, REL } from "../lib/cli-core.mjs";
-import { launchDecision } from "../lib/fanout-core.mjs";
-import { configuredProfiles, resolveProfile, commandFor, launchDecisionForProfile, safeConfig } from "../lib/assistant-core.mjs";
-import { terminalChoices, moveSelection, parseCap, buildFanArgs, autoOutName } from "../lib/wizard-core.mjs";
-import { TOOLS, addSprint, setStatus, setFields, bulkSet, prune, validateDocOrThrow, readValidate, serialize } from "../lib/mcp-core.mjs";
-import { parseAssignments } from "../lib/cli-core.mjs";
-import { diffPrStates, matchesRoadmapBranches, checksOf, criticSignalOf } from "../lib/pr-watch-core.mjs";
-import { findUnrecordedMerges, reconcileNudge, underParallelizedWarnings, sprawlWarnings, captureRatio } from "../lib/sync-core.mjs";
+} from "@connorbritain/roadmap-core/graph.mjs";
+import { parseWorktrees } from "@connorbritain/roadmap-exec-engineering/external-state.mjs";
+import { buildPlan } from "@connorbritain/roadmap-core/plan.mjs";
+import { nodeWeight, recommendConcurrency, probeDisk, probeReviewDebt } from "@connorbritain/roadmap-exec-engineering/recommend.mjs";
+import { synthesizeBrief, branchFor, worktreeFor, baseRefOf, baseBranchOf, remoteOf, launchPrompt, agentCmdFor, DEFAULT_AGENT_CMD } from "@connorbritain/roadmap-exec-engineering/brief.mjs";
+import { route, classify, buildArgs, findRepoRoot, missingRoadmapHelp, expandShort, REL } from "@connorbritain/roadmap-core/cli-core.mjs";
+import { launchDecision } from "@connorbritain/roadmap-exec-engineering/fanout-core.mjs";
+import { configuredProfiles, resolveProfile, commandFor, launchDecisionForProfile, safeConfig, BUILTIN_PROFILES } from "@connorbritain/roadmap-exec-engineering/assistant-core.mjs";
+import { terminalChoices, moveSelection, parseCap, buildFanArgs, autoOutName } from "@connorbritain/roadmap-exec-engineering/wizard-core.mjs";
+import { TOOLS, addSprint, setStatus, setFields, bulkSet, prune, validateDocOrThrow, readValidate, serialize } from "@connorbritain/roadmap-core/mcp-core.mjs";
+import { parseAssignments } from "@connorbritain/roadmap-core/cli-core.mjs";
+import { diffPrStates, matchesRoadmapBranches, checksOf, criticSignalOf } from "@connorbritain/roadmap-exec-engineering/pr-watch-core.mjs";
+import { findUnrecordedMerges, reconcileNudge, underParallelizedWarnings } from "@connorbritain/roadmap-exec-engineering/reconcile-core.mjs";
+import { sprawlWarnings, captureRatio } from "@connorbritain/roadmap-core/sync-core.mjs";
 import {
   validateExecution, suggestedConcurrency, executionDirectiveLines, normalizeExecution,
   teamSize, filterByTrack, dirClusters, EXEC_MODES, EXEC_ROLES,
-} from "../lib/execution.mjs";
-import { renderMarkdown } from "../lib/render-core.mjs";
-import { comparePriority, laneComparator, validatePriority, tierBadge, TIERS } from "../lib/priority.mjs";
+} from "@connorbritain/roadmap-core/execution.mjs";
+import { renderMarkdown } from "@connorbritain/roadmap-core/render-core.mjs";
+import { comparePriority, laneComparator, validatePriority, tierBadge, TIERS } from "@connorbritain/roadmap-core/priority.mjs";
 import {
   validateBacklog, addItem, setItemFields, validateBacklogDocOrThrow, sortByPriority,
   openCount, renderBacklogMarkdown, backlogItemToNode, pickNext, BACKLOG_TOOLS, readBacklogList,
   performPromotion,
-} from "../lib/backlog-core.mjs";
-import { validateGraph } from "../lib/validate-core.mjs";
-import { estimationConfig, estimateArgs, parseEstimateRecord, applyEstimate, validateEstimation, timelinePlan, calendarFromMinutes, logArgs, alreadyLogged } from "../lib/estimate-core.mjs";
-import { runEstimate, resolveEngine, runTimeline, runLog, resolveHistory } from "../estimate.mjs";
-import { mutateRoadmap, mutateBacklog, mutateBoth } from "../lib/store.mjs";
+} from "@connorbritain/roadmap-core/backlog-core.mjs";
+import { validateGraph } from "@connorbritain/roadmap-core/validate-core.mjs";
+import { estimationConfig, estimateArgs, parseEstimateRecord, applyEstimate, validateEstimation, timelinePlan, calendarFromMinutes, logArgs, alreadyLogged } from "@connorbritain/roadmap-core/estimate-core.mjs";
+import { runEstimate, resolveEngine, runTimeline, runLog, resolveHistory, resolveUserHistory, resolveSessionId, readSession } from "../estimate.mjs";
+import * as estimator from "@connorbritain/roadmap-core/estimator-core.mjs";
+import { mutateRoadmap, mutateBacklog, mutateBoth } from "@connorbritain/roadmap-core/store.mjs";
 import {
   normalizeLinearConfig, effectiveGranularity, effectiveVerbosity, linearState, checkPiOverrideAck,
   resolvePushState, resolveProjectStatus, pullStatusFor, priorityToLinear, LINEAR_TO_PRIORITY,
@@ -43,20 +45,20 @@ import {
   projectColorFor, projectIconFor, MARKER_LABEL, PLATE_LABEL, LINEAR_PROJECT_NAME_MAX, LINEAR_PROJECT_DESC_MAX,
   initiativePlan, initiativeStyle, startStampTargets, milestonePlan, HELD_STATUSES, cyclePlan,
   provisionPlan, manualViewChecklist, dispatchGuidance, STANDARD_VIEWS,
-} from "../lib/linear-core.mjs";
-import { platedKeys, plateDrainKeys, setPlateDoc, validatePlate } from "../lib/plate-core.mjs";
-import { addPi, setPlate, addPlate, removePlate } from "../lib/mcp-core.mjs";
+} from "@connorbritain/roadmap-core/linear-core.mjs";
+import { platedKeys, plateDrainKeys, setPlateDoc, validatePlate } from "@connorbritain/roadmap-core/plate-core.mjs";
+import { addPi, setPlate, addPlate, removePlate } from "@connorbritain/roadmap-core/mcp-core.mjs";
 import { runSync, runProvision, syncInitiatives, syncMilestones, readCursor, runNote, runNotes, runProjectUpdate } from "../linear.mjs";
-import { noteBody, sliceForBranch, gitSnapshot, autoPostPlan } from "../lib/journal-core.mjs";
+import { noteBody, sliceForBranch, gitSnapshot, autoPostPlan } from "@connorbritain/roadmap-core/journal-core.mjs";
 import { runDispatch, runFanCloud, resolveRoutine, fireRoutine, routineEndpoint, checkInFlightDispatch, markerFor, DEFAULT_IN_FLIGHT_WINDOW_MS, resolveInFlightWindowMs, dispatchStatus } from "../dispatch.mjs";
-import { githubAdapter, gitlabAdapter, gitNativeAdapter, resolveProvider, BUILTIN_PROVIDERS } from "../lib/dispatch-providers.mjs";
+import { githubAdapter, gitlabAdapter, gitNativeAdapter, resolveProvider, BUILTIN_PROVIDERS } from "@connorbritain/roadmap-exec-engineering/dispatch-providers.mjs";
 import {
   buildCodexCloudExecArgs, cloudProviderCapabilities, diagnoseCodexCloud, launchCodexCloud,
   normalizeCloudProvider, observeCodexCloudTask, parseCodexCloudSubmission, resolveCodexEnvironment,
-} from "../lib/cloud-agent-providers.mjs";
-import { electionPlan, outOfCycle } from "../lib/cycle-core.mjs";
+} from "@connorbritain/roadmap-exec-engineering/cloud-agent-providers.mjs";
+import { electionPlan, outOfCycle } from "@connorbritain/roadmap-core/cycle-core.mjs";
 import { runCyclePlan, runCycleLock } from "../cycle.mjs";
-import { readReadyWave } from "../lib/mcp-core.mjs";
+import { readReadyWave } from "@connorbritain/roadmap-core/mcp-core.mjs";
 import {
   buildCriticPrompt, buildImplementationPrompt, buildRepairPrompt, criticResultForCurrentHead,
   deriveCriticResults, deriveRunStatus, freezeQualityBar, makeRunId, parseCriticMarker, parseFrozenBarBlock,
@@ -65,20 +67,20 @@ import {
   reconstructCancellationFromComments, reconstructLaunchesFromComments,
   renderCriticMarker, renderGauntletCancellationMarker, renderGauntletLaunchMarker,
   renderGauntletPrMarkers, renderGauntletVerdictAck,
-} from "../lib/gauntlet-core.mjs";
+} from "@connorbritain/roadmap-core/gauntlet-core.mjs";
 import {
   belongsToRoadmapPr, parseRoadmapMarker, renderRoadmapMarker, roadmapSubjectMarkers,
-} from "../lib/pr-identity.mjs";
-import { launchReceipt, mutateGauntletLedger, readGauntletLedger } from "../lib/gauntlet-store.mjs";
+} from "@connorbritain/roadmap-exec-engineering/pr-identity.mjs";
+import { launchReceipt, mutateGauntletLedger, readGauntletLedger } from "@connorbritain/roadmap-core/gauntlet-store.mjs";
 import { formatGauntletLaunchResult, formatGauntletStatus, githubClient,
   runGauntletAcknowledge, runGauntletCancel, runGauntletCritic, runGauntletRepair,
   runGauntletStart, runGauntletStatus, runGauntletReconcile } from "../gauntlet.mjs";
-import { freezeImplementationAuthority, reserveImplementationCapacity } from "../lib/implementation-authorization.mjs";
-import { recordLaunchOutcome, recordLaunchNotSubmitted, recordContinuation } from "../lib/gauntlet-authorization.mjs";
-import { mutateAuthorization } from "../lib/gauntlet-authorization-io.mjs";
-import { loadGraph } from "../lib/graph.mjs";
+import { freezeImplementationAuthority, reserveImplementationCapacity } from "@connorbritain/roadmap-core/implementation-authorization.mjs";
+import { recordLaunchOutcome, recordLaunchNotSubmitted, recordContinuation } from "@connorbritain/roadmap-core/gauntlet-authorization.mjs";
+import { mutateAuthorization } from "@connorbritain/roadmap-core/gauntlet-authority.mjs";
+import { loadGraph } from "@connorbritain/roadmap-core/graph.mjs";
 import { runEvaluation } from "../evaluate.mjs";
-import { buildEvaluationPrompt } from "../lib/evaluation-core.mjs";
+import { buildEvaluationPrompt } from "@connorbritain/roadmap-core/evaluation-core.mjs";
 import { registerEvaluationTests } from "./evaluation.mjs";
 import { registerAuthorizationTests } from "./authorization.mjs";
 import { memoryAuthorityStore, continuationFixtureReceipt } from "./authorization.mjs";
@@ -88,52 +90,38 @@ import { registerAuthorizationIoTests } from "./authorization-io.mjs";
 import { registerModelPolicyTests } from "./model-policy.mjs";
 import { registerPortfolioTests } from "./portfolio.mjs";
 import { registerDecisionTests } from "./decisions.mjs";
-import { graphDiff, backlogDiff, reviewDigest, pisInFlight } from "../lib/review-core.mjs";
-import { doctorReport } from "../lib/doctor-core.mjs";
-import { auditBacklog, collectEntries, AUDIT_CODES, signatureOf, knownDamageOf } from "../lib/backlog-audit.mjs";
+import { graphDiff, backlogDiff, reviewDigest, pisInFlight } from "@connorbritain/roadmap-core/review-core.mjs";
+import { doctorReport } from "@connorbritain/roadmap-exec-engineering/doctor-core.mjs";
+import { auditBacklog, collectEntries, AUDIT_CODES, signatureOf, knownDamageOf } from "@connorbritain/roadmap-core/backlog-audit.mjs";
 import {
   SLUG_RE, validators, suggestProgramName, planInit,
   renderRoadmapYaml, renderBacklogYaml, renderLocalConfig,
   planGitignore, appendToGitignore,
-} from "../lib/init-core.mjs";
+} from "@connorbritain/roadmap-core/init-core.mjs";
 import { parseDocument } from "yaml";
 import { join, resolve } from "node:path";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
+// The harness and the core-only test sections live in packages/core/test; importing a section file runs it.
+import { test, eq, ok, throws, sp, summary } from "../../packages/core/test/harness.mjs";
+import { L_STATES, L_CFG } from "../../packages/core/test/fixtures.mjs";
+import { tempRepo } from "../../packages/core/test/mcp-store.mjs";
+import { pushGraph, SNAP } from "../../packages/core/test/linear-core.mjs";
+import "../../packages/core/test/graph.mjs";
+import "../../packages/core/test/execution.mjs";
+import "../../packages/core/test/cli-core.mjs";
+import "../../packages/core/test/backlog-audit.mjs";
+import "../../packages/core/test/gauntlet-artifact.mjs";
+import "../../packages/core/test/executor.mjs";
+import "../../packages/exec-engineering/test/github-pr-artifact.mjs";
+import "../../packages/exec-engineering/test/executors.mjs";
+import "../../packages/exec-engineering/test/launchers.mjs";
+import "../../packages/cli/test/profile.mjs";
+import "../../packages/cli/test/plugin-assets.mjs";
+import "../../packages/exec-general/test/general.mjs";
 
-let passed = 0, failed = 0;
-const pending = [];   // async tests settle before the summary (see the await at the bottom)
-function test(name, fn) {
-  try {
-    const r = fn();
-    if (r && typeof r.then === "function") {
-      // an async test that threw would otherwise count as a vacuous pass — await it
-      pending.push(r.then(
-        () => { passed++; console.log(`  ✓ ${name}`); },
-        (e) => { failed++; console.error(`  ✗ ${name}\n      ${e.message}`); },
-      ));
-      return;
-    }
-    passed++; console.log(`  ✓ ${name}`);
-  }
-  catch (e) { failed++; console.error(`  ✗ ${name}\n      ${e.message}`); }
-}
-function eq(actual, expected, msg) {
-  const a = JSON.stringify(actual), b = JSON.stringify(expected);
-  if (a !== b) throw new Error(`${msg || "not equal"} — got ${a}, expected ${b}`);
-}
-function ok(cond, msg) { if (!cond) throw new Error(msg || "expected truthy"); }
-function throws(fn, match, msg) {
-  try { fn(); } catch (e) {
-    if (match && !e.message.includes(match)) throw new Error(`${msg}: wrong error "${e.message}" (wanted "${match}")`);
-    return;
-  }
-  throw new Error(msg || "expected a throw");
-}
-
-const sp = (id, o = {}) => ({ id, title: id, invoke: o.invoke || id, status: o.status || "next", ...o });
 
 // WHY: an evaluation corpus is the durable hand-off from diagnosis to
 // implementation. A per-repository root must never fall back to a generic
@@ -186,150 +174,6 @@ test("validateGraph accepts a safe evaluation artifact root and rejects an escap
     evaluation: { artifact_root: "../outside" },
   } }, pis: [] };
   ok(validateGraph(invalid).errors.some((error) => error.includes("meta.dispatch.evaluation.artifact_root")), "escaping root is rejected");
-});
-
-// ── dependency resolution ──────────────────────────────────────────────────
-// WHY: a slice's deps decide when it becomes runnable. If sibling/PI/qualified
-// forms don't resolve, the scheduler launches work before its prerequisites exist.
-test("flatten resolves sibling, fully-qualified, and PI-id deps", () => {
-  const g = { pis: [
-    { id: "a", title: "A", status: "active", sprints: [
-      sp("s1", { status: "complete" }),
-      sp("s2", { deps: ["s1"] }),                 // sibling
-      sp("s3", { deps: ["a/s1"] }),               // fully-qualified
-    ]},
-    { id: "b", title: "B", status: "next", sprints: [
-      sp("b1", { deps: ["a"] }),                  // whole-PI dep
-    ]},
-  ]};
-  const m = flatten(g);
-  const s2 = m.nodes.find((n) => n.id === "s2");
-  const s3 = m.nodes.find((n) => n.id === "s3");
-  const b1 = m.nodes.find((n) => n.id === "b1");
-  eq(s2.deps, ["a/s1"], "sibling dep");
-  eq(s3.deps, ["a/s1"], "qualified dep");
-  eq(b1.piDeps, ["a"], "PI dep");
-});
-
-// WHY: invoke keys are the /slice launch keys; a duplicate means two slices answer
-// the same command and the fanout launches the wrong worktree.
-test("flatten rejects duplicate invoke keys", () => {
-  const g = { pis: [{ id: "a", title: "A", status: "active", sprints: [
-    sp("s1", { invoke: "dup" }), sp("s2", { invoke: "dup" }),
-  ]}]};
-  throws(() => flatten(g), "duplicate invoke", "should reject dup invoke");
-});
-
-// WHY: a typo'd dep that silently resolves to nothing would let a gated/unbuilt
-// prerequisite be treated as satisfied. Unresolved deps must be a hard error.
-test("flatten rejects an unresolvable dep", () => {
-  const g = { pis: [{ id: "a", title: "A", status: "active", sprints: [
-    sp("s1", { deps: ["nope"] }),
-  ]}]};
-  throws(() => flatten(g), "matches no", "should reject unknown dep");
-});
-
-// ── cycle detection ─────────────────────────────────────────────────────────
-// WHY: a dependency cycle is un-runnable; without detection the scheduler would
-// loop or silently drop the cycle, hiding a broken roadmap.
-test("detectCycle finds a 2-node cycle and clears an acyclic graph", () => {
-  const cyclic = flatten({ pis: [{ id: "a", title: "A", status: "active", sprints: [
-    sp("s1", { deps: ["s2"] }), sp("s2", { deps: ["s1"] }),
-  ]}]});
-  ok(detectCycle(cyclic), "should detect cycle");
-  const acyclic = flatten({ pis: [{ id: "a", title: "A", status: "active", sprints: [
-    sp("s1", {}), sp("s2", { deps: ["s1"] }),
-  ]}]});
-  eq(detectCycle(acyclic), null, "acyclic should be null");
-});
-
-// WHY: computeWaves must refuse to plan a cyclic graph rather than emit a bogus order.
-test("computeWaves throws on a cycle", () => {
-  const m = flatten({ pis: [{ id: "a", title: "A", status: "active", sprints: [
-    sp("s1", { deps: ["s2"] }), sp("s2", { deps: ["s1"] }),
-  ]}]});
-  throws(() => computeWaves(m, 3), "cycle", "should throw on cycle");
-});
-
-// ── wave scheduling ─────────────────────────────────────────────────────────
-// WHY: two sprints that write the same file MUST NOT run in the same wave, or the
-// parallel sessions corrupt each other's checkout — the core two-wave invariant.
-test("computeWaves defers shared-file contention to a later wave", () => {
-  const m = flatten({ pis: [{ id: "a", title: "A", status: "active", sprints: [
-    sp("s1", { status: "active", est_sessions: 1, touches: ["F.cs"] }),
-    sp("s2", { status: "active", est_sessions: 1, touches: ["F.cs"] }),
-  ]}]});
-  const { waves } = computeWaves(m, 3);
-  eq(waves.length, 2, "shared file → 2 waves");
-  eq(waves[0].length, 1, "one per wave");
-});
-
-// WHY: disjoint, independent slices should fan out together up to the cap — that's
-// the whole point of the tool; under-parallelizing wastes the user's concurrency.
-test("computeWaves runs disjoint slices together and respects the cap", () => {
-  const mk = (id) => sp(id, { status: "active", est_sessions: 1, touches: [`${id}.cs`] });
-  const m = flatten({ pis: [{ id: "a", title: "A", status: "active", sprints: [mk("s1"), mk("s2"), mk("s3")] }]});
-  eq(computeWaves(m, 3).waves[0].length, 3, "cap 3 → all 3 in wave 1");
-  eq(computeWaves(m, 2).waves[0].length, 2, "cap 2 → 2 in wave 1");
-});
-
-// WHY: a slice must wait for its dependency to (optimistically) complete; launching
-// a dependent early is exactly the failure deps exist to prevent.
-test("computeWaves orders a dependent after its dep", () => {
-  const m = flatten({ pis: [{ id: "a", title: "A", status: "active", sprints: [
-    sp("s1", { status: "active", est_sessions: 1, touches: ["x.cs"] }),
-    sp("s2", { status: "active", est_sessions: 1, deps: ["s1"], touches: ["y.cs"] }),
-  ]}]});
-  const { waves } = computeWaves(m, 5);
-  eq(waves[0].map((n) => n.id), ["s1"], "s1 first");
-  eq(waves[1].map((n) => n.id), ["s2"], "s2 second");
-});
-
-// WHY: a human-gated step (signing prereqs, live payment smoke) must never be
-// auto-launched; it belongs in held-on-human, and its downstream cone stays parked.
-test("computeWaves holds gated_on nodes and never schedules them", () => {
-  const m = flatten({ pis: [{ id: "a", title: "A", status: "gated", sprints: [
-    sp("s0", { status: "gated", gated_on: "Connor", est_sessions: 0 }),
-    sp("s1", { status: "scheduled", est_sessions: 1, deps: ["s0"], touches: ["z.cs"] }),
-  ]}]});
-  const { waves, held } = computeWaves(m, 3);
-  eq(waves.length, 0, "nothing runnable");
-  eq(held.onHuman.map((n) => n.id), ["s0"], "s0 held on human");
-  eq(held.blocked.map((n) => n.id), ["s1"], "s1 blocked behind the gate");
-});
-
-// ── derived views ───────────────────────────────────────────────────────────
-// WHY: the exec-plan line is the human-facing parallelization recommendation; it
-// must reflect REMAINING work (exclude done) and group independent sprints as parallel.
-test("execPlan shows remaining work with parallel grouping", () => {
-  const pi = { sprints: [
-    sp("s1", { status: "complete" }),
-    sp("s2", { status: "active", deps: ["s1"] }),
-    sp("s3", { status: "next" }),
-    sp("s4", { status: "next", deps: ["s2", "s3"] }),
-  ]};
-  // remaining = s2,s3,s4; s2&s3 are level 0 (s2's only dep s1 is done/excluded), s4 after both
-  eq(execPlan(pi), "(S2 ∥ S3)→S4", "remaining exec plan");
-});
-
-// WHY: "sessions remaining" is the at-a-glance PI burn-down; it must sum only the
-// not-done sprints or the user can't gauge what's left.
-test("sessionsRemaining sums only not-complete sprints", () => {
-  const pi = { sprints: [
-    sp("s1", { status: "complete", est_sessions: 5 }),
-    sp("s2", { status: "active", est_sessions: 3 }),
-    sp("s3", { status: "next", est_sessions: 2 }),
-  ]};
-  eq(sessionsRemaining(pi), 5, "3+2, s1 excluded");
-});
-
-// WHY: a sprint's gate is the acceptance bar the autonomous session must pass; the
-// {{default}} token must interpolate the program-wide gate, not leak literally.
-test("resolveGate interpolates {{default}} and passes plain strings", () => {
-  const graph = { meta: { default_gate: "BUILD" } };
-  eq(resolveGate({ gate: "default" }, graph), "BUILD", "default → meta gate");
-  eq(resolveGate({ gate: "{{default}}\nPLUS x" }, graph), "BUILD\nPLUS x", "interpolated");
-  eq(resolveGate({ gate: "custom only" }, graph), "custom only", "plain passthrough");
 });
 
 // ── concurrency recommender ─────────────────────────────────────────────────
@@ -468,61 +312,6 @@ test("base branch / remote default to main/origin and honor meta overrides", () 
   eq(baseRefOf(over), "upstream/develop", "composed base ref");
 });
 
-// ── CLI dispatcher core ──────────────────────────────────────────────────────
-// WHY: the `roadmap` command is the daily entry point. If routing regresses, bare
-// `roadmap` stops defaulting to plan, or `roadmap --cap 3` is read as a command — the
-// tool silently does the wrong thing from the shell.
-test("route: bare → plan, leading flag → plan, -h → help, word → that command", () => {
-  eq(route([]), { cmd: "plan", rest: [] }, "bare → plan");
-  eq(route(["--cap", "3"]), { cmd: "plan", rest: ["--cap", "3"] }, "leading flag → plan + flags");
-  eq(route(["-h"]), { cmd: "help", rest: [] }, "-h → help");
-  eq(route(["--help"]), { cmd: "help", rest: [] }, "--help → help");
-  eq(route(["fan", "--wave", "1"]), { cmd: "fan", rest: ["--wave", "1"] }, "subcommand + rest");
-  eq(route(["gauntlet", "eval", "init", "--run", "matrix-2026-08"]),
-    { cmd: "gauntlet-eval", rest: ["init", "--run", "matrix-2026-08"] }, "evaluation route preserves its action");
-});
-
-// WHY: classify decides what actually runs; a built command misrouted to 'unknown'
-// breaks the CLI, and a P4 stub misrouted to 'run' would spawn a nonexistent script.
-test("classify: maps built commands, flags P4 stubs, rejects unknown", () => {
-  eq(classify("plan").kind, "run", "plan runs");
-  eq(classify("plan").script, "scheduler.mjs", "plan → scheduler");
-  eq(classify("fan").script, "fanout.mjs", "fan → fanout");
-  eq(classify("gauntlet-eval").script, "evaluate.mjs", "gauntlet eval → evaluation conductor");
-  eq(classify("validate").script, "validate.mjs", "validate → validate");
-  eq(classify("sync"), { kind: "notyet", phase: "P4" }, "sync is P4");
-  eq(classify("bogus").kind, "unknown", "unknown command");
-  eq(classify("help").kind, "help", "help");
-});
-
-// WHY: validate.mjs takes a POSITIONAL path while the others take --in; if buildArgs
-// gets this wrong, `roadmap validate` either checks nothing or errors on a stray flag.
-test("buildArgs: injects the positional path only for validate-without-one", () => {
-  eq(buildArgs("validate", [], "R.yaml"), ["R.yaml"], "validate w/o positional → inject");
-  eq(buildArgs("validate", ["--quiet"], "R.yaml"), ["R.yaml", "--quiet"], "flags-only still injects");
-  eq(buildArgs("validate", ["other.yaml"], "R.yaml"), ["other.yaml"], "explicit positional preserved");
-  eq(buildArgs("plan", ["--cap", "3"], "R.yaml"), ["--cap", "3"], "non-validate passes rest through");
-});
-
-// WHY: upward discovery is what lets you run `roadmap` from any subdir; if it stops
-// walking or never terminates, the CLI fails at repo root or hangs.
-test("findRepoRoot walks up to the dir holding the roadmap, else null", () => {
-  const target = resolve("/a/b");                       // resolve() to match findRepoRoot's own resolve (drive-correct on Windows)
-  const exists = (p) => p === join(target, ...REL);
-  eq(findRepoRoot(resolve("/a/b/c/d"), exists), target, "found by walking up");
-  eq(findRepoRoot(resolve("/x/y"), () => false), null, "none anywhere → null (terminates at fs root)");
-});
-
-// WHY: the not-found path is a teaching moment, not a dead end — it must name WHERE the
-// file goes and how to start one, or a new user is stuck. (The user asked for this.)
-test("missingRoadmapHelp names the path, the cwd, and a starter", () => {
-  const h = missingRoadmapHelp("/some/where");
-  ok(h.includes(REL.join("/")), "names docs/roadmap/roadmap.yaml");
-  ok(h.includes("/some/where"), "echoes the cwd it searched from");
-  ok(/repo-root/.test(h), "says it goes at the repo root");
-  ok(/schema_version/.test(h), "includes a starter snippet");
-});
-
 // ── fanout launch decision ───────────────────────────────────────────────────
 // WHY: launch is the DEFAULT (low-risk interactive); the only dangerous mode (headless
 // autonomous commit/push/PR) must stay behind a double-ack. If this regresses, a bare
@@ -626,104 +415,6 @@ test("autoOutName picks ps1 for wt/warp and sh otherwise", () => {
   eq(autoOutName("print", 1), "wave1.sh", "print → sh");
 });
 
-// ── MCP brain: tool registry + comment-preserving mutations + integrity gate ────
-const MCP_FIX = `meta:
-  schema_version: 1
-  program: TEST
-  default_gate: npm test
-pis:
-  - id: auth          # the auth epic
-    title: Auth
-    status: active
-    sprints:
-      - id: s1
-        title: Login
-        status: complete
-        invoke: auth-login
-        prs: ["#1"]
-      - id: s2
-        title: Sessions
-        status: active
-        invoke: auth-sessions
-        deps: [s1]
-`;
-
-// WHY: the registry is the contract Claude sees; a tool missing a name/description/inputSchema
-// is invisible or uncallable, so the whole MCP surface must stay well-formed.
-test("TOOLS registry is well-formed and includes the key read + mutate tools", () => {
-  ok(Array.isArray(TOOLS) && TOOLS.length >= 9, "at least 9 tools");
-  ok(TOOLS.every((t) => t.name && t.description && t.inputSchema && t.inputSchema.type === "object"), "each tool well-formed");
-  for (const n of ["plan", "show", "validate", "add_sprint", "set_status", "prune"]) {
-    ok(TOOLS.some((t) => t.name === n), `tool ${n} present`);
-  }
-});
-
-// WHY: the entire reason to mutate via the Document API (not YAML.parse + re-dump) is to keep the
-// human's comments. If add_sprint drops them, the roadmap's authored context is silently destroyed.
-test("add_sprint appends the node AND preserves existing comments", () => {
-  const doc = parseDocument(MCP_FIX);
-  addSprint(doc, { pi: "auth", id: "s3", title: "Logout", invoke: "auth-logout", status: "next", deps: ["s2"] });
-  const out = doc.toString();
-  ok(out.includes("# the auth epic"), "inline comment survived the edit");
-  ok(/invoke: auth-logout/.test(out), "new sprint serialized");
-  const g = validateDocOrThrow(doc);
-  eq(g.pis[0].sprints.length, 3, "three sprints now");
-});
-
-// WHY: the write gate exists so a bad edit never lands. A duplicate invoke key would make two
-// slices answer the same /slice command; it must be rejected before the file is written.
-test("validateDocOrThrow rejects a duplicate invoke key", () => {
-  const doc = parseDocument(MCP_FIX);
-  addSprint(doc, { pi: "auth", id: "s3", title: "Dup", invoke: "auth-login" });
-  throws(() => validateDocOrThrow(doc), "corrupt", "duplicate invoke must be rejected");
-});
-
-// WHY: a cyclic dependency is un-runnable; an edit that introduces one must be refused, not written
-// and discovered later when the scheduler chokes.
-test("validateDocOrThrow rejects an edit that forms a dependency cycle", () => {
-  const doc = parseDocument(MCP_FIX);
-  setFields(doc, { invoke: "auth-login", fields: { deps: ["s2"] } }); // s1->s2 while s2->s1
-  throws(() => validateDocOrThrow(doc), "cycle", "cycle must be rejected");
-});
-
-// WHY: set_status is the merge-time workhorse (flip to complete, record the PR). It must write all
-// three fields, or the Recently-completed view and sessions-remaining rollup go wrong.
-test("set_status records status + prs + completed_on", () => {
-  const doc = parseDocument(MCP_FIX);
-  setStatus(doc, { invoke: "auth-sessions", status: "complete", prs: ["#9"], completed_on: "2026-06-04" });
-  const sp = doc.toJS().pis[0].sprints.find((s) => s.invoke === "auth-sessions");
-  eq(sp.status, "complete", "status set");
-  eq(sp.prs, ["#9"], "prs set");
-  eq(sp.completed_on, "2026-06-04", "completed_on set");
-});
-
-// WHY: pruning is how the roadmap stays legible over time; scope='completed' must drop finished,
-// undepended slices (and leave live ones), so the graph shrinks safely.
-test("prune scope=completed removes finished slices and keeps live ones", () => {
-  const doc = parseDocument(`meta: {schema_version: 1, program: T}
-pis:
-  - id: p
-    title: P
-    status: active
-    sprints:
-      - {id: s1, title: Done, status: complete, invoke: p-done, prs: ["#1"]}
-      - {id: s2, title: Live, status: active, invoke: p-active}
-`);
-  const r = prune(doc, { scope: "completed" });
-  eq(r.pruned, ["p-done"], "reported the pruned slice");
-  const g = validateDocOrThrow(doc);
-  ok(!g.pis[0].sprints.some((s) => s.invoke === "p-done"), "completed slice gone");
-  ok(g.pis[0].sprints.some((s) => s.invoke === "p-active"), "live slice kept");
-});
-
-// WHY: the validate read tool is the agent's pre-flight; a clean roadmap must report ok=true so an
-// agent can trust it before launching, and a real error must surface as ok=false.
-test("readValidate reports ok on a clean graph", () => {
-  const r = readValidate(parseDocument(MCP_FIX).toJS());
-  ok(r.ok === true, "clean fixture validates");
-  eq(r.errors.length, 0, "no errors");
-});
-
 // ── PR-watch monitor brain ──────────────────────────────────────────────────
 const pr = (o) => ({
   number: o.n, title: o.t || "T", headRefName: o.b || "auth/s1",
@@ -786,167 +477,6 @@ test("findUnrecordedMerges flags only open slices whose fanout branch merged", (
   eq(reconcileNudge([]), "", "silent when nothing is unrecorded");
 });
 
-// ── serializer fidelity (diff-minimal mutations) ────────────────────────────
-// WHY: mutations write via serialize(); if it pads flow collections or re-wraps long scalars, every
-// edit churns the whole hand-authored roadmap and the diff becomes unreviewable. It must keep
-// comments, leave long scalars on one line, and not pad flow collections.
-test("serialize keeps comments, leaves long scalars unwrapped, and does not pad flow collections", () => {
-  const long = "x".repeat(120);
-  const doc = parseDocument(`# header\nk:\n  seq: ["#1", "#2"]   # inline\n  long: ${long}\n`);
-  const out = serialize(doc);
-  ok(out.includes("# header") && out.includes("# inline"), "comments preserved");
-  ok(out.includes('["#1", "#2"]') && !out.includes('[ "#1"'), "flow seq stays unpadded");
-  ok(out.includes(long), "120-char scalar not wrapped");
-  // idempotent: re-serializing its own output is a no-op (so post-normalize mutations are clean)
-  eq(serialize(parseDocument(out)), out, "serialize is idempotent");
-});
-
-// ── execution strategy hint: validation ─────────────────────────────────────
-// WHY: the whole point is to let an author DECLARE staffing; a typo'd mode/role or an
-// impossible count must be caught at validate time, not discovered when a launched session
-// reads a nonsense directive. Enum + type + bounds are the contract.
-test("validateExecution rejects a bad mode, a bad role, and non-positive ints", () => {
-  ok(validateExecution({ mode: "swarm" }, "a/s1").errors.some((e) => /mode "swarm" invalid/.test(e)), "bad mode");
-  ok(validateExecution({ team: [{ role: "wizard" }] }, "a/s1").errors.some((e) => /role "wizard" invalid/.test(e)), "bad role");
-  ok(validateExecution({ concurrency: 0 }, "a/s1").errors.some((e) => /concurrency must be an integer/.test(e)), "concurrency 0");
-  ok(validateExecution({ concurrency: 2.5 }, "a/s1").errors.some((e) => /concurrency must be an integer/.test(e)), "non-int concurrency");
-  ok(validateExecution({ team: [{ role: "implementer", count: 0 }] }, "a/s1").errors.some((e) => /count must be an integer/.test(e)), "count 0");
-  eq(EXEC_MODES, ["solo", "subagents", "dynamic-workflow", "agent-team"], "mode vocabulary");
-  eq(EXEC_ROLES, ["verifier", "implementer", "reviewer", "researcher", "integrator"], "role vocabulary");
-});
-
-// WHY: min_concurrency is a FLOOR; if it could exceed the suggested live count the directive
-// would demand more workers than the slice ever wants — an incoherent instruction.
-test("validateExecution enforces min_concurrency ≤ concurrency", () => {
-  ok(validateExecution({ concurrency: 3, min_concurrency: 5 }, "a/s1").errors.some((e) => /min_concurrency.*≤ concurrency/.test(e)), "floor above cap → error");
-  eq(validateExecution({ concurrency: 5, min_concurrency: 4 }, "a/s1").errors.length, 0, "floor ≤ cap → ok");
-});
-
-// WHY: a team whose head-count disagrees with concurrency means one of the two numbers is wrong;
-// the launched session can't tell which, so we refuse the ambiguity rather than mis-staff.
-test("validateExecution flags team head-count inconsistent with concurrency, accepts a consistent one", () => {
-  const bad = validateExecution({ concurrency: 5, team: [{ role: "implementer", count: 2 }, { role: "reviewer" }] }, "a/s1");
-  ok(bad.errors.some((e) => /head-count \(3\) is inconsistent with concurrency \(5\)/.test(e)), "3 != 5 → error");
-  const good = validateExecution({ concurrency: 5, team: [{ role: "verifier" }, { role: "implementer", count: 3 }, { role: "reviewer" }] }, "a/s1");
-  eq(good.errors.length, 0, "1+3+1 == 5 → ok");
-  // team WITHOUT a concurrency: no consistency check (nothing to be inconsistent with)
-  eq(validateExecution({ team: [{ role: "implementer", count: 4 }] }, "a/s1").errors.length, 0, "team alone → no consistency error");
-});
-
-// WHY: backward compatibility is non-negotiable — a slice that omits the block (every existing
-// roadmap) must validate with ZERO new errors, or this feature breaks every consuming repo.
-test("validateExecution + validateGraph are no-ops when execution is absent (backward-compat)", () => {
-  eq(validateExecution(undefined, "a/s1"), { errors: [], warnings: [] }, "absent → clean");
-  eq(validateExecution(null, "a/s1"), { errors: [], warnings: [] }, "null → clean");
-  const g = { meta: { schema_version: 1, program: "T" }, pis: [{ id: "a", title: "A", status: "active",
-    sprints: [sp("s1", { status: "active", est_sessions: 1 })] }] };
-  eq(validateGraph(g).errors.length, 0, "no execution block → graph validates");
-});
-
-// WHY: a valid block is the happy path the feature exists for; if a correct full block produced
-// errors the author could never declare strategy at all.
-test("validateGraph accepts a full, consistent execution block", () => {
-  const g = { meta: { schema_version: 1, program: "T" }, pis: [{ id: "a", title: "A", status: "active",
-    sprints: [sp("s1", { status: "active", est_sessions: 1, execution: {
-      mode: "agent-team", concurrency: 5, min_concurrency: 4,
-      team: [{ role: "verifier" }, { role: "implementer", count: 3 }, { role: "reviewer" }],
-      rationale: "16 disjoint fault-class files; verifier-first; one reviewer reconciles.",
-    } })] }] };
-  eq(validateGraph(g).errors.length, 0, "full valid block validates clean");
-});
-
-// WHY: a solo slice with a team is contradictory authoring; warn (don't error) so the YAML still
-// loads but the author sees the mistake.
-test("validateExecution warns on a solo slice that declares a team", () => {
-  ok(validateExecution({ mode: "solo", team: [{ role: "implementer" }] }, "a/s1").warnings.some((w) => /solo but a team/.test(w)), "solo + team → warning");
-});
-
-// ── suggested-floor computation ──────────────────────────────────────────────
-// WHY: the suggested floor is the anti-under-parallelization HINT for slices that don't pin a
-// count — it must equal the number of DISJOINT top-level dir clusters (shared dirs collapse),
-// capped so a sprawling slice doesn't recommend an absurd worker count.
-test("suggestedConcurrency counts distinct top-level dir clusters and caps at 6", () => {
-  eq(dirClusters(["src/a.ts", "src/b.ts", "docs/x.md"]).size, 2, "shared dir collapses");
-  eq(suggestedConcurrency({ touches: ["src/a.ts", "src/b.ts", "docs/x.md"] }), 2, "two disjoint clusters");
-  eq(suggestedConcurrency({ touches: ["a/1", "b/2", "c/3", "d/4", "e/5", "f/6", "g/7", "h/8"] }), 6, "capped at 6");
-  eq(suggestedConcurrency({ touches: [] }), null, "no files → no suggestion");
-  eq(suggestedConcurrency({}), null, "no touches → null");
-});
-
-// ── imperative directive rendering (one canonical block, reused verbatim) ─────
-// WHY: agents under-parallelize by gut; for an agent-team slice the directive MUST name the count
-// + composition AND explicitly tell the session to invoke Agent Teams (the env var) — anything
-// vaguer and the session falls back to a lone subagent.
-test("executionDirectiveLines emits an imperative agent-team directive with count, composition, floor, and the Agent Teams instruction", () => {
-  const lines = executionDirectiveLines({ touches: ["a/x", "b/y"], execution: {
-    mode: "agent-team", concurrency: 5, min_concurrency: 4,
-    team: [{ role: "verifier" }, { role: "implementer", count: 3 }, { role: "reviewer" }],
-    rationale: "16 disjoint fault-class files; verifier-first; one reviewer reconciles.",
-  }});
-  const text = lines.join("\n");
-  ok(/▶ EXECUTION: agent-team — 5 workers \(1 verifier · 3 implementers · 1 reviewer\)\./.test(text), "headline names count + composition");
-  ok(/DO NOT run solo or fewer than 4\./.test(text), "states the floor imperatively");
-  ok(/Invoke Agent Teams now \(set CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1\)/.test(text), "instructs invoking Agent Teams");
-  ok(/Rationale: 16 disjoint fault-class files/.test(text), "carries the rationale");
-});
-
-// WHY: each mode steers to a DIFFERENT mechanism; a subagents slice must point at the CLAUDE.md
-// hand-off, a dynamic-workflow at an in-slice pipeline, and a solo slice must say plainly "no
-// fan-out" so the session doesn't spin up workers it shouldn't.
-test("executionDirectiveLines wording is mode-specific for subagents, dynamic-workflow, and solo", () => {
-  const subs = executionDirectiveLines({ touches: ["a/x"], execution: { mode: "subagents", concurrency: 3, min_concurrency: 2 } }).join("\n");
-  ok(/Spawn 3 background subagents per CLAUDE\.md § Subagent Hand-off/.test(subs), "subagents → CLAUDE.md hand-off");
-  ok(/DO NOT run solo or fewer than 2\./.test(subs), "subagents floor");
-  const dyn = executionDirectiveLines({ execution: { mode: "dynamic-workflow", concurrency: 2 } }).join("\n");
-  ok(/in-slice pipeline — each step gates the next/.test(dyn), "dynamic-workflow → pipeline");
-  const solo = executionDirectiveLines({ execution: { mode: "solo" } }).join("\n");
-  ok(/▶ EXECUTION: solo — single agent, no fan-out\./.test(solo), "solo headline");
-  ok(/Do not spawn workers/.test(solo), "solo forbids fan-out");
-  ok(!/DO NOT run solo or fewer/.test(solo), "solo has no floor clause");
-  // no execution block → no directive at all
-  eq(executionDirectiveLines({ touches: ["a/x"] }), null, "absent block → null");
-});
-
-// WHY: derived count fallbacks must be sane — a team without an explicit concurrency should report
-// its head-count as the worker count, so the directive isn't blank.
-test("executionDirectiveLines derives the worker count from the team when concurrency is unset", () => {
-  const lines = executionDirectiveLines({ execution: { mode: "agent-team", team: [{ role: "implementer", count: 4 }, { role: "reviewer" }] } }).join("\n");
-  ok(/agent-team — 5 workers/.test(lines), "team head-count = 5 used as worker count");
-  eq(teamSize([{ role: "implementer", count: 4 }, { role: "reviewer" }]), 5, "teamSize sums with default 1");
-});
-
-// ── render-core: directive in SLICES.md + the byte-identical backward-compat guarantee ──
-const execRenderGraph = (execution) => ({
-  meta: { schema_version: 1, program: "T" },
-  pis: [{ id: "a", title: "A", status: "active", sprints: [
-    { id: "s1", title: "Fan", status: "active", invoke: "fan-slice", what: "do it", est_sessions: 1,
-      touches: ["a/x", "b/y"], read_order: ["docs/x.md"], ...(execution ? { execution } : {}) },
-  ] }],
-});
-
-// WHY: the rendered SLICES.md is the human read-out; the directive must appear AT THE TOP of the
-// slice's detail entry (before What) so a session staffs before it reads anything else.
-test("renderMarkdown emits the execution directive at the top of a slice's detail read-out", () => {
-  const md = renderMarkdown(execRenderGraph({ mode: "agent-team", concurrency: 2, min_concurrency: 2,
-    team: [{ role: "implementer" }, { role: "reviewer" }] }));
-  const detail = md.slice(md.indexOf("### `fan-slice`"));
-  const dirIdx = detail.indexOf("▶ EXECUTION: agent-team");
-  const whatIdx = detail.indexOf("**What:**");
-  ok(dirIdx >= 0, "directive rendered in the detail entry");
-  ok(dirIdx < whatIdx, "directive precedes What (top of the read-out)");
-  ok(/> ▶ EXECUTION/.test(detail), "rendered as a blockquote callout");
-});
-
-// WHY: THE non-negotiable. A slice with no execution block must render EXACTLY as it did before the
-// feature — no stray directive, no blank lines, nothing — or every existing SLICES.md churns.
-test("renderMarkdown is byte-identical (no directive) when no execution block is present", () => {
-  const md = renderMarkdown(execRenderGraph(null));
-  ok(!md.includes("▶ EXECUTION"), "no directive marker anywhere");
-  // the detail entry goes straight from the heading to What, as before
-  const detail = md.slice(md.indexOf("### `fan-slice`"));
-  ok(/### `fan-slice`\n- \*\*What:\*\*/.test(detail), "heading immediately followed by What, unchanged");
-});
-
 // ── kickoff brief carries the directive verbatim ─────────────────────────────
 // WHY: a fanned-out session reads ONLY its .kickoff.md; for an agent-team slice the brief must
 // carry the directive verbatim, or the worker never learns to invoke Agent Teams and runs solo.
@@ -962,18 +492,6 @@ test("synthesizeBrief carries the execution directive verbatim for an agent-team
   // a slice WITHOUT a block gets no execution section (brief unchanged)
   const g2 = { meta: {}, pis: [{ id: "a", title: "A", status: "active", sprints: [sp("s1", { status: "active", invoke: "y" })] }] };
   ok(!synthesizeBrief(flatten(g2).nodes[0], g2).includes("## 0. Execution strategy"), "no block → no execution section");
-});
-
-// ── fanout --track lane filter ───────────────────────────────────────────────
-// WHY: the three-track partition lets a person fan out only their lane; --track must keep exactly
-// the matching slices (case-insensitive) and an unset filter must be a no-op (everyone's lanes).
-test("filterByTrack keeps only the matching lane and is a no-op without a track", () => {
-  const wave = [
-    { invoke: "a", track: "A" }, { invoke: "b", track: "B" }, { invoke: "c", track: null }, { invoke: "d", track: "a" },
-  ];
-  eq(filterByTrack(wave, "A").map((n) => n.invoke), ["a", "d"], "track A (case-insensitive), untracked excluded");
-  eq(filterByTrack(wave, null).map((n) => n.invoke), ["a", "b", "c", "d"], "no track → full wave");
-  eq(filterByTrack(wave, "Z").length, 0, "no match → empty");
 });
 
 // ── post-run guardrail: under-parallelization warning for /sync ─────────
@@ -1081,36 +599,6 @@ test("setFields accepts prompt/kickoff_brief/priority and the pre-write gate rej
   validateDocOrThrow(doc); // must not throw
   setFields(doc, { invoke: "x", fields: { priority: { tier: "NOPE" } } });
   throws(() => validateDocOrThrow(doc), "priority.tier", "bad tier caught before write");
-});
-
-// ── bulk_set: all-or-nothing multi-slice edit ────────────────────────────────
-// WHY: bulk edits exist to retag/reprioritize many slices at once; if update 1 lands while
-// update 2's bad field throws, the roadmap is left half-edited and no error explains which half.
-test("bulkSet applies every update through one gate — a bad field aborts before any write", () => {
-  const y = `meta:\n  schema_version: 1\n  program: T\npis:\n  - id: a\n    title: A\n    status: active\n    sprints:\n      - { id: s1, title: S1, status: active, invoke: one }\n      - { id: s2, title: S2, status: next, invoke: two }\n`;
-  const doc = parseDocument(y);
-  const r = bulkSet(doc, { updates: [
-    { invoke: "one", fields: { track: "A", priority: { tier: "P1" } } },
-    { invoke: "two", fields: { track: "A" } },
-  ]});
-  eq(r.updated, ["one", "two"], "both slices updated");
-  validateDocOrThrow(doc);
-  // a bad field ANYWHERE in the batch throws before the caller ever reaches serialize/write
-  throws(() => bulkSet(parseDocument(y), { updates: [
-    { invoke: "one", fields: { track: "B" } },
-    { invoke: "two", fields: { nope: 1 } },
-  ]}), 'field "nope" is not settable', "bad field in update 2 throws (caller writes nothing)");
-  throws(() => bulkSet(parseDocument(y), { updates: [] }), "bulk_set requires", "empty updates rejected");
-});
-
-// WHY: `roadmap set gate=npm test -- --grep x=y` must keep everything after the FIRST '='
-// as the value, and @file / null must reach set_fields with their special semantics intact.
-test("parseAssignments splits on the first '=', marks @file, and passes null through", () => {
-  const [a, b, c] = parseAssignments(["gate=npm test -- --grep x=y", "prompt=@notes.md", "track=null"]);
-  eq(a, { field: "gate", raw: "npm test -- --grep x=y" }, "value keeps embedded '='");
-  eq(b, { field: "prompt", fromFile: "notes.md" }, "@path marks read-from-file");
-  eq(c, { field: "track", raw: "null" }, "null passes through raw (YAML.parse → delete)");
-  throws(() => parseAssignments(["notanassignment"]), "expected field=value", "missing '=' rejected");
 });
 
 // ── backlog: validation + mutations ──────────────────────────────────────────
@@ -1238,96 +726,6 @@ test("renderMarkdown emits the backlog pointer only when opts.backlog is given",
   ok(!renderMarkdown(g).includes("**Backlog:**"), "no opts → no pointer line");
 });
 
-// ── promote: backlog item → roadmap sprint ────────────────────────────────────
-// WHY: promote spans two files — a promoted sprint that drops the prompt/priority loses the
-// author's context, and a missing back-link orphans the item's history. Both must carry.
-test("performPromotion creates a scheduled sprint carrying prompt/priority/touches and back-links promoted_to", () => {
-  const rDoc = parseDocument(`meta:\n  schema_version: 1\n  program: T\npis:\n  - id: auth\n    title: Auth\n    status: active\n    sprints:\n      - { id: s2, title: Old, status: complete, invoke: old }\n`);
-  const bDoc = parseDocument(`meta:\n  schema_version: 1\nitems:\n  - id: fix-x\n    title: Fix X\n    kind: bug\n    status: open\n    priority: { tier: P1, weight: 70 }\n    touches: [src/x.ts]\n    est_sessions: 0.5\n    prompt: repro then fix\n`);
-  const r = performPromotion(rDoc, bDoc, { id: "fix-x", pi: "auth" });
-  eq(r, { promoted: "fix-x", to: "auth/s3" }, "auto sprint id = next free sN");
-  validateDocOrThrow(rDoc);
-  validateBacklogDocOrThrow(bDoc);
-  const sp3 = rDoc.toJS().pis[0].sprints[1];
-  eq(sp3.invoke, "fix-x", "item id becomes the invoke key");
-  eq(sp3.status, "scheduled", "lands scheduled, not active");
-  eq(sp3.prompt, "repro then fix", "prompt carries");
-  eq(sp3.priority.tier, "P1", "priority carries");
-  eq(sp3.touches, ["src/x.ts"], "touches carry");
-  const item = bDoc.toJS().items[0];
-  eq(item.status, "promoted", "item marked promoted");
-  eq(item.promoted_to, "auth/s3", "back-link recorded");
-});
-
-// WHY: the item id becomes the invoke key — a collision with an existing slice would make
-// /slice ambiguous; the pre-write gate must reject it so neither file is written.
-test("performPromotion is rejected by the pre-write gate when the item id collides with an existing invoke", () => {
-  const rDoc = parseDocument(`meta:\n  schema_version: 1\n  program: T\npis:\n  - id: auth\n    title: Auth\n    status: active\n    sprints:\n      - { id: s1, title: A, status: active, invoke: fix-x }\n`);
-  const bDoc = parseDocument(`meta:\n  schema_version: 1\nitems:\n  - { id: fix-x, title: Fix X, kind: bug, status: open }\n`);
-  performPromotion(rDoc, bDoc, { id: "fix-x", pi: "auth" });
-  throws(() => validateDocOrThrow(rDoc), "duplicate invoke", "gate rejects the collision (mutateBoth writes nothing)");
-  throws(() => performPromotion(parseDocument("meta:\n  schema_version: 1\nitems: []"), bDoc, { id: "nope", pi: "auth" }),
-    "no backlog item", "unknown item rejected");
-  const doneB = parseDocument(`meta:\n  schema_version: 1\nitems:\n  - { id: d1, title: D, kind: bug, status: done }\n`);
-  throws(() => performPromotion(rDoc, doneB, { id: "d1", pi: "auth" }), "only open/in_progress", "closed items don't promote");
-});
-
-// WHY: promoting a mapped item must TRANSFER its Linear issue to the sprint — leaving it
-// on the item orphans an open issue on the board and double-maps the identifier.
-test("performPromotion transfers the item's Linear issue to the sprint", () => {
-  const rDoc = parseDocument(`meta:\n  schema_version: 1\n  program: T\npis:\n  - id: auth\n    title: Auth\n    status: active\n    sprints:\n      - { id: s1, title: Old, status: complete, invoke: old }\n`);
-  const bDoc = parseDocument(`meta:\n  schema_version: 1\nitems:\n  - { id: fix-z, title: Fix Z, kind: bug, status: open, linear: PID-42 }\n`);
-  performPromotion(rDoc, bDoc, { id: "fix-z", pi: "auth" });
-  const sprint = rDoc.toJS().pis[0].sprints[1];
-  eq(sprint.linear, "PID-42", "issue identifier rides onto the sprint");
-  const item = bDoc.toJS().items[0];
-  eq(item.linear, undefined, "item releases the mapping");
-  eq(item.promoted_to, "auth/s2", "back-link intact");
-  validateDocOrThrow(rDoc); validateBacklogDocOrThrow(bDoc);
-});
-
-// WHY: the transferred issue must MORPH on the next sync — slice-form description, kind
-// label dropped, and attached to the PI's project — or the board shows a stale backlog card.
-test("buildPushPlan morphs a transferred issue: description + labels + projectId in one update", () => {
-  const g = {
-    meta: { schema_version: 1, program: "T", linear: { team: "ENG" } },
-    pis: [{ id: "auth", title: "Authentication", status: "active", linear: { project: "proj-1" }, sprints: [
-      { id: "s2", title: "Fix Z", status: "scheduled", invoke: "fix-z", linear: "PID-42" },
-    ]}],
-  };
-  const cfg = normalizeLinearConfig(g.meta);
-  const itemForm = { // the issue as it looked while it was a backlog item
-    id: "uuid-42", title: "Fix Z", priority: 0, stateId: "st-b", projectId: null, labelIds: ["l-mark", "l-kindbug"],
-    description: issueDescription({ invoke: "fix-z", title: "Fix Z", what: "Fix Z", kind: "bug" }, cfg, { target: { type: "backlog", key: "fix-z" } }),
-  };
-  const morphStates = [
-    { id: "st-b", name: "Backlog", type: "backlog", position: 0 },
-    { id: "st-s", name: "In Progress", type: "started", position: 1 },
-    { id: "st-c", name: "Done", type: "completed", position: 2 },
-  ];
-  const plan = buildPushPlan({ graph: g, backlog: null, cfg, teamStates: morphStates,
-    existing: { projects: { "proj-1": { id: "proj-1", name: "Authentication", description: "" } }, issues: { "PID-42": itemForm } },
-    labels: { roadmap: "l-mark", "kind:bug": "l-kindbug" } });
-  const upd = plan.ops.find((o) => o.op === "updateIssue");
-  ok(upd, "one morph update");
-  ok(upd.payload.description.includes("roadmap: slice=fix-z"), "description morphs to slice form");
-  eq(upd.payload.labelIds, ["l-mark"], "kind label dropped, marker kept");
-  eq(upd.payload.projectId, "proj-1", "attached to the PI's project");
-});
-
-// WHY: the MCP registry is the agent-facing contract — every backlog tool must be listed
-// with a schema or agents can't call it, and the combined registry must stay well-formed.
-test("BACKLOG_TOOLS registry is well-formed and covers list/add/set/promote", () => {
-  const names = BACKLOG_TOOLS.map((t) => t.name);
-  eq(names, ["backlog_list", "backlog_add", "backlog_set", "backlog_promote"], "all four tools");
-  for (const t of BACKLOG_TOOLS) {
-    ok(t.description && t.inputSchema && t.inputSchema.type === "object", `${t.name} has description + object schema`);
-  }
-  const combined = [...TOOLS.map((t) => t.name), ...names];
-  eq(new Set(combined).size, combined.length, "no name collisions with the roadmap tools");
-  ok(combined.length >= 14, "14+ tools after the expansion");
-});
-
 // ── disk ceiling ──────────────────────────────────────────────────────────────
 // WHY: a fanout that exceeds free disk fails mid-checkout with worktrees half-created.
 // The ceiling must bind when it's the smallest, report cap 0 as the hard-block signal
@@ -1410,227 +808,6 @@ test("probeReviewDebt degrades to 0 when gh/git can't answer (guarded)", () => {
   eq(probeReviewDebt("/nonexistent-dir-for-roadmap-test", { meta: {} }), 0, "unprobeable → 0, never throws");
 });
 
-// ── store.mjs: the file-write-ordering / rollback guarantees (fs-backed) ──────
-// WHY: store.mjs is the one place with data-loss blast radius — every mutating surface
-// routes through it. If a thrown validation still wrote a file, or promote wrote one file
-// of two, the "validate before write" contract is a lie the unit tests above can't catch.
-function tempRepo() {
-  const root = mkdtempSync(join(tmpdir(), "roadmap-store-test-"));
-  mkdirSync(join(root, "docs", "roadmap"), { recursive: true });
-  writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"),
-    `meta:\n  schema_version: 1\n  program: T\npis:\n  - id: a\n    title: A\n    status: active\n    sprints:\n      - { id: s1, title: S, status: active, invoke: taken }\n`, "utf8");
-  return root;
-}
-
-test("mutateRoadmap leaves roadmap.yaml byte-identical when the mutation or gate throws", () => {
-  const root = tempRepo();
-  const yamlPath = join(root, "docs", "roadmap", "roadmap.yaml");
-  const before = readFileSync(yamlPath, "utf8");
-  throws(() => mutateRoadmap(root, () => { throw new Error("boom"); }), "boom", "fn throw propagates");
-  eq(readFileSync(yamlPath, "utf8"), before, "fn throw → file untouched");
-  throws(() => mutateRoadmap(root, (doc) => setFields(doc, { invoke: "taken", fields: { priority: { tier: "NOPE" } } })),
-    "priority.tier", "pre-write gate throw propagates");
-  eq(readFileSync(yamlPath, "utf8"), before, "gate throw → file untouched, no SLICES rendered");
-  ok(!existsSync(join(root, "docs", "SLICES.md")), "no SLICES.md written on failure");
-  rmSync(root, { recursive: true, force: true });
-});
-
-test("mutateBoth writes NEITHER file when the second validation throws (promote collision)", () => {
-  const root = tempRepo();
-  const rPath = join(root, "docs", "roadmap", "roadmap.yaml");
-  const bPath = join(root, "docs", "roadmap", "backlog.yaml");
-  // an item whose id collides with the existing invoke "taken" → roadmap gate rejects
-  writeFileSync(bPath, `meta:\n  schema_version: 1\nitems:\n  - { id: taken, title: Collides, kind: bug, status: open }\n`, "utf8");
-  const rBefore = readFileSync(rPath, "utf8");
-  const bBefore = readFileSync(bPath, "utf8");
-  throws(() => mutateBoth(root, (rDoc, bDoc) => performPromotion(rDoc, bDoc, { id: "taken", pi: "a" })),
-    "duplicate invoke", "collision rejected");
-  eq(readFileSync(rPath, "utf8"), rBefore, "roadmap.yaml untouched");
-  eq(readFileSync(bPath, "utf8"), bBefore, "backlog.yaml untouched (validated-both-before-either held)");
-  // and the success path writes both + both renders
-  const r = mutateBoth(root, (rDoc, bDoc) => {
-    addItem(bDoc, { title: "ok item", id: "okid", kind: "chore" });
-    return performPromotion(rDoc, bDoc, { id: "okid", pi: "a" });
-  });
-  eq(r.to, "a/s2", "promoted into the next free sprint id");
-  ok(readFileSync(rPath, "utf8").includes("okid"), "roadmap gained the sprint");
-  ok(existsSync(join(root, "docs", "BACKLOG.md")) && existsSync(join(root, "docs", "SLICES.md")), "both views rendered");
-  rmSync(root, { recursive: true, force: true });
-});
-
-test("mutateBacklog createIfMissing bootstraps a block-style backlog.yaml and the SLICES pointer", () => {
-  const root = tempRepo();
-  const bPath = join(root, "docs", "roadmap", "backlog.yaml");
-  throws(() => mutateBacklog(root, (doc) => addItem(doc, { title: "x" })), "no docs/roadmap/backlog.yaml",
-    "without createIfMissing a missing file is an error, not a silent create");
-  const r = mutateBacklog(root, (doc) => addItem(doc, { title: "first capture", kind: "bug" }), { createIfMissing: true });
-  eq(r.added, "b1", "auto-id from an empty file");
-  const src = readFileSync(bPath, "utf8");
-  ok(/items:\n  - id: b1/.test(src), "block style from birth (not flow)");
-  ok(readFileSync(join(root, "docs", "SLICES.md"), "utf8").includes("**Backlog:** 1 open item(s)"),
-    "backlog mutation refreshes the SLICES.md open-count pointer");
-  rmSync(root, { recursive: true, force: true });
-});
-
-// WHY: appending onto a damaged backlog compounds the damage — the new entry
-// lands after a stub that will absorb IT on the next merge. The gate must
-// refuse the mutation with the specific findings so the caller can fix or
-// acknowledge.
-test("mutateBacklog refuses to append onto a backlog carrying collision damage", () => {
-  const root = tempRepo();
-  const bPath = join(root, "docs", "roadmap", "backlog.yaml");
-  const damaged = `meta:\n  schema_version: 1\nitems:\n  - id: b1\n    title: real\n    kind: bug\n    status: open\n  - id: b2\n  - id: b3\n    title: neighbour\n    kind: bug\n    status: open\n`;
-  writeFileSync(bPath, damaged, "utf8");
-  const originalSrc = readFileSync(bPath, "utf8");
-  let caught = null;
-  try {
-    mutateBacklog(root, (doc) => addItem(doc, { title: "new" }));
-  } catch (e) {
-    caught = e;
-  }
-  ok(caught, "the mutation threw");
-  eq(caught.code, "DAMAGED_BACKLOG", "the refusal carries a stable code");
-  ok(caught.findings.some((f) => f.code === "STUB_ENTRY" && f.id === "b2"),
-    "the finding attributes the damage to the specific stub id");
-  eq(readFileSync(bPath, "utf8"), originalSrc,
-    "a refused mutation leaves the file byte-identical (no partial write)");
-  rmSync(root, { recursive: true, force: true });
-});
-
-// WHY: the ONE legitimate case for bypassing the audit is a REPAIR mutation
-// — the caller wants to read the damaged file so they can fix it. The audit
-// gate must let them through; the parsed-object validator downstream still
-// catches whatever the mutation didn't repair, so the escape doesn't lower
-// the overall correctness bar.
-test("mutateBacklog appends anyway when acknowledgeDamage:true (used for repair mutations)", () => {
-  const root = tempRepo();
-  const bPath = join(root, "docs", "roadmap", "backlog.yaml");
-  // A MALFORMED_ID sits at the audit gate — INFO for the audit, but the
-  // gating check is disabled by acknowledgeDamage. In practice the caller
-  // uses this to append onto a file that also carries harder damage the
-  // mutation itself is repairing; that case belongs to the repair-tool tests
-  // (not here), because at THIS layer the parsed-object validator would
-  // rightly refuse an unfixed structural break.
-  const withInfoOnly = `meta:\n  schema_version: 1\nitems:\n  - id: fix-x\n    title: legal custom slug\n    kind: bug\n    status: open\n`;
-  writeFileSync(bPath, withInfoOnly, "utf8");
-  const r = mutateBacklog(root, (doc) => addItem(doc, { title: "under acknowledge", kind: "bug" }), { acknowledgeDamage: true });
-  ok(r.added, "the mutation succeeded past the audit — parsed-object validator then runs as usual");
-  rmSync(root, { recursive: true, force: true });
-});
-
-// WHY: environment override is the CI-safe escape hatch — a repair script or
-// data migration should not have to thread `acknowledgeDamage: true` through
-// every downstream helper.
-test("mutateBacklog honors ROADMAP_ACKNOWLEDGE_DAMAGE=1 in the environment", () => {
-  const root = tempRepo();
-  const bPath = join(root, "docs", "roadmap", "backlog.yaml");
-  // Real gating shape: a duplicate id. Without the env override the audit
-  // refuses; with it, the mutation proceeds and the parsed-object validator
-  // catches the same duplicate downstream (which is the correct final gate).
-  const damaged = `meta:\n  schema_version: 1\nitems:\n  - id: b1\n    title: one\n    kind: bug\n    status: open\n  - id: b1\n    title: two\n    kind: bug\n    status: open\n`;
-  writeFileSync(bPath, damaged, "utf8");
-  const prev = process.env.ROADMAP_ACKNOWLEDGE_DAMAGE;
-  process.env.ROADMAP_ACKNOWLEDGE_DAMAGE = "1";
-  try {
-    throws(
-      () => mutateBacklog(root, (doc) => addItem(doc, { title: "via env", kind: "bug" })),
-      "duplicate backlog id",
-      "the env override bypasses the audit but the parsed-object validator still refuses (correctness gate is not lowered)",
-    );
-  } finally {
-    if (prev == null) delete process.env.ROADMAP_ACKNOWLEDGE_DAMAGE;
-    else process.env.ROADMAP_ACKNOWLEDGE_DAMAGE = prev;
-  }
-  // Same fixture WITHOUT the env override: refuses at the audit with a much
-  // better line-attributed message, before ever reaching yaml.parseDocument.
-  let refusal = null;
-  try {
-    mutateBacklog(root, (doc) => addItem(doc, { title: "no env", kind: "bug" }));
-  } catch (e) {
-    refusal = e;
-  }
-  eq(refusal && refusal.code, "DAMAGED_BACKLOG", "without the env override, the audit gate names the shape");
-  rmSync(root, { recursive: true, force: true });
-});
-
-// WHY: createIfMissing bootstraps an EMPTY_BACKLOG that is by construction
-// clean — it must not trip the gate (which would make the very first capture
-// impossible on a repo that adopts the backlog).
-test("mutateBacklog createIfMissing skips the damage gate on the empty bootstrap", () => {
-  const root = tempRepo();
-  // No backlog.yaml exists yet.
-  const r = mutateBacklog(root, (doc) => addItem(doc, { title: "first ever", kind: "bug" }), { createIfMissing: true });
-  eq(r.added, "b1", "clean bootstrap");
-  rmSync(root, { recursive: true, force: true });
-});
-
-// WHY: MALFORMED_ID is INFO (custom slugs are legal); the gate must not
-// refuse a mutation onto a backlog that carries them, or every repo using
-// non-bNNN ids would be dead-locked.
-test("mutateBacklog does NOT gate on MALFORMED_ID findings alone (custom slugs are legal)", () => {
-  const root = tempRepo();
-  const bPath = join(root, "docs", "roadmap", "backlog.yaml");
-  writeFileSync(bPath, `meta:\n  schema_version: 1\nitems:\n  - id: fix-x\n    title: a custom slug\n    kind: bug\n    status: open\n`, "utf8");
-  const r = mutateBacklog(root, (doc) => addItem(doc, { title: "add on top", kind: "bug" }));
-  ok(r.added, "the mutation succeeded despite a MALFORMED_ID finding");
-  rmSync(root, { recursive: true, force: true });
-});
-
-// WHY: adopting the audit shouldn't lock a repo out of its own backlog. If
-// a repo pins its pre-existing damage in meta.audit.known_damage, the gate
-// respects that pin and lets `roadmap backlog add` work. New damage
-// (signatures not in the baseline) still refuses — the tolerance is
-// specific, not blanket.
-test("mutateBacklog respects meta.audit.known_damage — a pinned finding lets the audit gate pass (object validator remains final)", () => {
-  const root = tempRepo();
-  const bPath = join(root, "docs", "roadmap", "backlog.yaml");
-  // The pin authorizes the AUDIT layer to skip STUB_ENTRY:b2. Without the
-  // pin, the audit refuses first with a DamagedBacklogError. With it, the
-  // audit passes and the parsed-object validator runs — which then throws
-  // its own specific error (b2 missing title). That is BY DESIGN: the pin
-  // grandfathers the audit's tolerance, NOT the object validator's; the
-  // final correctness gate is not lowered.
-  writeFileSync(bPath,
-    `meta:\n  schema_version: 1\n  audit:\n    known_damage:\n      - STUB_ENTRY:b2\nitems:\n  - id: b1\n    title: real\n    kind: bug\n    status: open\n  - id: b2\n`,
-    "utf8");
-  let caught = null;
-  try {
-    mutateBacklog(root, (doc) => addItem(doc, { title: "captured", kind: "bug" }));
-  } catch (e) { caught = e; }
-  ok(caught, "the mutation refused — but at the object validator, not the audit");
-  ok(!(caught.code === "DAMAGED_BACKLOG"),
-    "specifically NOT a DamagedBacklogError — the audit passed thanks to the pin");
-  ok(caught.message.includes("title required") || caught.message.includes("b2"),
-    "the refusal now comes from validateBacklogDocOrThrow, which sees the same b2 missing its title");
-  rmSync(root, { recursive: true, force: true });
-});
-
-// WHY: the pin is SPECIFIC — pinning STUB_ENTRY:b2 must not implicitly
-// tolerate STUB_ENTRY:b9 or DUPLICATE_ID:b2. A repo adopts the audit for
-// the SPECIFIC damage it's grandfathering; new damage of ANY shape still
-// refuses.
-test("mutateBacklog still refuses on NEW damage even when other damage is pinned", () => {
-  const root = tempRepo();
-  const bPath = join(root, "docs", "roadmap", "backlog.yaml");
-  // Pin a specific DUPLICATE_ID:b1, but the file ALSO carries a fresh
-  // DUPLICATE_ID:b9 the pin doesn't cover. The refusal must name the
-  // unpinned signature specifically — pinning one shape must not silently
-  // tolerate every shape.
-  writeFileSync(bPath,
-    `meta:\n  schema_version: 1\n  audit:\n    known_damage:\n      - DUPLICATE_ID:b1\nitems:\n  - id: b1\n    title: first\n    kind: bug\n    status: open\n  - id: b1\n    title: duped-known\n    kind: chore\n    status: open\n  - id: b9\n    title: nine\n    kind: bug\n    status: open\n  - id: b9\n    title: duped-unknown\n    kind: chore\n    status: open\n`,
-    "utf8");
-  let caught = null;
-  try {
-    mutateBacklog(root, (doc) => addItem(doc, { title: "should refuse", kind: "bug" }));
-  } catch (e) { caught = e; }
-  ok(caught, "the mutation was refused");
-  ok(caught.findings.some((f) => f.id === "b9" && f.code === "DUPLICATE_ID"),
-    "the refusal names the UNPINNED duplicate (b9), not the pinned one (b1)");
-  ok(!caught.findings.some((f) => f.id === "b1"),
-    "the pinned duplicate is NOT in the active findings — the pin worked for that specific signature");
-  rmSync(root, { recursive: true, force: true });
-});
-
 // ── meta.agent_cmd launch template ────────────────────────────────────────────
 // WHY: the default template MUST reproduce today's claude command byte-for-byte, or every
 // existing roadmap's fanout launches change under people's feet; and a custom template must
@@ -1648,15 +825,6 @@ test("agentCmdFor default byte-equals the current claude command; custom templat
 });
 
 // ── linear-core: detection + config + backward compat ────────────────────────
-const L_STATES = [
-  { id: "st-b", name: "Backlog", type: "backlog", position: 0 },
-  { id: "st-u", name: "Todo", type: "unstarted", position: 1 },
-  { id: "st-s", name: "In Progress", type: "started", position: 2 },
-  { id: "st-s2", name: "Blocked", type: "started", position: 3 },
-  { id: "st-c", name: "Done", type: "completed", position: 4 },
-  { id: "st-x", name: "Canceled", type: "canceled", position: 5 },
-];
-const L_CFG = normalizeLinearConfig({ linear: { team: "ENG" } });
 
 // WHY: a repo without meta.linear must behave byte-identically to v0.2 — a Linear feature
 // that leaks into unconfigured repos (a probe, a branch change, a render diff) breaks everyone.
@@ -1721,599 +889,6 @@ test("machineFooter renders the docs URL in Linear's stored auto-link form (roun
   ok(f.endsWith(`[${url}](<${url}>)`), "full URL wrapped as [url](<url>)");
   // no docsUrl → relative path, which Linear does NOT auto-link → stays bare (no brackets)
   ok(machineFooter({ type: "slice", key: "auth-sessions" }, null).endsWith("\ndocs/SLICES.md#auth-sessions"), "relative path stays bare");
-});
-
-// ── linear-core: push plan ────────────────────────────────────────────────────
-const pushGraph = (over = {}) => ({
-  meta: { schema_version: 1, program: "T", linear: { team: "ENG", ...over } },
-  pis: [
-    { id: "auth", title: "Authentication", status: "active", linear: { project: "proj-1" }, sprints: [
-      { id: "s1", title: "Login", status: "active", invoke: "auth-login", linear: "ENG-1" },
-      { id: "s2", title: "Tokens", status: "scheduled", invoke: "auth-tokens" },
-      { id: "s3", title: "Old", status: "complete", invoke: "auth-old" },
-    ]},
-  ],
-});
-const SNAP = (loginOverrides = {}) => ({
-  projects: { "proj-1": { id: "proj-1", name: "Authentication" } },
-  issues: { "ENG-1": { id: "uuid-1", title: "Login",
-    description: issueDescription({ invoke: "auth-login", title: "Login", what: "Login", gate: "default", estSessions: null, priority: null }, L_CFG, { target: { type: "slice", key: "auth-login" } }),
-    priority: 0, stateId: "st-s", projectId: "proj-1", ...loginOverrides } },
-});
-
-// WHY: a non-idempotent push spams duplicate issues/updates on every /sync — a matching
-// snapshot must produce ZERO ops, and one changed field exactly one update.
-test("buildPushPlan is idempotent: matching snapshot → only the missing-issue create; changed title → one update", () => {
-  const cfg = normalizeLinearConfig(pushGraph().meta);
-  const plan = buildPushPlan({ graph: pushGraph(), backlog: null, cfg, teamStates: L_STATES, existing: SNAP() });
-  eq(plan.ops.map((o) => o.op), ["createIssue"], "only the unmapped not-done sprint creates (complete unmapped skipped, mapped unchanged)");
-  eq(plan.ops[0].writeBack, { kind: "sprint", invoke: "auth-tokens" }, "create writes the id back to the sprint");
-  const drifted = buildPushPlan({ graph: pushGraph(), backlog: null, cfg, teamStates: L_STATES, existing: SNAP({ title: "Login (old name)" }) });
-  const upd = drifted.ops.find((o) => o.op === "updateIssue");
-  eq(upd.payload, { title: "Login" }, "only the drifted field is sent");
-  eq(upd.id, "uuid-1", "update targets the Linear uuid");
-});
-
-// WHY: the 2026-07-11 double-sync created every issue TWICE — run 1's PID write-back was lost, so run 2
-// saw !node.linear and re-created all of them (PID-489/491-497 orphaned by hand). Adopting an unambiguous
-// same-title twin instead of blindly creating is THE guard; if it regresses, a lost write-back silently
-// duplicates the whole board again.
-test("buildPushPlan adopts an unambiguous same-title twin instead of creating a duplicate", () => {
-  const cfg = normalizeLinearConfig(pushGraph().meta);
-  const existing = { ...SNAP(), byTitle: { [normalizeTitle("Tokens")]: [{ id: "uuid-tok", identifier: "PID-77" }] } };
-  const plan = buildPushPlan({ graph: pushGraph(), backlog: null, cfg, teamStates: L_STATES, existing });
-  ok(!plan.ops.some((o) => o.op === "createIssue"), "no duplicate create for the twinned slice");
-  const adopt = plan.ops.find((o) => o.op === "adoptIssue");
-  ok(adopt, "the unmapped slice adopts its existing twin");
-  eq(adopt.id, "uuid-tok", "adopt targets the twin's Linear uuid");
-  eq(adopt.identifier, "PID-77", "adopt carries the twin's identifier (write-back + per-op error context)");
-  eq(adopt.writeBack, { kind: "sprint", invoke: "auth-tokens" }, "adopt writes the identifier back onto the slice");
-  eq(adopt.payload.title, "Tokens", "adopt reconciles the twin to our projection (title/desc/state/…)");
-});
-
-// WHY: two issues share a title → we cannot know WHICH is the real twin; adopting one would hijack an
-// unrelated issue. Ambiguity MUST fall back to create — the guard never guesses.
-test("buildPushPlan does not adopt an ambiguous (>1) same-title cluster — falls back to create", () => {
-  const cfg = normalizeLinearConfig(pushGraph().meta);
-  const existing = { ...SNAP(), byTitle: { [normalizeTitle("Tokens")]: [
-    { id: "uuid-a", identifier: "PID-77" }, { id: "uuid-b", identifier: "PID-78" } ] } };
-  const plan = buildPushPlan({ graph: pushGraph(), backlog: null, cfg, teamStates: L_STATES, existing });
-  ok(!plan.ops.some((o) => o.op === "adoptIssue"), "ambiguous cluster is never adopted");
-  eq(plan.ops.map((o) => o.op), ["createIssue"], "falls back to the ordinary create");
-});
-
-// WHY: a genuinely-new slice (title matches no twin) must still create — the guard must not suppress
-// legitimate creates or the board would never grow.
-test("buildPushPlan still creates when no twin shares the title (regression guard)", () => {
-  const cfg = normalizeLinearConfig(pushGraph().meta);
-  const existing = { ...SNAP(), byTitle: { [normalizeTitle("Something else")]: [{ id: "uuid-z", identifier: "PID-99" }] } };
-  const plan = buildPushPlan({ graph: pushGraph(), backlog: null, cfg, teamStates: L_STATES, existing });
-  ok(!plan.ops.some((o) => o.op === "adoptIssue"), "no twin → no adopt");
-  eq(plan.ops.map((o) => o.op), ["createIssue"], "ordinary create for the unmapped slice");
-});
-
-// ── linear-core: per-PI verbosity ─────────────────────────────────────────────
-// WHY: a silently-ignored per-PI verbosity override makes the board lie about detail level —
-// the user quiets a noisy PI to title (or richens an active one to full) and nothing changes.
-test("per-PI verbosity overrides the global for that PI's issues only", () => {
-  const g = { meta: { schema_version: 1, program: "T", linear: { team: "ENG", verbosity: "title" } },
-    pis: [
-      { id: "loud", title: "Loud", status: "active", linear: { project: "proj-1", verbosity: "brief" }, sprints: [
-        { id: "s1", title: "A", status: "next", invoke: "loud-a", what: "does a thing", gate: "gate a" } ]},
-      { id: "quiet", title: "Quiet", status: "active", linear: { project: "proj-2" }, sprints: [
-        { id: "s1", title: "B", status: "next", invoke: "quiet-b", what: "does b", gate: "gate b" } ]},
-    ]};
-  const cfg = normalizeLinearConfig(g.meta);
-  eq(effectiveVerbosity(cfg, g.pis[0]), "brief", "per-PI verbosity wins");
-  eq(effectiveVerbosity(cfg, g.pis[1]), "title", "no override → global");
-  const existing = { projects: { "proj-1": { id: "proj-1", name: "Loud" }, "proj-2": { id: "proj-2", name: "Quiet" } }, issues: {} };
-  const plan = buildPushPlan({ graph: g, backlog: null, cfg, teamStates: L_STATES, existing });
-  const desc = Object.fromEntries(plan.ops.filter((o) => o.op === "createIssue").map((o) => [o.writeBack.invoke, o.payload.description]));
-  ok(desc["loud-a"].includes("Gate: gate a"), "overridden PI carries brief detail (what + gate)");
-  ok(!desc["quiet-b"].includes("Gate"), "global-title PI stays footer-only");
-});
-
-// WHY: an unacked per-PI override is how two sessions diverge on what Linear shows — verbosity
-// must gate through the SAME ack as granularity, and validate must flag the stored mismatch.
-test("verbosity override is ack-gated and validate flags invalid/differing values", () => {
-  const globalCfg = normalizeLinearConfig({ linear: { team: "ENG" } });   // verbosity default brief
-  throws(() => checkPiOverrideAck(globalCfg, { verbosity: "title" }, false, "x"), 'overrides Linear verbosity ("title")');
-  checkPiOverrideAck(globalCfg, { verbosity: "title" }, true, "x");   // acked → passes
-  checkPiOverrideAck(globalCfg, { verbosity: "brief" }, false, "x");  // matches global → no ack needed
-  const g = { meta: { schema_version: 1, program: "T", linear: { team: "ENG" } }, pis: [
-    { id: "bad", title: "B", status: "active", linear: { verbosity: "loud" }, sprints: [{ id: "s1", title: "A", status: "next", invoke: "bad-a" }] },
-    { id: "diff", title: "D", status: "active", linear: { verbosity: "full" }, sprints: [{ id: "s1", title: "A", status: "next", invoke: "diff-a" }] },
-  ]};
-  const v = validateLinearConfig(g);
-  ok(v.errors.some((e) => e.includes('linear.verbosity "loud"')), "invalid per-PI verbosity is an error");
-  ok(v.warnings.some((w) => w.includes("PI diff") && w.includes("verbosity")), "differing per-PI verbosity warns (override in effect)");
-});
-
-// WHY: a "." inside an abbreviation ended the derived subtitle mid-parenthetical — the one line
-// humans read on the project card shipped as "…DB (incl." on a live board and read as truncation.
-test("firstSentence-derived subtitle survives abbreviations (incl., e.g.) and still splits real sentences", () => {
-  const pi = { id: "net", title: "Live Network", exit_criteria: "Flock deterministically seeds every node DB (incl. Bridge sidecars) on turnkey hosts. Second sentence here." };
-  eq(projectSubtitleRaw(pi), "Flock deterministically seeds every node DB (incl. Bridge sidecars) on turnkey hosts.", "abbreviation does not end the sentence; the real period does");
-  const eg = { id: "x", title: "X", exit_criteria: "Covers hosts (e.g. approved VMs) end to end. More detail." };
-  eq(projectSubtitleRaw(eg), "Covers hosts (e.g. approved VMs) end to end.", "e.g. survives too");
-  const noEnd = { id: "y", title: "Y", exit_criteria: "Ends on an abbreviation incl." };
-  eq(projectSubtitleRaw(noEnd), "Ends on an abbreviation incl.", "no real sentence end → whole line, never empty");
-});
-
-// ── linear-core: horizon gate ─────────────────────────────────────────────────
-// WHY: the untiered future mass is what floods the board (live: 50 of 92 issues were far-future
-// backlog-state) — "near" must stop NEW scheduled/optionality issues while committed/held work
-// still projects, mapped far-future issues keep updating, and the absent knob stays byte-identical.
-test("horizon near: gates new far-future issues, keeps mapped ones updating, default unchanged", () => {
-  const g = (horizon) => ({ meta: { schema_version: 1, program: "T", linear: { team: "ENG", ...(horizon ? { horizon } : {}) } },
-    pis: [{ id: "p", title: "P", status: "active", linear: { project: "proj-1" }, sprints: [
-      { id: "s1", title: "Sched", status: "scheduled", invoke: "sched" },
-      { id: "s2", title: "Opt", status: "optionality", invoke: "opt" },
-      { id: "s3", title: "Next", status: "next", invoke: "nxt" },
-      { id: "s4", title: "Gated", status: "gated", invoke: "gtd" },
-      { id: "s5", title: "Mapped sched", status: "scheduled", invoke: "mapped", linear: "ENG-7" },
-    ]}]});
-  const existing = { projects: { "proj-1": { id: "proj-1", name: "P" } }, issues: {
-    "ENG-7": { id: "u7", title: "OLD NAME", description: "", priority: 0, stateId: "st-b", projectId: "proj-1", labelIds: [] } } };
-  const near = buildPushPlan({ graph: g("near"), backlog: null, cfg: normalizeLinearConfig(g("near").meta), teamStates: L_STATES, existing });
-  const creates = near.ops.filter((o) => o.op === "createIssue").map((o) => o.writeBack.invoke).sort();
-  eq(creates, ["gtd", "nxt"], "near creates only committed/held work — scheduled/optionality stay YAML-only");
-  const upd = near.ops.find((o) => o.op === "updateIssue" && o.identifier === "ENG-7");
-  eq(upd.payload.title, "Mapped sched", "an already-mapped far-future issue still updates (create-side gate only)");
-  const all = buildPushPlan({ graph: g(null), backlog: null, cfg: normalizeLinearConfig(g(null).meta), teamStates: L_STATES, existing });
-  eq(all.ops.filter((o) => o.op === "createIssue").length, 4, "absent knob (default all) → every not-done slice creates, byte-identical to before");
-  const v = validateLinearConfig({ meta: { schema_version: 1, program: "T", linear: { team: "ENG", horizon: "soon" } }, pis: [] });
-  ok(v.errors.some((e) => e.includes('horizon "soon"')), "invalid horizon blocks at validate");
-});
-
-// ── linear-core: done history ─────────────────────────────────────────────────
-// WHY: history is what makes a project's progress % real (completed/total inside the project) —
-// "off" must stay byte-identical (no Done-issue noise for existing users), "full" must project
-// shipped work as completed issues carrying the true completion date, "window" must honor
-// meta.completed_window_days, and a shipped PI's project must be created AND populated.
-test("history knob: off skips done work, full projects it Done with completedAt, window honors the meta knob", () => {
-  const g = (history) => ({ meta: { schema_version: 1, program: "T", completed_window_days: 7, linear: { team: "ENG", ...(history ? { history } : {}) } },
-    pis: [{ id: "shipped", title: "Shipped", status: "complete", sprints: [
-      { id: "s1", title: "Old", status: "complete", invoke: "old", completed_on: "2026-07-01" },
-      { id: "s2", title: "Ancient", status: "complete", invoke: "ancient", completed_on: "2026-06-01" },
-      { id: "s3", title: "Undated", status: "complete", invoke: "undated" },
-    ]}]});
-  const NOW = "2026-07-05T12:00:00Z";
-  const empty = { projects: {}, issues: {} };
-  const mk = (history) => buildPushPlan({ graph: g(history), backlog: null, cfg: normalizeLinearConfig(g(history).meta), teamStates: L_STATES, existing: empty, now: NOW });
-  // off (default): the fully-shipped PI earns neither project nor issues — byte-identical to before
-  eq(mk(null).ops.length, 0, "history off → a fully-shipped PI stays off the board entirely");
-  // full: project created AND populated with Done issues carrying completedAt
-  const full = mk("full");
-  eq(full.ops.filter((o) => o.op === "createProject").length, 1, "full → the shipped PI's project is created");
-  const creates = full.ops.filter((o) => o.op === "createIssue");
-  eq(creates.map((o) => o.writeBack.invoke).sort(), ["ancient", "old", "undated"], "full → every done slice projects");
-  const old = creates.find((o) => o.writeBack.invoke === "old");
-  eq(old.payload.stateId, "st-c", "done slice lands in the completed state");
-  eq(old.payload.completedAt, "2026-07-01", "true completion date rides the create");
-  ok(!("completedAt" in creates.find((o) => o.writeBack.invoke === "undated").payload), "no completed_on → no completedAt field");
-  // window: 7-day meta knob — old (4 days ago) inside, ancient (34 days) and undated outside
-  const win = mk("window");
-  eq(win.ops.filter((o) => o.op === "createIssue").map((o) => o.writeBack.invoke), ["old"], "window honors meta.completed_window_days, undated never resurrects");
-  // pin the inclusive boundary: exactly N days ago is inside; 1ms older is outside
-  const wcfg = normalizeLinearConfig({ linear: { team: "ENG", history: "window" } });
-  ok(withinHistory(wcfg, { completedOn: "2026-06-28T12:00:00Z" }, { completed_window_days: 7 }, NOW), "exact 7-day boundary is inside (<=)");
-  ok(!withinHistory(wcfg, { completedOn: "2026-06-28T11:59:59.999Z" }, { completed_window_days: 7 }, NOW), "1ms past the boundary is outside");
-  const v = validateLinearConfig({ meta: { schema_version: 1, program: "T", linear: { team: "ENG", history: "always" } }, pis: [] });
-  ok(v.errors.some((e) => e.includes('history "always"')), "invalid history value blocks at validate");
-});
-
-// ── cycle-core: the election ──────────────────────────────────────────────────
-// WHY: the capacity cap IS the discipline — packing past it, silently packing unpriced work, or
-// proposing blocked/held work puts unstartable or unbounded commitments in the week; and the
-// lock must be one validated write, not a hand-edit that skips the store's gates.
-test("electionPlan: committed-first capacity, strict priority prefix, unestimated never packed, held/blocked never candidates", () => {
-  const g = { meta: { schema_version: 1, program: "T", linear: { team: "ENG", cycles: "on" } },
-    pis: [{ id: "p", title: "P", status: "active", sprints: [
-      { id: "s1", title: "Committed", status: "active", invoke: "committed", est_sessions: 3 },
-      { id: "s2", title: "Next up", status: "next", invoke: "nextup", est_sessions: 2 },
-      { id: "s3", title: "Small P1", status: "scheduled", invoke: "small", est_sessions: 2, priority: { tier: "P1" } },
-      { id: "s4", title: "Big P0", status: "scheduled", invoke: "big", est_sessions: 9, priority: { tier: "P0" } },
-      { id: "s5", title: "Unpriced", status: "scheduled", invoke: "unpriced" },
-      { id: "s6", title: "Gated", status: "gated", invoke: "gated", est_sessions: 1 },
-      { id: "s7", title: "Blocked dep", status: "scheduled", invoke: "depped", est_sessions: 1, deps: ["s6"] },
-      { id: "s8", title: "Maybe", status: "optionality", invoke: "maybe", est_sessions: 1 },
-    ]}]};
-  const p = electionPlan(g, { capacity: 10, staleInvokes: ["committed"] });
-  eq(p.elected.map((x) => x.invoke).sort(), ["committed", "nextup"], "elected = the committed set (active+next)");
-  ok(p.elected.find((x) => x.invoke === "committed").stale, "the stale flag rides the elected list — reviewed first");
-  eq(p.unpricedElected, [], "all committed work is priced here — no capacity blind spot");
-  const gUnpriced = { ...g, pis: [{ ...g.pis[0], sprints: [{ id: "s0", title: "Mystery", status: "active", invoke: "mystery" }, ...g.pis[0].sprints] }] };
-  eq(electionPlan(gUnpriced, { capacity: 10 }).unpricedElected.map((x) => x.invoke), ["mystery"], "committed-but-unpriced work is flagged, never a silent zero in the capacity math");
-  eq(p.candidates.map((x) => x.invoke), ["big", "small", "unpriced"], "candidates = READY scheduled only, priority-sorted, unpriced last (gated/dep-blocked/optionality excluded)");
-  // committed 5s + big 9s would blow 10 → strict prefix stops at big; small does NOT sneak past the P0
-  eq(p.packed, [], "a too-big P0 at the head blocks the prefix — the signal is split-it, not skip-it");
-  eq(p.overflow.map((x) => x.invoke), ["big", "small"], "everything estimable past the prefix is overflow");
-  eq(p.unestimated.map((x) => x.invoke), ["unpriced"], "unpriced work is surfaced, never silently packed");
-  eq(p.estUsed, 5, "usage = committed est_sessions when nothing packs");
-  const roomy = electionPlan(g, { capacity: 20 });
-  eq(roomy.packed.map((x) => x.invoke), ["big", "small"], "with room, the prefix packs in priority order");
-  eq(roomy.estUsed, 16, "usage counts committed + packed");
-});
-
-// WHY: outOfCycle is the dispatch/fan lock's whole decision — a false positive blocks legitimate
-// work, a false negative lets the cycle leak; cycles off must never lock anything (opt-in).
-test("outOfCycle: locks only non-committed statuses, only when cycles are on", () => {
-  const on = normalizeLinearConfig({ linear: { team: "ENG", cycles: "on" } });
-  const off = normalizeLinearConfig({ linear: { team: "ENG" } });
-  ok(outOfCycle(on, "scheduled") && outOfCycle(on, "gated") && outOfCycle(on, "complete"), "non-committed statuses lock when on");
-  ok(!outOfCycle(on, "active") && !outOfCycle(on, "next"), "the committed set never locks");
-  ok(!outOfCycle(off, "scheduled") && !outOfCycle(null, "scheduled"), "cycles off (or no Linear) → never locks");
-});
-
-// ── linear-core: staleness ────────────────────────────────────────────────────
-// WHY: a stale flag that flaps (our own push resetting the clock), flags unknown-activity work,
-// or sticks after a fresh note trains the human to ignore it — the one failure an advisory
-// indicator can't afford. Basis is journal activity; add/remove rides the ordinary label set-diff.
-test("staleKeys: journal-silence basis, committed-only scope, unknown never flags; label rides the set-diff", () => {
-  const g = { meta: { schema_version: 1, program: "T", linear: { team: "ENG", stale_days: 3 } },
-    pis: [{ id: "p", title: "P", status: "active", linear: { project: "proj-1" }, sprints: [
-      { id: "s1", title: "A", status: "active", invoke: "a", linear: "ENG-1" },      // silent 5 days → stale
-      { id: "s2", title: "B", status: "next", invoke: "b", linear: "ENG-2" },        // fresh note → not stale
-      { id: "s3", title: "C", status: "scheduled", invoke: "c", linear: "ENG-3" },   // not committed → never stale
-      { id: "s4", title: "D", status: "active", invoke: "d", linear: "ENG-4" },      // unknown activity → never stale
-    ]}]};
-  const cfg = normalizeLinearConfig(g.meta);
-  const NOW = "2026-07-09T12:00:00Z";
-  const activity = { "ENG-1": "2026-07-04T11:00:00Z", "ENG-2": "2026-07-09T09:00:00Z", "ENG-3": "2026-06-01T00:00:00Z" };
-  eq([...staleKeys({ graph: g, cfg, activity, now: NOW })], ["a"], "silent committed work flags; fresh, uncommitted, unknown don't");
-  eq(staleKeys({ graph: g, cfg: normalizeLinearConfig({ linear: { team: "ENG" } }), activity, now: NOW }).size, 0, "no stale_days → feature off");
-  const labels = { roadmap: "l-r", stale: "l-s" };
-  const oneSlice = { ...g, pis: [{ ...g.pis[0], sprints: [g.pis[0].sprints[0]] }] };
-  const existing = { projects: { "proj-1": { id: "proj-1", name: "P" } }, issues: {
-    "ENG-1": { id: "u1", title: "A", description: "x", priority: 0, stateId: "st-s", projectId: "proj-1", labelIds: ["l-r"] } } };
-  const flagged = buildPushPlan({ graph: oneSlice, backlog: null, cfg, teamStates: L_STATES, existing, labels, stale: new Set(["a"]) });
-  eq(flagged.ops.find((o) => o.op === "updateIssue").payload.labelIds, ["l-r", "l-s"], "flagging adds the stale label via the set-diff");
-  const relabeled = { ...existing, issues: { "ENG-1": { ...existing.issues["ENG-1"], labelIds: ["l-r", "l-s"] } } };
-  const cleared = buildPushPlan({ graph: oneSlice, backlog: null, cfg, teamStates: L_STATES, existing: relabeled, labels, stale: new Set() });
-  eq(cleared.ops.find((o) => o.op === "updateIssue").payload.labelIds, ["l-r"], "unflagging drops it the same way");
-  const pp = provisionPlan({ graph: g, teamLabels: {}, cfg });
-  ok(pp.createLabels.includes("stale") && pp.views.some((v) => v.name === "Stale"), "stale label + view provisioned when stale_days set");
-  const v = validateLinearConfig({ meta: { schema_version: 1, program: "T", linear: { team: "ENG", stale_days: 0 } }, pis: [] });
-  ok(v.errors.some((e) => e.includes("stale_days")), "stale_days 0 rejected — a bad knob must not silently disable the guardrail");
-});
-
-// ── linear-core: cycles ───────────────────────────────────────────────────────
-// WHY: the active cycle IS the elected weekly batch — if assignment oscillates, clears a human's
-// future-cycle parking, or lets demotions linger, the cycle chart lies and "this week" silently
-// re-inflates; and with no active cycle the sync must never guess one.
-test("cyclePlan assigns active/next on drift, clears only current-cycle demotions, spares future parking", () => {
-  const g = { meta: { schema_version: 1, program: "T", linear: { team: "ENG", cycles: "on" } },
-    pis: [{ id: "p", title: "P", status: "active", linear: { project: "proj-1" }, sprints: [
-      { id: "s1", title: "A", status: "active", invoke: "a", linear: "ENG-1" },      // uncycled → assign
-      { id: "s2", title: "B", status: "next", invoke: "b", linear: "ENG-2" },        // already in → no-op
-      { id: "s3", title: "C", status: "scheduled", invoke: "c", linear: "ENG-3" },   // demoted, in current → clear
-      { id: "s4", title: "D", status: "scheduled", invoke: "d", linear: "ENG-4" },   // parked in FUTURE cycle → untouched
-      { id: "s5", title: "E", status: "complete", invoke: "e", linear: "ENG-5" },    // done → never a candidate
-      { id: "s6", title: "F", status: "next", invoke: "f" },                          // unmapped → not a candidate
-    ]}]};
-  const issues = { "ENG-1": { id: "u1", cycleId: null }, "ENG-2": { id: "u2", cycleId: "cyc-1" },
-    "ENG-3": { id: "u3", cycleId: "cyc-1" }, "ENG-4": { id: "u4", cycleId: "cyc-2" }, "ENG-5": { id: "u5", cycleId: "cyc-1" } };
-  const plan = cyclePlan({ graph: g, activeCycleId: "cyc-1", issues });
-  eq(plan.assign.map((x) => x.invoke), ["a"], "only the drifted active/next issue assigns");
-  eq(plan.clear.map((x) => x.invoke), ["c"], "only the current-cycle demotion clears — future parking and done work untouched");
-  eq(cyclePlan({ graph: g, activeCycleId: null, issues }), { assign: [], clear: [] }, "no active cycle → nothing");
-  ok(provisionPlan({ graph: g, teamLabels: {}, cfg: normalizeLinearConfig(g.meta) }).views.some((v) => v.name === "This cycle"), "cycles on → This cycle view offered");
-  ok(!provisionPlan({ graph: g, teamLabels: {}, cfg: normalizeLinearConfig({ linear: { team: "ENG" } }) }).views.some((v) => v.name === "This cycle"), "cycles off → view not offered");
-  const v = validateLinearConfig({ meta: { schema_version: 1, program: "T", linear: { team: "ENG", cycles: "weekly" } }, pis: [] });
-  ok(v.errors.some((e) => e.includes('cycles "weekly"')), "invalid cycles value blocks at validate");
-  const vc = validateLinearConfig({ meta: { schema_version: 1, program: "T", linear: { team: "ENG", cycle_capacity: 0 } }, pis: [] });
-  ok(vc.errors.some((e) => e.includes("cycle_capacity")), "cycle_capacity 0 rejected — a bad knob must not silently disable the cap");
-});
-
-// ── linear-core: PI status → project status ──────────────────────────────────
-// Mirrors the live workspace inventory (organization.projectStatuses): stock has NO paused type.
-const P_STATUSES = [
-  { id: "ps-b", name: "Backlog", type: "backlog", position: 0 },
-  { id: "ps-p", name: "Planned", type: "planned", position: 1 },
-  { id: "ps-s", name: "In Progress", type: "started", position: 2 },
-  { id: "ps-c", name: "Completed", type: "completed", position: 3 },
-  { id: "ps-x", name: "Canceled", type: "canceled", position: 4 },
-];
-
-// WHY: every project reading "Backlog" regardless of PI status makes the initiative rollup — the
-// first screen a human reads — lie about what's shipped vs in flight (live board: 64/64 stuck).
-test("resolveProjectStatus maps PI status to project-status TYPE, held falls back past a missing paused", () => {
-  eq(resolveProjectStatus("complete", P_STATUSES).id, "ps-c", "complete → completed");
-  eq(resolveProjectStatus("active", P_STATUSES).id, "ps-s", "active → started");
-  eq(resolveProjectStatus("next", P_STATUSES).id, "ps-p", "next → planned");
-  eq(resolveProjectStatus("scheduled", P_STATUSES).id, "ps-b", "scheduled → backlog");
-  eq(resolveProjectStatus("optionality", P_STATUSES).id, "ps-b", "optionality → backlog");
-  eq(resolveProjectStatus("gated", P_STATUSES).id, "ps-p", "held → planned when the workspace has no paused type");
-  const withPaused = [...P_STATUSES, { id: "ps-z", name: "Paused", type: "paused", position: 5 }];
-  eq(resolveProjectStatus("gated", withPaused).id, "ps-z", "held → paused when the workspace declares it");
-  eq(resolveProjectStatus("active", null), null, "null inventory → null (status projection off)");
-});
-
-// WHY: a workspace whose inventory misses every type in a chain can't be silently skipped — the
-// push would keep "correcting" nothing forever; fail naming what exists, mirroring resolvePushState.
-test("resolveProjectStatus throws listing the available statuses when no chain type exists", () => {
-  const weird = [{ id: "ps-only", name: "Odd", type: "triage", position: 0 }];
-  throws(() => resolveProjectStatus("complete", weird), "no project status of type completed");
-  throws(() => resolveProjectStatus("complete", weird), "Odd:triage");
-});
-
-// WHY: statusId must diff like every other project field or every sync spams projectUpdate on
-// all 64 projects; and with a null inventory the plan must be byte-identical to the pre-feature
-// tool so a degraded fetch (or an old test fixture) changes nothing.
-test("buildPushPlan projects statusId: drift → one update, match → zero ops, null inventory → absent", () => {
-  const cfg = normalizeLinearConfig(pushGraph().meta);
-  const snapAt = (statusId) => {
-    const s = SNAP();
-    s.projects["proj-1"] = { ...s.projects["proj-1"], statusId };
-    return s;
-  };
-  // active PI whose project sits in backlog status → exactly one updateProject carrying only statusId
-  const drift = buildPushPlan({ graph: pushGraph(), backlog: null, cfg, teamStates: L_STATES, existing: snapAt("ps-b"), projectStatuses: P_STATUSES });
-  const upd = drift.ops.find((o) => o.op === "updateProject");
-  eq(upd.payload, { statusId: "ps-s" }, "only the drifted statusId is sent (active → started)");
-  // matching status → no project op at all
-  const match = buildPushPlan({ graph: pushGraph(), backlog: null, cfg, teamStates: L_STATES, existing: snapAt("ps-s"), projectStatuses: P_STATUSES });
-  eq(match.ops.filter((o) => o.op === "updateProject").length, 0, "matching statusId → zero project updates");
-  // null inventory (degraded fetch) → plan identical to the pre-feature shape: no statusId anywhere
-  const off = buildPushPlan({ graph: pushGraph(), backlog: null, cfg, teamStates: L_STATES, existing: snapAt("ps-b"), projectStatuses: null });
-  eq(off.ops.filter((o) => o.op === "updateProject").length, 0, "null inventory → no status correction attempted");
-  // a new project carries its statusId on create
-  const g = pushGraph(); delete g.pis[0].linear;
-  const create = buildPushPlan({ graph: g, backlog: null, cfg, teamStates: L_STATES, existing: { projects: {}, issues: {} }, projectStatuses: P_STATUSES });
-  eq(create.ops.find((o) => o.op === "createProject").payload.statusId, "ps-s", "create includes the mapped statusId");
-});
-
-// WHY: est_sessions is the roadmap's own estimate; as prose in the description it was unsortable and
-// couldn't roll up on the board. It must ride the native `estimate` field — rounded to an integer,
-// clamped to estimate_max so an oversize slice can't push an out-of-scale value, and 0/null left
-// unestimated (never a pushed 0, which needs the team's allow-zero setting).
-test("buildPushPlan pushes est_sessions as native estimate: rounded, clamped, zero-skipped, idempotent", () => {
-  const g = { meta: { schema_version: 1, program: "T", linear: { team: "ENG" } },   // estimate_max defaults to 5
-    pis: [{ id: "p", title: "P", status: "active", linear: { project: "proj-1" }, sprints: [
-      { id: "s1", title: "Small", status: "next", invoke: "small", est_sessions: 1.5 },   // → round → 2
-      { id: "s2", title: "Huge", status: "next", invoke: "huge", est_sessions: 16 },        // → clamp → 5
-      { id: "s3", title: "Zero", status: "next", invoke: "zero", est_sessions: 0 },          // → unestimated
-    ]}]};
-  const cfg = normalizeLinearConfig(g.meta);
-  const existing = { projects: { "proj-1": { id: "proj-1", name: "P" } }, issues: {} };
-  const plan = buildPushPlan({ graph: g, backlog: null, cfg, teamStates: L_STATES, existing, labels: {} });
-  const est = Object.fromEntries(plan.ops.filter((o) => o.op === "createIssue").map((o) => [o.writeBack.invoke, o.payload.estimate]));
-  eq(est.small, 2, "1.5 sessions rounds to 2 points");
-  eq(est.huge, 5, "16 sessions clamps to estimate_max (5) — validate warns to split it");
-  ok(!("estimate" in plan.ops.find((o) => o.writeBack.invoke === "zero").payload), "0 sessions → no estimate field (unestimated, not a pushed 0)");
-  // idempotent: a mapped issue whose Linear estimate already equals the pushed value → no update
-  const g2 = { meta: g.meta, pis: [{ id: "p", title: "P", status: "active", linear: { project: "proj-1" }, sprints: [
-    { id: "s1", title: "Small", status: "next", invoke: "small", est_sessions: 2, linear: "ENG-9" } ]}]};
-  const node = { invoke: "small", title: "Small", what: "Small", gate: "default" };   // flatten defaults gate → match it
-  const cur = { projects: { "proj-1": { id: "proj-1", name: "P" } }, issues: { "ENG-9": {
-    id: "u9", title: "Small", description: issueDescription(node, cfg, { target: { type: "slice", key: "small" } }),
-    priority: 0, estimate: 2, stateId: "st-u", projectId: "proj-1", labelIds: [] } } };
-  const noop = buildPushPlan({ graph: g2, backlog: null, cfg, teamStates: L_STATES, existing: cur, labels: {} });
-  eq(noop.ops.filter((o) => o.op === "updateIssue").length, 0, "matching estimate → zero updates");
-  // drifted estimate → exactly one update carrying ONLY estimate
-  const cur3 = JSON.parse(JSON.stringify(cur)); cur3.issues["ENG-9"].estimate = 4;
-  const drift = buildPushPlan({ graph: g2, backlog: null, cfg, teamStates: L_STATES, existing: cur3, labels: {} });
-  eq(drift.ops.find((o) => o.op === "updateIssue").payload, { estimate: 2 }, "only the drifted estimate is sent");
-  // a mapped issue that LOST its est_sessions keeps its stale Linear estimate — the points>0 guard
-  // must NOT emit an update to clear it to 0 (which would churn AND needs the team's allow-zero setting)
-  const g4 = { meta: g.meta, pis: [{ id: "p", title: "P", status: "active", linear: { project: "proj-1" }, sprints: [
-    { id: "s1", title: "Small", status: "next", invoke: "small", linear: "ENG-9" } ]}]};   // no est_sessions
-  const cur4 = JSON.parse(JSON.stringify(cur)); cur4.issues["ENG-9"].estimate = 3;
-  const removed = buildPushPlan({ graph: g4, backlog: null, cfg, teamStates: L_STATES, existing: cur4, labels: {} });
-  eq(removed.ops.filter((o) => o.op === "updateIssue").length, 0, "removed est_sessions → no update (stale estimate tolerated, never cleared)");
-});
-
-// WHY: a slice bigger than the estimate scale can't map to one estimate point and is too big to fan
-// out as one session — validate must surface it (where you'd split it), not let it clamp silently.
-test("validate warns on a slice whose est_sessions exceeds estimate_max", () => {
-  const over = { meta: { schema_version: 1, program: "T", linear: { team: "ENG" } },
-    pis: [{ id: "p", title: "P", status: "active", sprints: [
-      { id: "s1", title: "Big", status: "next", invoke: "big", est_sessions: 16 },
-      { id: "s2", title: "Done big", status: "complete", invoke: "donebig", est_sessions: 16 },   // done → no warning
-    ]}]};
-  const w = validateLinearConfig(over).warnings.filter((m) => m.includes("estimate_max"));
-  eq(w.length, 1, "exactly one oversize warning — the not-done slice only");
-  ok(w[0].includes("p/s1") && w[0].includes("split"), "names the slice and says split it");
-  // no meta.linear → no estimate concept → no warning even for a 16
-  const noLinear = { meta: { schema_version: 1, program: "T" }, pis: over.pis };
-  eq(validateLinearConfig(noLinear).warnings.filter((m) => m.includes("estimate_max")).length, 0, "no Linear config → no oversize warning");
-});
-
-// ── the plate (My Issues hopper) ──────────────────────────────────────────────
-// WHY: the plate must be a CURATED subset (signal), never everything, and "what I'm actively working"
-// is always on it. Off without meta.plate (backward-compat). Explicit ∪ active ∪ in_progress.
-test("platedKeys: off without meta.plate; else explicit ∪ active slices ∪ in_progress items", () => {
-  const pis = [{ id: "p", title: "P", status: "active", sprints: [
-    { id: "s1", title: "A", status: "active", invoke: "a" },
-    { id: "s2", title: "B", status: "next", invoke: "b" },
-    { id: "s3", title: "C", status: "complete", invoke: "c" } ]}];
-  eq(platedKeys({ meta: { schema_version: 1 }, pis }, null), null, "no meta.plate → feature off (null)");
-  const bl = { items: [{ id: "x", status: "in_progress" }, { id: "y", status: "open" }] };
-  eq([...platedKeys({ meta: { schema_version: 1, plate: ["b", "z"] }, pis }, bl)].sort(), ["a", "b", "x", "z"],
-    "explicit(b,z) ∪ active(a) ∪ in_progress(x); complete/next/open never auto-added");
-});
-
-// WHY: 'complete only' is the chosen drain breakpoint — a merged slice leaves the hopper, a blocked one
-// STAYS (visible reminder). Draining the wrong status silently loses your batch.
-test("plateDrainKeys: complete-only — drains finished explicit entries, keeps blocked/active", () => {
-  const g = { meta: { plate: ["a", "b", "c", "x", "ghost"] }, pis: [{ id: "p", title: "P", status: "active", sprints: [
-    { id: "s1", title: "A", status: "complete", invoke: "a" },
-    { id: "s2", title: "B", status: "blocked", invoke: "b" },
-    { id: "s3", title: "C", status: "active", invoke: "c" } ]}]};
-  eq(plateDrainKeys(g, { items: [{ id: "x", status: "done" }] }).sort(), ["a", "x"],
-    "complete slice + done item drain; blocked & active stay; unknown key left alone");
-});
-
-// WHY: a malformed meta.plate silently mis-projects My Issues; structure must error and an over-cap list
-// must warn — the whole point is a signal-rich hopper.
-test("validatePlate: structural errors + the plate_max signal cap", () => {
-  eq(validatePlate({ meta: {} }, 7).errors.length, 0, "absent → clean");
-  ok(validatePlate({ meta: { plate: "nope" } }, 7).errors[0].includes("must be a list"), "non-array errors");
-  ok(validatePlate({ meta: { plate: [1, "ok"] } }, 7).errors.some((e) => e.includes("must be strings")), "non-string entry errors");
-  ok(validatePlate({ meta: { plate: ["a", "b", "c"] } }, 2).warnings[0].includes("plate_max"), "over cap warns");
-});
-
-// WHY: meta.plate grows and must stay human-readable — a flow seq [a, b] is the exact unreadability the
-// block-style store guarantees elsewhere.
-test("setPlateDoc writes meta.plate as a block sequence", () => {
-  const doc = parseDocument("meta:\n  schema_version: 1\npis: []\n");
-  setPlateDoc(doc, ["a", "b"]);
-  const out = String(doc);
-  ok(/plate:\n\s+- a\n\s+- b/.test(out), "block seq under meta.plate");
-  ok(!out.includes("[a, b]"), "not a flow seq");
-});
-
-// WHY: the plate assigns YOU a curated subset (assignee) + tags each with the plate label, so My Issues ==
-// your batch. Feature-off must stay byte-identical (no assignee ever), even with a viewer present.
-test("buildPushPlan plate: assigns viewer + plate label on create; off-plate none; feature off inert", () => {
-  const g = (over) => ({ meta: { schema_version: 1, program: "T", linear: { team: "ENG" }, ...over }, pis: [
-    { id: "p", title: "P", status: "active", linear: { project: "proj-1" }, sprints: [
-      { id: "s1", title: "On", status: "next", invoke: "on" },
-      { id: "s2", title: "Off", status: "next", invoke: "off" } ]}]});
-  const existing = { projects: { "proj-1": { id: "proj-1", name: "P" } }, issues: {} };
-  const LBL = { roadmap: "l-mark", plate: "l-plate" };
-  const off = buildPushPlan({ graph: g(), backlog: null, cfg: normalizeLinearConfig(g().meta), teamStates: L_STATES, existing, labels: LBL, viewerId: "me" });
-  ok(off.ops.filter((o) => o.op === "createIssue").every((o) => !("assigneeId" in o.payload)), "feature off → no assignee on any issue");
-  ok(off.ops.filter((o) => o.op === "createIssue").every((o) => !(o.payload.labelIds || []).includes("l-plate")), "feature off → no plate label either");
-  const meta = { plate: ["on", "ghost"] };
-  const on = buildPushPlan({ graph: g(meta), backlog: null, cfg: normalizeLinearConfig(g(meta).meta), teamStates: L_STATES, existing, labels: LBL, viewerId: "me" });
-  const onOp = on.ops.find((o) => o.writeBack && o.writeBack.invoke === "on");
-  const offOp = on.ops.find((o) => o.writeBack && o.writeBack.invoke === "off");
-  eq(onOp.payload.assigneeId, "me", "plated slice → assigned to the viewer");
-  ok(onOp.payload.labelIds.includes("l-plate"), "plated slice → carries the plate label");
-  ok(!("assigneeId" in offOp.payload) && !offOp.payload.labelIds.includes("l-plate"), "off-plate slice → neither assignee nor plate label");
-  eq(on.unmatchedPlate, ["ghost"], "an explicit key matching no slice/item is reported (typo guard)");
-});
-
-// WHY: the safety contract on UPDATE — an issue that fell off the plate is unassigned ONLY if WE plated it
-// (carries the label); a hand-assignment in Linear (no label) is never disturbed.
-test("buildPushPlan plate update: unassigns a fallen-off issue we labeled, spares hand-assignments", () => {
-  const g = { meta: { schema_version: 1, program: "T", linear: { team: "ENG" }, plate: ["keep"] }, pis: [
-    { id: "p", title: "P", status: "active", linear: { project: "proj-1" }, sprints: [
-      { id: "s1", title: "S", status: "next", invoke: "keep", linear: "ENG-1" },
-      { id: "s2", title: "T", status: "next", invoke: "fell", linear: "ENG-2" },
-      { id: "s3", title: "U", status: "next", invoke: "hand", linear: "ENG-3" } ]}]};
-  const LBL = { roadmap: "l-mark", plate: "l-plate" };
-  const mk = (over) => ({ id: "u", title: "x", description: "", priority: 0, stateId: "st-u", projectId: "proj-1", assigneeId: "me", labelIds: ["l-mark"], ...over });
-  const existing = { projects: { "proj-1": { id: "proj-1", name: "P" } }, issues: {
-    "ENG-1": mk({ labelIds: ["l-mark", "l-plate"] }),   // on the plate, already assigned+labeled → no assignee churn
-    "ENG-2": mk({ labelIds: ["l-mark", "l-plate"] }),   // fell off, WE labeled it → unassign
-    "ENG-3": mk({ labelIds: ["l-mark"] }),               // hand-assigned (no plate label) → untouched
-  }};
-  const plan = buildPushPlan({ graph: g, backlog: null, cfg: normalizeLinearConfig(g.meta), teamStates: L_STATES, existing, labels: LBL, viewerId: "me" });
-  const byId = Object.fromEntries(plan.ops.filter((o) => o.op === "updateIssue").map((o) => [o.identifier, o.payload]));
-  ok(!("assigneeId" in (byId["ENG-1"] || {})), "on-plate + already assigned → no assignee churn");
-  eq(byId["ENG-2"].assigneeId, null, "fell off + carries our plate label → unassigned");
-  ok(!("assigneeId" in (byId["ENG-3"] || {})), "hand-assignment (no plate label) → never touched");
-});
-
-// WHY: the stated safety invariant — meta.plate ON but the viewer id unknown (fetch failed) must assign
-// and label NOTHING. A regression dropping the `!!viewerId` guard would silently assign issues to no one.
-test("buildPushPlan plate: viewer unknown → no assignee and no plate label, even on-plate", () => {
-  const g = { meta: { schema_version: 1, program: "T", linear: { team: "ENG" }, plate: ["on"] }, pis: [
-    { id: "p", title: "P", status: "active", linear: { project: "proj-1" }, sprints: [
-      { id: "s1", title: "On", status: "next", invoke: "on" } ]}]};
-  const plan = buildPushPlan({ graph: g, backlog: null, cfg: normalizeLinearConfig(g.meta), teamStates: L_STATES,
-    existing: { projects: { "proj-1": { id: "proj-1", name: "P" } }, issues: {} }, labels: { roadmap: "l-mark", plate: "l-plate" }, viewerId: null });
-  const onOp = plan.ops.find((o) => o.writeBack && o.writeBack.invoke === "on");
-  ok(!("assigneeId" in onOp.payload), "viewer unknown → no assigneeId");
-  ok(!(onOp.payload.labelIds || []).includes("l-plate"), "viewer unknown → no plate label (label never lies)");
-});
-
-// WHY: the plate's safe-unassign depends on the 'plate' label existing — provision must create it when the
-// feature is on, and NOT stamp a stray label on repos that don't use the plate.
-test("provisionPlan includes the plate label only when meta.plate is defined", () => {
-  const base = { meta: { schema_version: 1, program: "T", linear: { team: "ENG" } }, pis: [
-    { id: "p", title: "P", status: "active", sprints: [{ id: "s1", title: "S", status: "active", invoke: "x" }] }] };
-  ok(!provisionPlan({ graph: base, teamLabels: {} }).createLabels.includes("plate"), "no meta.plate → no plate label");
-  ok(provisionPlan({ graph: { ...base, meta: { ...base.meta, plate: [] } }, teamLabels: {} }).createLabels.includes("plate"), "meta.plate present → plate label provisioned");
-});
-
-// WHY: the plate MCP tools are how a planning session (/prioritize) curates My Issues — set replaces, add
-// unions (and enables the feature from absent), remove pulls off. They edit the Document like set_fields.
-test("plate MCP mutations: set replaces, add unions + enables, remove filters", () => {
-  const base = "meta:\n  schema_version: 1\n  program: T\npis:\n  - id: p\n    title: P\n    status: active\n    sprints:\n      - { id: s1, title: A, status: next, invoke: a }\n";
-  const doc = parseDocument(base);
-  eq(setPlate(doc, { keys: ["a", "b", "b"] }).keys, ["a", "b"], "set dedups + returns the new list");
-  eq(doc.toJS().meta.plate, ["a", "b"], "set wrote meta.plate onto the Document");
-  eq(addPlate(doc, { keys: ["b", "c"] }).keys, ["a", "b", "c"], "add unions (dedup), preserves order");
-  eq(removePlate(doc, { keys: ["a"] }).keys, ["b", "c"], "remove filters the given keys");
-  const fresh = parseDocument(base);
-  addPlate(fresh, { keys: ["a"] });
-  eq(fresh.toJS().meta.plate, ["a"], "add on a plate-less roadmap creates meta.plate (enables the feature)");
-  throws(() => setPlate(doc, {}), "requires keys", "set without keys throws");
-});
-
-// WHY: granularity is the leak-control lever — 'pis' must emit NO issues, and a per-PI
-// override must flip only that PI, or a public Linear team sees work it shouldn't.
-test("granularity gates issue ops globally and per-PI", () => {
-  const pisOnly = pushGraph({ granularity: "pis" });
-  const plan = buildPushPlan({ graph: pisOnly, backlog: null, cfg: normalizeLinearConfig(pisOnly.meta), teamStates: L_STATES, existing: SNAP() });
-  eq(plan.ops.filter((o) => o.op.includes("Issue")).length, 0, "pis granularity → projects only");
-  const overridden = pushGraph();
-  overridden.pis[0].linear.granularity = "pis";   // per-PI override on a slices-global roadmap
-  const plan2 = buildPushPlan({ graph: overridden, backlog: null, cfg: normalizeLinearConfig(overridden.meta), teamStates: L_STATES, existing: SNAP() });
-  eq(plan2.ops.filter((o) => o.op.includes("Issue")).length, 0, "override suppresses that PI's issues");
-  const withBacklog = pushGraph({ granularity: "slices+backlog" });
-  const backlog = { meta: { schema_version: 1 }, items: [
-    { id: "b1", title: "Fix", kind: "bug", status: "open" },
-    { id: "b2", title: "Moved", kind: "chore", status: "promoted", promoted_to: "auth/s9" },
-  ]};
-  const plan3 = buildPushPlan({ graph: withBacklog, backlog, cfg: normalizeLinearConfig(withBacklog.meta), teamStates: L_STATES, existing: SNAP() });
-  const itemOps = plan3.ops.filter((o) => o.writeBack && o.writeBack.kind === "item");
-  eq(itemOps.length, 1, "open item pushes; promoted item skipped (its sprint carries it)");
-});
-
-// WHY: Linear mints its own identifier (PID-n) AFTER creation, so the backlog number a human
-// actually talks about ("look at b60") is invisible in Linear's triage view unless the title
-// carries it — without the prefix, finding an item means opening issues one by one.
-test("backlog items push to Linear with their id prefixed into the title, without double-prefixing", () => {
-  const withBacklog = pushGraph({ granularity: "slices+backlog" });
-  const backlog = { meta: { schema_version: 1 }, items: [
-    { id: "b7", title: "Fix the flaky thing", kind: "bug", status: "open" },
-    { id: "b8", title: "b8 · Already prefixed by a round-trip", kind: "chore", status: "open" },
-  ]};
-  const plan = buildPushPlan({ graph: withBacklog, backlog, cfg: normalizeLinearConfig(withBacklog.meta), teamStates: L_STATES, existing: SNAP() });
-  const items = plan.ops.filter((o) => o.writeBack && o.writeBack.kind === "item");
-  eq(items.find((o) => o.writeBack.id === "b7").payload.title, "b7 · Fix the flaky thing", "id lands in front of the title");
-  eq(items.find((o) => o.writeBack.id === "b8").payload.title, "b8 · Already prefixed by a round-trip", "an already-prefixed title is left alone");
-});
-
-// WHY: addPi/addSprint copy args field-by-field; a field the copy-list omits is DROPPED
-// SILENTLY — that is exactly how a fully-specified PI (summary, priority, initiative all
-// passed by the caller) landed on the live board as a shell needing a manual repair pass.
-// The `missing` list is the add-seam nudge that makes new work Linear-ready out of the box.
-test("addPi/addSprint persist every add-time field and report Linear-readiness gaps", () => {
-  const doc = parseDocument(`meta:\n  schema_version: 1\n  program: T\npis: []\n`);
-  const r1 = addPi(doc, { id: "p1", title: "P1", status: "active", summary: "One line", priority: { tier: "P1", reason: "r" }, initiative: "Engine credibility", target_date: "2026-08-01" });
-  const pi = doc.toJS().pis[0];
-  eq(pi.summary, "One line", "summary persists (was silently dropped)");
-  eq(pi.priority.tier, "P1", "priority persists (was silently dropped)");
-  eq(pi.initiative, "Engine credibility", "initiative persists (was silently dropped)");
-  eq(pi.target_date, "2026-08-01", "add-time dates persist");
-  ok(!r1.missing, "fully-dialed PI reports no gaps");
-  eq(addPi(doc, { id: "p2", title: "P2" }).missing, ["summary", "priority"], "shell PI reports its readiness gaps");
-  const r3 = addSprint(doc, { pi: "p2", id: "s1", title: "S", invoke: "s1x", status_label: "FABLE-5 candidate — x", dispatch_tier: "fable" });
-  eq(doc.toJS().pis[1].sprints[0].dispatch_tier, "fable", "newer sprint fields persist through add");
-  eq(r3.missing, ["what", "gate", "est_sessions", "priority"], "bare sprint reports its gaps");
-  ok(!addSprint(doc, { pi: "p2", id: "s2", title: "S2", invoke: "s2x", what: "w", gate: "g", est_sessions: 1, priority: { tier: "P2", reason: "r" } }).missing,
-    "dialed sprint reports no gaps");
-});
-
-// WHY: an unacked per-PI override silently reshapes what the whole team sees in Linear;
-// the ack must gate the mutation BEFORE anything is written, with the exact actionable message.
-test("addPi rejects a conflicting linear override without the ack, exact message; ack or match passes", () => {
-  const y = `meta:\n  schema_version: 1\n  program: T\n  linear:\n    team: ENG\npis:\n  - id: a\n    title: A\n    status: active\n    sprints:\n      - { id: s1, title: S, status: active, invoke: x }\n`;
-  throws(() => addPi(parseDocument(y), { id: "platform", title: "P", linear: { granularity: "pis" } }),
-    `PI "platform" overrides Linear granularity ("pis") against the global meta.linear.granularity ("slices")`,
-    "conflict without ack throws the exact message");
-  const doc = parseDocument(y);
-  addPi(doc, { id: "platform", title: "P", linear: { granularity: "pis" }, yes_linear_override: true });
-  ok(String(doc.getIn(["pis", 1, "linear", "granularity"])) === "pis", "acked override written");
-  addPi(doc, { id: "match", title: "M", linear: { granularity: "slices" } });  // matches global → no ack needed
-  // checkPiOverrideAck standalone: no global config → never throws
-  checkPiOverrideAck(null, { granularity: "pis" }, false, "x");
 });
 
 // ── linear-core: pull proposals ───────────────────────────────────────────────
@@ -3319,90 +1894,6 @@ test("synthesizeBrief carries the temperance contract", () => {
   ok(b.includes("YAGNI applies to captures too"), "temperance line present");
 });
 
-// ── wave-packing coherence ────────────────────────────────────────────────────
-// WHY: a capped wave that takes one slice from each of N PIs leaves every PI half-open —
-// coherence must prefer finishing started PIs, but NEVER outrank a declared priority
-// (a P0 in a fresh PI still wins), and single-PI graphs must be untouched.
-test("computeWaves coherence: started/closest-to-done PIs win equal-priority cap slots; priority still outranks; opt-out restores old order", () => {
-  const g = (opts = {}) => ({ meta: opts.meta || {}, pis: [
-    { id: "started", title: "S", status: "active", sprints: [
-      { id: "s1", title: "done", status: "complete", invoke: "started-done" },
-      { id: "s2", title: "next", status: "next", invoke: "started-next", touches: ["f1"] },
-    ]},
-    { id: "fresh", title: "F", status: "next", sprints: [
-      { id: "s1", title: "aaa", status: "next", invoke: "aaa-fresh", touches: ["f2"], ...(opts.freshPriority ? { priority: { tier: "P0" } } : {}) },
-    ]},
-  ]});
-  // equal priority: the started PI's slice beats the alphabetically-earlier fresh one
-  const m1 = flatten(g());
-  eq(computeWaves(m1, 1).waves[0].map((n) => n.invoke), ["started-next"], "started PI wins the single slot");
-  // declared priority overrides coherence — no overweighting
-  const m2 = flatten(g({ freshPriority: true }));
-  eq(computeWaves(m2, 1).waves[0].map((n) => n.invoke), ["aaa-fresh"], "P0 in a fresh PI still wins");
-  // opt-out restores the old status/est/alpha order
-  eq(computeWaves(m1, 1, { coherence: false }).waves[0].map((n) => n.invoke), ["aaa-fresh"], "coherence:false → alphabetical again");
-  eq(coherenceEnabled({}), true, "default on");
-  eq(coherenceEnabled({ discipline: { coherence: false } }), false, "meta opt-out");
-});
-
-// WHY: among two started PIs, the one closer to done should close first — otherwise the
-// scheduler keeps N PIs perpetually at 80%.
-test("computeWaves coherence: closest-to-done started PI outranks a bigger started PI", () => {
-  const g = { meta: {}, pis: [
-    { id: "big", title: "B", status: "active", sprints: [
-      { id: "s1", title: "d", status: "complete", invoke: "big-done" },
-      { id: "s2", title: "a", status: "next", invoke: "aaa-big", touches: ["f1"] },
-      { id: "s3", title: "b", status: "next", invoke: "bbb-big", touches: ["f2"] },
-      { id: "s4", title: "c", status: "next", invoke: "ccc-big", touches: ["f3"] },
-    ]},
-    { id: "small", title: "S", status: "active", sprints: [
-      { id: "s1", title: "d", status: "complete", invoke: "small-done" },
-      { id: "s2", title: "z", status: "next", invoke: "zzz-small", touches: ["f4"] },
-    ]},
-  ]};
-  eq(computeWaves(flatten(g), 1).waves[0].map((n) => n.invoke), ["zzz-small"], "one-remaining PI closes before the three-remaining PI");
-});
-
-// WHY: the plan's closes annotation is the coherence read-out — a wave that finishes a PI
-// must say so, and one that doesn't must not.
-test("buildPlan waveCloses names the PIs a wave finishes", () => {
-  const g = { meta: { schema_version: 1, program: "T" }, pis: [
-    { id: "a", title: "A", status: "active", sprints: [
-      { id: "s1", title: "d", status: "complete", invoke: "a-done" },
-      { id: "s2", title: "last", status: "next", invoke: "a-last", touches: ["f1"], est_sessions: 1 },
-    ]},
-    { id: "b", title: "B", status: "active", sprints: [
-      { id: "s1", title: "one", status: "next", invoke: "b-one", touches: ["f2"], est_sessions: 1 },
-      { id: "s2", title: "two", status: "next", invoke: "b-two", touches: ["f2"], est_sessions: 1 },  // same file → later wave
-    ]},
-  ]};
-  const plan = buildPlan(g, { cap: 3, disk: null, reviewDebt: 0 });
-  eq(plan.waveCloses[0], ["a"], "wave 1 closes PI a (b still has contended work)");
-  ok(plan.waveCloses[plan.waves.length - 1].includes("b"), "the final wave closes b");
-});
-
-// WHY: the command-lane sort primitive is unit-tested in computeWaves, but `plan` only honors it if
-// buildPlan threads meta+today into computeWaves — the wiring that connects the feature to the actual
-// command. Without it an active command lane silently boosts nothing (the exact gap this closes).
-test("buildPlan honors an active command_lane: the lane slice floats above a higher-priority non-lane slice", () => {
-  const g = (command_lane) => ({
-    meta: { schema_version: 1, program: "T", ...(command_lane ? { command_lane } : {}) },
-    pis: [
-      { id: "a", title: "A", status: "active", sprints: [
-        { id: "s1", title: "hi", status: "active", invoke: "a-hi", priority: { tier: "P0" }, touches: ["f1"], est_sessions: 1 } ] },
-      { id: "b", title: "B", status: "active", sprints: [
-        { id: "s1", title: "lane", status: "active", invoke: "b-lane", priority: { tier: "P3" }, touches: ["f2"], est_sessions: 1 } ] },
-    ],
-  });
-  const lane = { objective: "ship b", until: "2026-12-31", slices: ["b-lane"] };
-  const active = buildPlan(g(lane), { cap: 3, disk: null, reviewDebt: 0, today: "2026-07-13" });
-  eq(active.waves[0][0].invoke, "b-lane", "active lane floats its slice above the P0 non-lane slice");
-  const expired = buildPlan(g(lane), { cap: 3, disk: null, reviewDebt: 0, today: "2027-01-01" });
-  eq(expired.waves[0][0].invoke, "a-hi", "past `until` → priority wins again (lane released)");
-  const none = buildPlan(g(null), { cap: 3, disk: null, reviewDebt: 0, today: "2026-07-13" });
-  eq(none.waves[0][0].invoke, "a-hi", "no command_lane → unchanged (P0 first)");
-});
-
 // ── review-core: the /debrief evidence base ───────────────────────────────────
 const oldReviewGraph = {
   meta: { schema_version: 1, program: "T" },
@@ -3805,8 +2296,9 @@ test("journal-core: noteBody format, sliceForBranch inversion, gitSnapshot skip-
     { id: "auth", title: "A", status: "active", sprints: [
       { id: "s1", title: "S", status: "active", invoke: "login" },
       { id: "s2", title: "T", status: "active", invoke: "tokens" } ]}]};
-  eq(sliceForBranch(g, "auth/s1").invoke, "login", "branch → its slice (inverts branchFor)");
-  eq(sliceForBranch(g, "nope/x"), null, "no match → null (hook no-ops)");
+  eq(sliceForBranch(g, "auth/s1", branchFor).invoke, "login", "branch → its slice (inverts the executor's branchFor)");
+  eq(sliceForBranch(g, "nope/x", branchFor), null, "no match → null (hook no-ops)");
+  throws(() => sliceForBranch(g, "auth/s1"), "needs a branchFor", "core never assumes a branch convention — the resolver is injected");
   eq(gitSnapshot({ branch: "b", commits: [], dirty: "" }), null, "no commits + clean tree → null (skip empty post)");
   const snap = gitSnapshot({ branch: "auth/s1", commits: ["feat: x", "fix: y"], dirty: " M a.js\n?? b.js" });
   ok(snap.includes("auth/s1") && snap.includes("feat: x") && snap.includes("a.js"), "snapshot names branch, commits, and dirty paths");
@@ -3819,12 +2311,12 @@ test("autoPostPlan: posts for a mapped-slice branch with work; skips unmapped / 
     { id: "auth", title: "A", status: "active", linear: { project: "proj-1" }, sprints: [
       { id: "s1", title: "S", status: "active", invoke: "login", linear: "ENG-1" },
       { id: "s2", title: "T", status: "active", invoke: "tokens" } ]}]};
-  const plan = autoPostPlan(g, { branch: "auth/s1", commits: ["feat: x"], dirty: "" });
+  const plan = autoPostPlan(g, { branch: "auth/s1", commits: ["feat: x"], dirty: "", branchFor });
   eq(plan.identifier, "ENG-1", "mapped-slice branch + work → post to its issue");
   ok(plan.body.includes("[auto]") && plan.body.includes("feat: x"), "body is the auto-kind git snapshot");
-  eq(autoPostPlan(g, { branch: "auth/s2", commits: ["x"], dirty: "" }), null, "branch maps to an UNMAPPED slice → skip");
-  eq(autoPostPlan(g, { branch: "main", commits: ["x"], dirty: "" }), null, "branch isn't a slice → skip");
-  eq(autoPostPlan(g, { branch: "auth/s1", commits: [], dirty: "" }), null, "no commits + clean → skip (no empty post)");
+  eq(autoPostPlan(g, { branch: "auth/s2", commits: ["x"], dirty: "", branchFor }), null, "branch maps to an UNMAPPED slice → skip");
+  eq(autoPostPlan(g, { branch: "main", commits: ["x"], dirty: "", branchFor }), null, "branch isn't a slice → skip");
+  eq(autoPostPlan(g, { branch: "auth/s1", commits: [], dirty: "", branchFor }), null, "no commits + clean → skip (no empty post)");
 });
 
 // WHY: `note` posts a formatted comment to the slice's MAPPED issue (reusing the dispatch transport);
@@ -4831,12 +3323,13 @@ test("validateEstimation: flags a malformed config + bad risks; a clean config p
   eq(good.errors, [], "clean config + fields → no errors");
 });
 
-// WHY: the engine must resolve deterministically (explicit > env > skill) and fail LOUD when absent —
-// a silent miss would leave slices unestimated and the timeline quietly hollow.
-test("resolveEngine: explicit engine wins over env; throws with guidance when none exist", () => {
+// WHY: an EXTERNAL engine is opt-in (explicit > env); nothing configured means native estimation, and a
+// configured-but-missing path must fail LOUD rather than silently falling back to a different model.
+test("resolveEngine: explicit engine wins over env; nothing configured → null (native); a missing configured path throws", () => {
   eq(resolveEngine({ engine: "/x/estimator.py" }, { AGENT_TIME_ENGINE: "/e.py" }, (p) => p === "/x/estimator.py"), "/x/estimator.py", "explicit engine preferred");
   eq(resolveEngine({ engine: null }, { AGENT_TIME_ENGINE: "/e.py" }, (p) => p === "/e.py"), "/e.py", "env fallback");
-  throws(() => resolveEngine({ engine: null }, {}, () => false), "estimator not found", "none present → actionable error");
+  eq(resolveEngine({ engine: null }, {}, () => false), null, "nothing configured → native estimation");
+  throws(() => resolveEngine({ engine: "/gone.py" }, {}, () => false), "estimator not found", "a configured path that doesn't exist → actionable error, no silent fallback");
 });
 
 // WHY: this is the write-back the whole feature hangs on — the estimate must land on the slice (with the
@@ -5278,10 +3771,10 @@ test("renderBacklogYaml emits an empty items scaffold the audit + validator both
 });
 
 test("renderLocalConfig writes the assistant profile with launch:false as the safe default", () => {
-  const out = renderLocalConfig({ assistant: "claude" });
+  const out = renderLocalConfig({ assistant: "claude", profiles: BUILTIN_PROFILES });
   ok(out.includes("claude:"), "the assistant is named");
   ok(out.includes("launch: false"), "launch stays disabled — init must never enable launch without a subsequent human action");
-  const manual = renderLocalConfig({ assistant: "manual" });
+  const manual = renderLocalConfig({ assistant: "manual", profiles: BUILTIN_PROFILES });
   ok(!manual.includes("command:"), "manual has no command, so none is written (would confuse a reader)");
 });
 
@@ -5343,188 +3836,6 @@ test("planInit's rendered blueprint is validate-clean AND renders under the stan
   eq(g.pis[0].sprints[0].status, "next");
 });
 
-// ── backlog-audit ───────────────────────────────────────────────────────────
-// Every fixture below is the reduced shape of a real corruption observed on
-// docs/roadmap/backlog.yaml in a downstream repo — a union-merge of two
-// concurrent captures leaves the file parseable-but-damaged (the parsed
-// object looks fine while the text carries the wrong shape). The audit is
-// what still answers when yaml.parse either throws OR silently normalizes
-// the damage away.
-
-// WHY: a duplicate id makes the second entry unreachable by id from every
-// consumer that keys on it, and yaml.parse throws "Map keys must be unique",
-// so validate would refuse the whole file with no line-level attribution
-// without the audit — the audit is what names WHICH ids collided.
-test("auditBacklog names duplicate ids by line", () => {
-  const text = `meta:\n  schema_version: 1\nitems:\n  - id: b1\n    title: first\n    kind: bug\n    status: open\n  - id: b1\n    title: second\n    kind: bug\n    status: open\n`;
-  const result = auditBacklog(text);
-  eq(result.ok, false, "duplicate is not ok");
-  eq(result.damaged, true, "duplicate is a gating failure");
-  const dup = result.findings.find((f) => f.code === AUDIT_CODES.DUPLICATE_ID);
-  ok(dup, "DUPLICATE_ID reported");
-  eq(dup.id, "b1", "the colliding id is named");
-  eq(dup.lines, [4, 8], "both lines are named so the resolver can see which body to keep");
-});
-
-// WHY: a bare `- id:` line dropped in front of another entry is the shape a
-// bad merge most often produces — the id-line's own entry has no body, and
-// yaml.parse accepts the shape as an item with only an id, so the parsed-
-// object validator passes it. This is the failure the audit exists for.
-test("auditBacklog flags stub entries with no kind/status", () => {
-  const text = `meta:\n  schema_version: 1\nitems:\n  - id: b1\n  - id: b2\n    title: real\n    kind: bug\n    status: open\n`;
-  const result = auditBacklog(text);
-  const stub = result.findings.find((f) => f.code === AUDIT_CODES.STUB_ENTRY);
-  ok(stub, "STUB_ENTRY reported");
-  eq(stub.id, "b1", "the empty stub is named");
-  ok(stub.message.includes("no kind/status"), "the message names what is missing");
-});
-
-// WHY: a title-only entry (id + title, no body) is the SAME class of merge
-// damage — the body was destroyed while the title survived, and the audit
-// must not confuse "has a title" with "has a body".
-test("auditBacklog flags a title-only entry as a stub", () => {
-  const text = `meta:\n  schema_version: 1\nitems:\n  - id: b1\n    title: only a title\n  - id: b2\n    title: real\n    kind: bug\n    status: open\n`;
-  const result = auditBacklog(text);
-  const stub = result.findings.find((f) => f.code === AUDIT_CODES.STUB_ENTRY);
-  ok(stub && stub.id === "b1", "title-only entry is still a stub");
-  ok(stub.message.includes("[title]"), "the message names what the entry actually carried");
-});
-
-// WHY: a repeated body key inside one entry — two `title:` or two `source:` —
-// is a neighbouring entry absorbed after losing its own `- id:` line. This
-// is the shape that most often makes yaml.parse throw, so it must be named
-// separately from DUPLICATE_ID (two entries) — they have different fixes.
-test("auditBacklog flags repeated body keys inside a single entry", () => {
-  const text = `meta:\n  schema_version: 1\nitems:\n  - id: b1\n    title: first\n    kind: bug\n    status: open\n    title: absorbed\n    kind: chore\n`;
-  const result = auditBacklog(text);
-  const rep = result.findings.find((f) => f.code === AUDIT_CODES.REPEATED_KEY);
-  ok(rep, "REPEATED_KEY reported");
-  eq(rep.id, "b1", "the swallowing entry is named");
-  ok(rep.keys.includes("title") && rep.keys.includes("kind"), "the repeated keys are enumerated");
-});
-
-// WHY: a bare `key:` at the same indent as a sequence's `- ` items is the
-// residue of a merge that spliced one entry's `priority.reason` into another
-// entry's `refs:` list. yaml.parse throws "expected <block end>, found ?" on
-// the whole file, so the audit is the only path to a line-level fix.
-test("auditBacklog detects a mapping key inside a sequence (SEQUENCE_KEY_INTRUSION)", () => {
-  const text = `meta:\n  schema_version: 1\nitems:\n  - id: b1\n    title: first\n    kind: bug\n    status: open\n    refs:\n      - docs/one.md\n      - docs/two.md\n      reason: spliced from a neighbour by a merge\n`;
-  const result = auditBacklog(text);
-  const intrusion = result.findings.find((f) => f.code === AUDIT_CODES.SEQUENCE_KEY_INTRUSION);
-  ok(intrusion, "SEQUENCE_KEY_INTRUSION reported");
-  eq(intrusion.id, "b1", "the owning entry is named");
-  ok(intrusion.message.includes("refs"), "the owning sequence is named");
-});
-
-// WHY: a non-bNNN id is INFO, not a hazard — custom slugs are legal per the
-// schema. Surfacing them helps a reader who is reasoning about the next-free
-// id space, but they must not gate a write (would break `roadmap validate`
-// on any repo that uses custom slugs at all).
-test("auditBacklog reports MALFORMED_ID as INFO, not as a gating failure", () => {
-  const text = `meta:\n  schema_version: 1\nitems:\n  - id: fix-x\n    title: a custom slug\n    kind: bug\n    status: open\n`;
-  const result = auditBacklog(text);
-  eq(result.ok, false, "the finding is still surfaced");
-  eq(result.damaged, false, "but it does not gate — custom slugs are legal");
-  const mal = result.findings.find((f) => f.code === AUDIT_CODES.MALFORMED_ID);
-  ok(mal, "MALFORMED_ID reported");
-});
-
-// WHY: a well-formed backlog must audit clean — the whole point of a gating
-// check is that healthy files pass silently, so a false-positive would train
-// callers to ignore it.
-test("auditBacklog passes clean on a well-formed backlog", () => {
-  const text = `meta:\n  schema_version: 1\nitems:\n  - id: b1\n    title: one\n    kind: bug\n    status: open\n  - id: b2\n    title: two\n    kind: chore\n    status: open\n`;
-  const result = auditBacklog(text);
-  eq(result.ok, true, "clean file → ok:true");
-  eq(result.damaged, false, "clean file → damaged:false");
-  eq(result.findings, [], "clean file → no findings");
-  eq(result.entryCount, 2, "entry count matches");
-});
-
-// WHY: collectEntries is the base primitive; a caller that wants only the id
-// list (id allocation) reaches this one, not the whole audit. It must count
-// entries in the raw text (not in a parsed object that could have dropped a
-// duplicate), and it must return each entry's line number for attribution.
-test("collectEntries returns each id-line with its line number in the raw text", () => {
-  const text = `meta:\n  schema_version: 1\nitems:\n  - id: b1\n    title: one\n    kind: bug\n    status: open\n  - id: b2\n    title: two\n    kind: bug\n    status: open\n`;
-  const entries = collectEntries(text);
-  eq(entries.length, 2, "both entries collected");
-  eq(entries[0].id, "b1");
-  eq(entries[0].line, 4, "first id on line 4");
-  eq(entries[1].id, "b2");
-  eq(entries[1].line, 8, "second id on line 8");
-});
-
-// WHY: the audit is a pure text function — passing a non-string is a caller
-// bug that should throw immediately, not silently return ok:true.
-test("auditBacklog throws on a non-string input", () => {
-  throws(() => auditBacklog(null), "text must be a string", "null throws");
-  throws(() => auditBacklog(undefined), "text must be a string", "undefined throws");
-  throws(() => auditBacklog({ items: [] }), "text must be a string", "parsed object throws");
-});
-
-// WHY: a repo that adopts the audit while carrying pre-existing damage needs
-// a way to grandfather that damage in — otherwise they can't use `roadmap
-// backlog add` at all until every stub is repaired. The baseline pins by
-// STABLE signature (CODE:id), not line number, so ordinary appends don't
-// invalidate it.
-test("auditBacklog grandfathers findings whose signature appears in knownDamage", () => {
-  const text = `meta:\n  schema_version: 1\nitems:\n  - id: b1\n    title: real\n    kind: bug\n    status: open\n  - id: b2\n`;
-  const strict = auditBacklog(text);
-  eq(strict.damaged, true, "without a baseline, the stub is a gating hazard");
-
-  const gentle = auditBacklog(text, { knownDamage: ["STUB_ENTRY:b2"] });
-  eq(gentle.damaged, false, "with the signature grandfathered, the file audits clean-enough to mutate");
-  eq(gentle.findings.length, 0, "the grandfathered finding is removed from active findings");
-  eq(gentle.grandfathered.length, 1, "but it is still surfaced for visibility (grandfathered, not silenced)");
-  eq(gentle.grandfathered[0].id, "b2", "the specific entry is reported");
-});
-
-// WHY: a baseline that outlives the damage it describes silently loses the
-// ability to catch a NEW instance of that signature — the guard's whole
-// point is repair, not perpetual tolerance. `staleKnown` names the pins to
-// prune the moment the underlying damage is fixed.
-test("auditBacklog reports stale known_damage entries so the baseline can be pruned", () => {
-  const text = `meta:\n  schema_version: 1\nitems:\n  - id: b1\n    title: real\n    kind: bug\n    status: open\n`;
-  const result = auditBacklog(text, { knownDamage: ["STUB_ENTRY:b99", "DUPLICATE_ID:b7"] });
-  eq(result.staleKnown, ["STUB_ENTRY:b99", "DUPLICATE_ID:b7"], "both pins are stale — the file carries neither");
-  eq(result.damaged, false, "the file itself is clean");
-});
-
-// WHY: knownDamage that isn't an array (malformed config) must not crash the
-// audit — a caller who wrote `known_damage: STUB_ENTRY:b2` (a scalar) or
-// left the key null gets treated as "no baseline" and the audit runs strict.
-test("auditBacklog treats a non-array knownDamage as an empty baseline (safe strict)", () => {
-  const text = `meta:\n  schema_version: 1\nitems:\n  - id: b1\n    title: real\n    kind: bug\n    status: open\n  - id: b2\n`;
-  const nullish = auditBacklog(text, { knownDamage: null });
-  eq(nullish.damaged, true, "null baseline → strict");
-  const scalar = auditBacklog(text, { knownDamage: "STUB_ENTRY:b2" });
-  eq(scalar.damaged, true, "scalar baseline → strict (not a substring match)");
-});
-
-// WHY: `signatureOf` is the primitive a repo uses to bootstrap its baseline
-// (`roadmap audit --learn` will collect these). It must match the pattern
-// stored in meta.audit.known_damage byte-for-byte, or the pin is a lie.
-test("signatureOf produces the CODE:id signature used by knownDamage pins", () => {
-  eq(signatureOf({ code: "STUB_ENTRY", id: "b2" }), "STUB_ENTRY:b2");
-  eq(signatureOf({ code: "DUPLICATE_ID", id: "b1" }), "DUPLICATE_ID:b1");
-});
-
-// WHY: knownDamageOf is the tiny adapter validate.mjs / store.mjs use to
-// pull the pin list from a parsed backlog. It must degrade to [] on any
-// unusual shape rather than reaching into null/undefined and throwing.
-test("knownDamageOf reads meta.audit.known_damage and degrades safely on any missing/mistyped shape", () => {
-  eq(knownDamageOf({ meta: { audit: { known_damage: ["STUB_ENTRY:b2", "DUPLICATE_ID:b1"] } }, items: [] }),
-    ["STUB_ENTRY:b2", "DUPLICATE_ID:b1"], "the standard shape returns the list");
-  eq(knownDamageOf({ meta: { audit: {} }, items: [] }), [], "missing known_damage → []");
-  eq(knownDamageOf({ meta: {}, items: [] }), [], "missing audit → []");
-  eq(knownDamageOf({ items: [] }), [], "missing meta → []");
-  eq(knownDamageOf(null), [], "null backlog → []");
-  eq(knownDamageOf({ meta: { audit: { known_damage: "not an array" } } }), [], "wrong type → []");
-  eq(knownDamageOf({ meta: { audit: { known_damage: ["ok", 42, null, "also-ok"] } } }),
-    ["ok", "also-ok"], "non-string entries are filtered out (config typos don't get pinned)");
-});
-
 // ── Gauntlet conducted execution ───────────────────────────────────────────
 // WHY: PR identity is a protocol boundary. Quoted prose, prefix collisions, and duplicate
 // markers must never associate an old/unrelated PR with a new run or roadmap subject.
@@ -5559,9 +3870,9 @@ function gauntletFixture(maxRounds = 2) {
 function acknowledgedCriticComments(run, body, { url = "https://github.test/comment/critic",
   criticCreatedAt = "2026-08-08T12:01:00Z", ackCreatedAt = "2026-08-08T12:02:00Z" } = {}) {
   const critic = { body, author: "critic-worker", createdAt: criticCreatedAt,
-    updatedAt: criticCreatedAt, includesCreatedEdit: false, url };
+    updatedAt: criticCreatedAt, edited: false, url };
   const ack = { body: renderGauntletVerdictAck({ run, comment: critic }), author: run.lead_actor,
-    createdAt: ackCreatedAt, updatedAt: ackCreatedAt, includesCreatedEdit: false,
+    createdAt: ackCreatedAt, updatedAt: ackCreatedAt, edited: false,
     url: `${url}-ack` };
   return [critic, ack];
 }
@@ -5607,8 +3918,8 @@ test("Gauntlet PR protocol round-trips a hashed frozen bar and reconstructable r
   eq(parseGauntletPrMarkers(markerBarBody).key, "auth-login", "marker-like frozen-bar prose cannot collide with the protocol header");
   const releasePrompt = buildImplementationPrompt({ run: { ...run, base_ref: "release/next" },
     frozenBar: frozen });
-  ok(releasePrompt.includes("Required PR base branch: release/next")
-    && releasePrompt.includes("open exactly one PR targeting release/next"),
+  ok(releasePrompt.includes("Required base branch: release/next")
+    && releasePrompt.includes("targeting release/next"),
   "implementation workers receive the explicit non-default PR base branch");
 });
 
@@ -5632,7 +3943,7 @@ test("Gauntlet launch precommit recovers only the authenticated lead's nonce has
   "changing the repair ceiling invalidates the full-protocol launch attestation");
   eq(reconstructLaunchesFromComments({ run: { ...run, reconstructed: true },
     comments: [{ body, author: "roadmap-lead", createdAt: "2026-08-08T12:00:00Z",
-      updatedAt: "2026-08-08T12:01:00Z", includesCreatedEdit: true }] }), [],
+      updatedAt: "2026-08-08T12:01:00Z", edited: true }] }), [],
   "an edited lead comment cannot be transformed into a launch attestation");
 });
 
@@ -5654,7 +3965,7 @@ test("Gauntlet cancellation is a lead-authored full-protocol durable event", () 
     "a protocol mutation invalidates cancellation authority");
   eq(reconstructCancellationFromComments({ run, comments: [{ body, author: "roadmap-lead",
     createdAt: "2026-08-08T12:30:00Z", updatedAt: "2026-08-08T12:31:00Z",
-    includesCreatedEdit: true }] }), null,
+    edited: true }] }), null,
   "an edited lead comment cannot be transformed into a cancellation event");
 });
 
@@ -5717,7 +4028,7 @@ test("an edited placeholder cannot forge an earlier critic verdict after the non
   const marker = renderCriticMarker({ run, criticRole: "critic", round: 1, head: GAUNTLET_SHA_A,
     nonce: GAUNTLET_NONCE, verdict: "PASS" });
   const edited = deriveCriticResults({ run, currentHead: GAUNTLET_SHA_A, commits: [GAUNTLET_SHA_A], comments: [{
-    body: marker, author: "builder", createdAt: "2026-08-08T12:01:00Z", includesCreatedEdit: true,
+    body: marker, author: "builder", createdAt: "2026-08-08T12:01:00Z", edited: true,
   }] })[0];
   eq([edited.valid, edited.invalidReason], [false, "edited_result"],
     "GitHub edit metadata defeats the pre-created-placeholder attack");
@@ -5731,7 +4042,7 @@ test("delete-and-replay cannot reuse an acknowledgment bound to a deleted GitHub
     nonce: GAUNTLET_NONCE, verdict: "PASS" });
   const [, oldAck] = acknowledgedCriticComments(run, body, { url: "https://github.test/comment/deleted" });
   const replay = { body, author: "builder", createdAt: "2026-08-08T12:03:00Z",
-    updatedAt: "2026-08-08T12:03:00Z", includesCreatedEdit: false, url: "https://github.test/comment/replay" };
+    updatedAt: "2026-08-08T12:03:00Z", edited: false, url: "https://github.test/comment/replay" };
   const status = deriveRunStatus({ run, pr: { state: "OPEN", currentHead: GAUNTLET_SHA_A, checks: "passing" },
     comments: [oldAck, replay], commits: [GAUNTLET_SHA_A] });
   eq([status.state, status.canMerge, status.criticResults[0].invalidReason],
@@ -5739,7 +4050,7 @@ test("delete-and-replay cannot reuse an acknowledgment bound to a deleted GitHub
     "a public nonce and old acknowledgment are insufficient after the exact comment is deleted");
   const replayAck = { body: renderGauntletVerdictAck({ run, comment: replay }), author: run.lead_actor,
     createdAt: "2026-08-08T12:04:00Z", updatedAt: "2026-08-08T12:04:00Z",
-    includesCreatedEdit: false, url: "https://github.test/comment/replay-ack" };
+    edited: false, url: "https://github.test/comment/replay-ack" };
   const reacknowledged = deriveRunStatus({ run,
     pr: { state: "OPEN", currentHead: GAUNTLET_SHA_A, checks: "passing" },
     comments: [oldAck, replay, replayAck], commits: [GAUNTLET_SHA_A] });
@@ -5952,7 +4263,7 @@ for (const bounded of [false, true]) test(`Gauntlet lifecycle${bounded ? " with 
     getLaunchClaim: async (key) => remoteClaims.get(key) || null,
     addComment: async (_number, body) => {
       currentPr.comments.push({ body, author: "roadmap-lead", createdAt: leadCommentTimes.shift(),
-        includesCreatedEdit: false, url: `https://github.test/comment/lead-${currentPr.comments.length + 1}` });
+        edited: false, url: `https://github.test/comment/lead-${currentPr.comments.length + 1}` });
       return true;
     },
   };
@@ -6003,7 +4314,7 @@ for (const bounded of [false, true]) test(`Gauntlet lifecycle${bounded ? " with 
   const prHeadA = "1".repeat(40);
   const prHeadB = "2".repeat(40);
   currentPr = { number: 42, url: "https://github.test/pr/42", title: "Login", state: "OPEN", isDraft: false,
-    mergeStateStatus: "CLEAN", headRefName: "gauntlet/auth", baseRefName: "main", headRefOid: prHeadA, currentHead: prHeadA,
+    mergeStateStatus: "CLEAN", headRefName: "gauntlet/auth", baseRef: "main", headRefOid: prHeadA, currentHead: prHeadA,
     checks: "passing", comments: [], commits: [prHeadA], createdAt: "2026-08-08T12:01:00Z", updatedAt: "2026-08-08T12:01:00Z",
     body: renderGauntletPrMarkers({ run: localRun, subjectType: "slice", key: "auth-login", baseSha: base,
       barMarkdown: localRun.frozen_bar_markdown, barSha256: localRun.bar_sha256 }) };
@@ -6039,14 +4350,14 @@ for (const bounded of [false, true]) test(`Gauntlet lifecycle${bounded ? " with 
   const invalidBody = renderCriticMarker({ runId: started.runId, criticRole: "critic", round: 1,
     head: prHeadA, nonce: GAUNTLET_NONCE, verdict: "INVALID_OR_STALE" });
   currentPr.comments.push({ body: invalidBody,
-    author: "critic-worker", createdAt: "2026-08-08T12:02:00Z", includesCreatedEdit: false,
+    author: "critic-worker", createdAt: "2026-08-08T12:02:00Z", edited: false,
     url: "https://github.test/comment/invalid" });
   eq((await runGauntletStatus(root, started.runId, opts)).state, "awaiting_lead_ack", "worker verdict cannot drive the loop before lead judgment");
   await runGauntletAcknowledge(root, started.runId, { ...opts, commentUrl: "https://github.test/comment/invalid", confirm: true });
   eq((await runGauntletStatus(root, started.runId, opts)).state, "awaiting_critic", "attested INVALID_OR_STALE permits a fresh attempt");
   currentPr.comments = currentPr.comments.filter((comment) => comment.url !== "https://github.test/comment/invalid");
   currentPr.comments.push({ body: invalidBody, author: "critic-worker", createdAt: "2026-08-08T12:02:15Z",
-    includesCreatedEdit: false, url: "https://github.test/comment/invalid-replay" });
+    edited: false, url: "https://github.test/comment/invalid-replay" });
   eq((await runGauntletStatus(root, started.runId, opts)).state, "awaiting_lead_ack",
     "deleting and identically reposting a critic comment cannot reuse its old URL-bound acknowledgment");
   const replayAck = await runGauntletAcknowledge(root, started.runId, { ...opts,
@@ -6057,7 +4368,7 @@ for (const bounded of [false, true]) test(`Gauntlet lifecycle${bounded ? " with 
   const retryNonce = "d".repeat(32);
   await runGauntletCritic(root, started.runId, { ...opts, nonce: retryNonce, expectedHead: prHeadA });
   currentPr.comments.push({ body: renderCriticMarker({ runId: started.runId, criticRole: "critic", round: 1, head: prHeadA, nonce: retryNonce, verdict: "REVISE" }),
-    author: "critic-worker", createdAt: "2026-08-08T12:02:30Z", includesCreatedEdit: false,
+    author: "critic-worker", createdAt: "2026-08-08T12:02:30Z", edited: false,
     url: "https://github.test/comment/revise" });
   await runGauntletAcknowledge(root, started.runId, { ...opts, commentUrl: "https://github.test/comment/revise", confirm: true });
   const revisedStatus = await runGauntletStatus(root, started.runId, opts);
@@ -6107,7 +4418,7 @@ for (const bounded of [false, true]) test(`Gauntlet lifecycle${bounded ? " with 
   const criticB = await runGauntletCritic(root, started.runId, { ...opts, expectedHead: prHeadB });
   eq(criticB.round, 2, "repair advances the critic round");
   currentPr.comments.push({ body: renderCriticMarker({ runId: started.runId, criticRole: "critic", round: 2, head: prHeadB, nonce: GAUNTLET_NONCE, verdict: "PASS" }),
-    author: "critic-worker", createdAt: "2026-08-08T12:04:00Z", includesCreatedEdit: false,
+    author: "critic-worker", createdAt: "2026-08-08T12:04:00Z", edited: false,
     url: "https://github.test/comment/pass" });
   await runGauntletAcknowledge(root, started.runId, { ...opts, commentUrl: "https://github.test/comment/pass", confirm: true });
   const passed = await runGauntletStatus(root, started.runId, opts);
@@ -6120,7 +4431,7 @@ for (const bounded of [false, true]) test(`Gauntlet lifecycle${bounded ? " with 
     "profile:p:default#repair#critic/high",
     "profile:p:default#critic#Opus-4.1",
   ], "separate tiered role routines conducted the loop");
-  ok(launched[1].prompt.includes(`Exact expected head SHA: ${prHeadA}`), "critic sees the artifact SHA and bar");
+  ok(launched[1].prompt.includes(`Exact expected head: ${prHeadA}`) && launched[1].prompt.includes("PR #"), "critic sees the artifact head, the bar, and the backend-specific fetch wording");
   ok(launched[3].prompt.includes("Lead-synthesized repair packet") && launched[3].prompt.includes("same branch"), "repair sees lead scope and same-PR rule");
   eq(JSON.stringify(passed.run).includes(GAUNTLET_NONCE), false, "status does not expose an in-flight critic capability");
 
@@ -6198,7 +4509,7 @@ test("Gauntlet ambiguous launch stays locked and explicit cancellation preserves
   eq(cancelled.durable, true, "a pre-PR cancellation creates a protected shared tombstone");
   eq(readGauntletLedger(root).runs[run.run_id].launches[0].status, "ambiguous", "cancellation never erases the ambiguous receipt");
   currentPr = { number: 92, state: "OPEN", isDraft: false, mergeStateStatus: "CLEAN",
-    headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRefName: "main", checks: "passing",
+    headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRef: "main", checks: "passing",
     comments: [], commits: [GAUNTLET_SHA_A], createdAt: "2026-08-08T13:05:00Z",
     body: renderGauntletPrMarkers({ run, subjectType: "slice", key: "auth-login",
       barMarkdown: run.frozen_bar_markdown, barSha256: run.bar_sha256 }) };
@@ -6241,7 +4552,7 @@ test("PR-backed Gauntlet cancellation survives local-ledger loss and requires th
   const started = await runGauntletStart(root, "auth-login", opts);
   const localRun = readGauntletLedger(root).runs[started.runId];
   currentPr = { number: 91, url: "https://github.test/pr/91", title: "Login", state: "OPEN", isDraft: false,
-    mergeStateStatus: "CLEAN", headRefName: "gauntlet/auth", baseRefName: "main",
+    mergeStateStatus: "CLEAN", headRefName: "gauntlet/auth", baseRef: "main",
     headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, checks: "passing", comments: [],
     commits: [GAUNTLET_SHA_A], createdAt: "2026-08-08T14:01:00Z", updatedAt: "2026-08-08T14:01:00Z",
     body: renderGauntletPrMarkers({ run: localRun, subjectType: "slice", key: "auth-login",
@@ -6302,7 +4613,7 @@ test("repair-history compare errors remain diagnostic and explicitly cancelable"
     getLaunchClaim: async (key) => claims.get(key) || null,
     addComment: async (_number, body) => { currentPr.comments.push({ body, author: "roadmap-lead",
       createdAt: "2026-08-08T15:02:00Z", updatedAt: "2026-08-08T15:02:00Z",
-      includesCreatedEdit: false, url: `https://github.test/comment/${currentPr.comments.length + 1}` }); } };
+      edited: false, url: `https://github.test/comment/${currentPr.comments.length + 1}` }); } };
   const opts = { github, allowLocalBase: true,
     profiles: { p: { account: "a@b.c", routines: {
       "default#implementation": { trigger: "impl", token: "ki" },
@@ -6317,7 +4628,7 @@ test("repair-history compare errors remain diagnostic and explicitly cancelable"
   });
   const run = readGauntletLedger(root).runs[started.runId];
   currentPr = { number: 93, state: "OPEN", isDraft: false, mergeStateStatus: "CLEAN",
-    headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRefName: "main", checks: "passing",
+    headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRef: "main", checks: "passing",
     comments: [], commits: [GAUNTLET_SHA_A], createdAt: "2026-08-08T15:01:30Z",
     body: renderGauntletPrMarkers({ run, subjectType: "slice", key: "auth-login",
       barMarkdown: run.frozen_bar_markdown, barSha256: run.bar_sha256 }) };
@@ -6353,7 +4664,7 @@ test("confirmed GitHub recovery re-freezes every immutable PR field", async () =
     created_at: "2026-08-08T12:00:00Z", updated_at: "2026-08-08T13:00:00Z" };
   mutateGauntletLedger(root, (ledger) => { ledger.runs[run.run_id] = run; });
   const pr = { number: 7, state: "OPEN", isDraft: false, mergeStateStatus: "CLEAN",
-    headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRefName: "main", checks: "passing",
+    headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRef: "main", checks: "passing",
     comments: [], commits: [GAUNTLET_SHA_A], createdAt: run.created_at,
     body: renderGauntletPrMarkers({ run, subjectType: "slice", key: "auth-login", qualityBar: frozen }) };
   const github = { assertAvailable: () => true, findPrByRun: async () => pr, isAncestor: async () => true };
@@ -6379,7 +4690,7 @@ test("fresh status fails closed on critic and repair claims whose lead attestati
     const claimRef = `refs/heads/roadmap-gauntlet-locks/test-${kind}`;
     let cancellationClaim = null;
     const pr = { number: 66, state: "OPEN", isDraft: false, mergeStateStatus: "CLEAN",
-      headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRefName: "main", checks: "passing",
+      headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRef: "main", checks: "passing",
       comments: [], commits: [GAUNTLET_SHA_A], createdAt: "2026-08-08T12:00:00Z",
       body: renderGauntletPrMarkers({ run, subjectType: "slice", key: "auth-login", qualityBar: frozen }) };
     const github = { assertAvailable: () => true, viewerLogin: async () => "roadmap-lead",
@@ -6395,7 +4706,7 @@ test("fresh status fails closed on critic and repair claims whose lead attestati
     pr.comments.push({ body: renderGauntletCancellationMarker({ run,
       reason: "Lead reconciled the missing launch attestation and abandoned the run." }),
     author: "roadmap-lead", createdAt: "2026-08-08T12:00:30Z", updatedAt: "2026-08-08T12:00:30Z",
-    includesCreatedEdit: false, url: `https://github.test/comment/cancel-${kind}` });
+    edited: false, url: `https://github.test/comment/cancel-${kind}` });
     const cancelled = await runGauntletStatus(root, run.run_id, { github });
     eq([cancelled.state, cancelled.run.cancelledViaGithub], ["cancelled", true],
       `a valid claim-backed cancellation can terminate a ${kind} attestation crash gap`);
@@ -6407,7 +4718,7 @@ test("fresh status fails closed on critic and repair claims whose lead attestati
       : renderGauntletLaunchMarker({ run, role: "repair", round: 1,
         attempt: 1, expectedHead: GAUNTLET_SHA_A, packetSha256: "d".repeat(64) });
     pr.comments.push({ body: marker, author: "roadmap-lead", createdAt: "2026-08-08T12:01:00Z",
-      updatedAt: "2026-08-08T12:01:00Z", includesCreatedEdit: false,
+      updatedAt: "2026-08-08T12:01:00Z", edited: false,
       url: `https://github.test/comment/${kind}` });
     const restored = await runGauntletStatus(root, run.run_id, { github });
     ok(restored.state !== "infrastructure_failure", `${kind} recovers when claim and immutable lead attestation agree`);
@@ -6474,7 +4785,7 @@ test("a distributed implementation loser adopts only the confirmed winner protoc
     },
     addComment: async (_number, body) => { currentPr.comments.push({ body, author: "roadmap-lead",
       createdAt: "2026-08-08T11:03:00Z", updatedAt: "2026-08-08T11:03:00Z",
-      includesCreatedEdit: false, url: `https://github.test/comment/lead-${currentPr.comments.length + 1}` }); } };
+      edited: false, url: `https://github.test/comment/lead-${currentPr.comments.length + 1}` }); } };
   const common = { github, allowLocalBase: true,
     execImpl: (command, args, options) => command === "git" && args[0] === "rev-parse"
       ? { status: 0, stdout: `${baseline}\n`, stderr: "" }
@@ -6499,7 +4810,7 @@ test("a distributed implementation loser adopts only the confirmed winner protoc
   await runGauntletCancel(rootB, loser.runId, { ...common, confirm: true,
     reason: "Cancel only this losing pre-election candidate." });
   currentPr = { number: 73, state: "OPEN", isDraft: false, mergeStateStatus: "CLEAN",
-    headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRefName: "main", checks: "passing",
+    headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRef: "main", checks: "passing",
     comments: [], commits: [GAUNTLET_SHA_A], createdAt: "2026-08-08T11:02:00Z",
     body: renderGauntletPrMarkers({ run: winnerRun, subjectType: "slice", key: "auth-login",
       barMarkdown: winnerRun.frozen_bar_markdown, barSha256: winnerRun.bar_sha256 }) };
@@ -6559,7 +4870,7 @@ test("a local conductor persists and retries another machine's invalid critic la
     },
     addComment: async (_number, body) => { currentPr.comments.push({ body, author: "roadmap-lead",
       createdAt: "2026-08-08T11:20:00Z", updatedAt: "2026-08-08T11:20:00Z",
-      includesCreatedEdit: false, url: `https://github.test/comment/lead-${currentPr.comments.length + 1}` }); } };
+      edited: false, url: `https://github.test/comment/lead-${currentPr.comments.length + 1}` }); } };
   const opts = { github, allowLocalBase: true,
     profiles: { p: { account: "a@b.c", routines: {
       "default#implementation": { trigger: "impl", token: "ki" },
@@ -6573,18 +4884,18 @@ test("a local conductor persists and retries another machine's invalid critic la
   const remoteLaunch = { body: renderGauntletLaunchMarker({ run, role: "critic",
     criticRole: "critic", round: 1, attempt: 1, expectedHead: GAUNTLET_SHA_A,
     nonce: remoteNonce }), author: "roadmap-lead", createdAt: "2026-08-08T11:10:00Z",
-    updatedAt: "2026-08-08T11:10:00Z", includesCreatedEdit: false,
+    updatedAt: "2026-08-08T11:10:00Z", edited: false,
     url: "https://github.test/comment/remote-launch" };
   const invalid = { body: renderCriticMarker({ run, criticRole: "critic", round: 1,
     head: GAUNTLET_SHA_A, nonce: remoteNonce, verdict: "INVALID_OR_STALE" }),
     author: "critic-worker", createdAt: "2026-08-08T11:11:00Z",
-    updatedAt: "2026-08-08T11:11:00Z", includesCreatedEdit: false,
+    updatedAt: "2026-08-08T11:11:00Z", edited: false,
     url: "https://github.test/comment/remote-invalid" };
   const ack = { body: renderGauntletVerdictAck({ run, comment: invalid }), author: "roadmap-lead",
     createdAt: "2026-08-08T11:12:00Z", updatedAt: "2026-08-08T11:12:00Z",
-    includesCreatedEdit: false, url: "https://github.test/comment/remote-invalid-ack" };
+    edited: false, url: "https://github.test/comment/remote-invalid-ack" };
   currentPr = { number: 74, state: "OPEN", isDraft: false, mergeStateStatus: "CLEAN",
-    headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRefName: "main", checks: "passing",
+    headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRef: "main", checks: "passing",
     comments: [remoteLaunch, invalid, ack], commits: [GAUNTLET_SHA_A],
     createdAt: "2026-08-08T11:05:00Z",
     body: renderGauntletPrMarkers({ run, subjectType: "slice", key: "auth-login",
@@ -6618,7 +4929,7 @@ test("ledger-loss recovery advances past two acknowledged invalid critic attempt
     },
     addComment: async (_number, body) => { currentPr.comments.push({ body, author: "roadmap-lead",
       createdAt: "2026-08-08T12:20:00Z", updatedAt: "2026-08-08T12:20:00Z",
-      includesCreatedEdit: false, url: `https://github.test/comment/lead-${currentPr.comments.length + 1}` }); } };
+      edited: false, url: `https://github.test/comment/lead-${currentPr.comments.length + 1}` }); } };
   const opts = { github, allowLocalBase: true,
     profiles: { p: { account: "a@b.c", routines: {
       "default#implementation": { trigger: "impl", token: "ki" },
@@ -6633,19 +4944,19 @@ test("ledger-loss recovery advances past two acknowledged invalid critic attempt
     comments.push({ body: renderGauntletLaunchMarker({ run, role: "critic",
       criticRole: "critic", round: 1, attempt, expectedHead: GAUNTLET_SHA_A, nonce }),
     author: "roadmap-lead", createdAt: `2026-08-08T12:${minute}:00Z`,
-    updatedAt: `2026-08-08T12:${minute}:00Z`, includesCreatedEdit: false,
+    updatedAt: `2026-08-08T12:${minute}:00Z`, edited: false,
     url: `https://github.test/comment/launch-${attempt}` });
     const invalid = { body: renderCriticMarker({ run, criticRole: "critic", round: 1,
       head: GAUNTLET_SHA_A, nonce, verdict: "INVALID_OR_STALE" }), author: "critic-worker",
     createdAt: `2026-08-08T12:${minute + 1}:00Z`, updatedAt: `2026-08-08T12:${minute + 1}:00Z`,
-    includesCreatedEdit: false, url: `https://github.test/comment/invalid-${attempt}` };
+    edited: false, url: `https://github.test/comment/invalid-${attempt}` };
     comments.push(invalid, { body: renderGauntletVerdictAck({ run, comment: invalid }),
       author: "roadmap-lead", createdAt: `2026-08-08T12:${minute + 2}:00Z`,
-      updatedAt: `2026-08-08T12:${minute + 2}:00Z`, includesCreatedEdit: false,
+      updatedAt: `2026-08-08T12:${minute + 2}:00Z`, edited: false,
       url: `https://github.test/comment/ack-${attempt}` });
   }
   currentPr = { number: 75, state: "OPEN", isDraft: false, mergeStateStatus: "CLEAN",
-    headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRefName: "main", checks: "passing",
+    headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRef: "main", checks: "passing",
     comments, commits: [GAUNTLET_SHA_A], createdAt: "2026-08-08T12:05:00Z",
     body: renderGauntletPrMarkers({ run, subjectType: "slice", key: "auth-login",
       barMarkdown: run.frozen_bar_markdown, barSha256: run.bar_sha256 }) };
@@ -6676,7 +4987,7 @@ test("a ledgerless conductor advances past a closed same-base implementation att
     base_sha: base, base_ref: "main", lead_actor: "roadmap-lead", bar_sha256: frozen.sha256,
     frozen_bar_markdown: frozen.markdown, max_rounds: 2, critic_tier: null, repair_tier: null,
     launches: [], created_at: "2026-08-08T10:00:00Z", updated_at: "2026-08-08T11:00:00Z" };
-  const closedPr = { number: 17, state: "CLOSED", baseRefName: "main", currentHead: GAUNTLET_SHA_A,
+  const closedPr = { number: 17, state: "CLOSED", baseRef: "main", currentHead: GAUNTLET_SHA_A,
     comments: [], commits: [GAUNTLET_SHA_A], createdAt: firstRun.created_at,
     body: renderGauntletPrMarkers({ run: firstRun, subjectType: "slice", key: "auth-login",
       qualityBar: frozen }) };
@@ -6736,7 +5047,7 @@ test("two independent conductors elect exactly one GitHub launch-lock winner", a
     base_sha: base, base_ref: "main", lead_actor: "roadmap-lead", bar_sha256: frozen.sha256,
     frozen_bar_markdown: frozen.markdown, max_rounds: 2, critic_tier: null, repair_tier: null, launches: [] };
   const pr = { number: 88, state: "OPEN", isDraft: false, mergeStateStatus: "CLEAN",
-    headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRefName: "main", checks: "passing",
+    headRefOid: GAUNTLET_SHA_A, currentHead: GAUNTLET_SHA_A, baseRef: "main", checks: "passing",
     comments: [], commits: [GAUNTLET_SHA_A], createdAt: "2026-08-08T12:00:00Z",
     body: renderGauntletPrMarkers({ run, subjectType: "slice", key: "auth-login", qualityBar: frozen }) };
   const claims = new Set();
@@ -6750,7 +5061,7 @@ test("two independent conductors elect exactly one GitHub launch-lock winner", a
       claims.add(key); return { claimed: true, ref };
     },
     addComment: async (_number, body) => { pr.comments.push({ body, author: "roadmap-lead",
-      createdAt: leadTimes.shift(), includesCreatedEdit: false,
+      createdAt: leadTimes.shift(), edited: false,
       url: `https://github.test/comment/lead-${pr.comments.length + 1}` }); } };
   let fires = 0;
   const common = { github, confirmRecoveredBar: true, expectedHead: GAUNTLET_SHA_A,
@@ -6834,6 +5145,214 @@ test("Gauntlet ledger lock fails closed with actionable owner metadata", () => {
   rmSync(root, { recursive: true, force: true });
 });
 
+// ── native estimation engine (agent-time port) ───────────────────────────────
+// Ported from agent-time's tests/test_estimator.py so the JS engine stays faithful to the model it
+// replaces. Same fixtures, same expectations; roadmap-specific IO tests follow at the end.
+const SAMPLE_HISTORY = resolve("scripts/test/fixtures/agent-time/sample-history.jsonl");
+const makeOutcome = ({ shape = "localized-bugfix", summary = "fix a bug in the parser", actual_minutes = 30, actual_rounds = 10, est_expected = 25, ts = null, model = undefined } = {}) => ({
+  type: "outcome", task_id: "t-test", ts: ts || "2026-07-01T12:00:00+00:00", summary, shape,
+  est_minutes: { low: est_expected * 0.5, expected: est_expected, high: est_expected * 2 },
+  actual_minutes, actual_rounds, status: "pass", ...(model !== undefined ? { model } : {}),
+});
+const near = (a, b, msg, tol = 1e-9) => ok(Math.abs(a - b) <= tol, `${msg} (${a} vs ${b})`);
+
+test("estimator core math: PERT, excess-additive risk with cap, unknown risk rejected", () => {
+  near(estimator.pert(6, 12, 24), (6 + 48 + 24) / 6, "PERT");
+  near(estimator.combinedRisk(["no-tests", "unfamiliar-code-path"]), 1 + 0.2 + 0.25, "excess-additive");
+  eq(estimator.combinedRisk(Object.keys(estimator.RISKS)), estimator.CONFIG.risk_cap, "capped at risk_cap");
+  throws(() => estimator.combinedRisk(["cosmic-rays"]), "unknown risk factor", "unknown risk rejected");
+});
+
+test("estimator risk skews right and keeps order; no risk is identity", () => {
+  const [low, mode, high] = estimator.applyRisk(5, 10, 20, 1.5);
+  ok(low < mode && mode < high, "ordered");
+  near(low, 5 * 1.15, "low gets 30% of the excess"); near(mode, 10 * 1.5, "mode 100%"); near(high, 20 * 1.75, "high 150%");
+  eq(estimator.applyRisk(5, 10, 20, 1), [5, 10, 20], "M=1 is identity");
+});
+
+test("estimator buildRounds: numeric override is the mode, triple is literal, unknowns rejected; shape tables well-formed", () => {
+  eq(estimator.buildRounds("localized-bugfix", { discovery: 6 }).discovery, [6 * 0.7, 6, 6 * 1.6], "numeric override → mode with scaled low/high");
+  eq(estimator.buildRounds("localized-bugfix", { implementation: [2, 4, 9] }).implementation, [2, 4, 9], "triple taken literally");
+  throws(() => estimator.buildRounds("mega-task"), "unknown shape", "unknown shape");
+  throws(() => estimator.buildRounds("refactor", { vibes: 3 }), "unknown round category", "unknown category");
+  for (const [shape, table] of Object.entries(estimator.SHAPES)) {
+    eq(Object.keys(table).sort(), [...estimator.CATEGORIES].sort(), `${shape} has every category`);
+    for (const [cat, [low, mode, high]] of Object.entries(table)) ok(low <= mode && mode <= high, `${shape}.${cat} ordered`);
+  }
+});
+
+test("estimator widen narrows monotonically; percentile interpolates; weightedMedian repeats by weight", () => {
+  const widths = Array.from({ length: 30 }, (_, n) => estimator.widen(n));
+  eq(widths, [...widths].sort((a, b) => b - a), "monotone decreasing");
+  ok(widths[0] > 1.7 && widths[29] < 1.15, "sparse → wide, rich → narrow");
+  eq([estimator.percentile([1, 2, 3, 4, 5], 0), estimator.percentile([1, 2, 3, 4, 5], 1), estimator.percentile([1, 2, 3, 4, 5], 0.5)], [1, 5, 3], "percentile ends + median");
+  eq(estimator.weightedMedian([[1, 1], [10, 3]]), 10, "weight repeats the value");
+});
+
+test("estimator keywords strip stopwords; jaccard", () => {
+  const kw = estimator.keywords("Add a --verbose flag to the estimator CLI");
+  ok(kw.has("--verbose") && kw.has("flag") && !kw.has("the"), "tokens kept, stopwords dropped");
+  eq(estimator.jaccard(new Set(), new Set(["x"])), 0, "empty → 0");
+  eq(estimator.jaccard(new Set(["a", "b"]), new Set(["a", "b"])), 1, "identical → 1");
+  near(estimator.jaccard(new Set(["a", "b"]), new Set(["b", "c"])), 1 / 3, "1/3 overlap");
+});
+
+test("estimator calibration cascade: empty → static; shape beats global; similar beats shape; global fallback", () => {
+  const empty = estimator.calibrate([], "localized-bugfix", "fix a bug");
+  eq([empty.kind, empty.mpr], ["static", estimator.CONFIG.static_minutes_per_round], "uncalibrated static prior");
+  ok(empty.basis.includes("UNCALIBRATED"), "labelled");
+  const history = [
+    ...[0, 1, 2].map((i) => makeOutcome({ summary: `fix issue ${i} in module ${i}`, actual_minutes: 20, actual_rounds: 10 })),
+    ...[0, 1, 2, 3].map((i) => makeOutcome({ shape: "refactor", summary: `refactor thing ${i}`, actual_minutes: 50, actual_rounds: 10 })),
+  ];
+  const shape = estimator.calibrate(history, "localized-bugfix", "fix a totally unrelated defect");
+  eq([shape.kind, shape.n], ["shape", 3], "shape median"); near(shape.mpr, 2, "bugfix pace, not refactor pace");
+  const similar = [0, 1, 2].map(() => makeOutcome({ summary: "fix pagination cursor bug in list endpoint", actual_minutes: 40, actual_rounds: 10 }));
+  const other = [0, 1, 2].map((i) => makeOutcome({ summary: `fix flux capacitor ${i} overload ${i}`, actual_minutes: 10, actual_rounds: 10 }));
+  const sim = estimator.calibrate([...similar, ...other], "localized-bugfix", "fix pagination cursor bug in detail endpoint");
+  eq(sim.kind, "similar", "similar tasks win"); near(sim.mpr, 4, "similar pace");
+  const glob = estimator.calibrate([0, 1, 2, 3, 4].map((i) => makeOutcome({ shape: "refactor", summary: `refactor part ${i}`, actual_minutes: 30, actual_rounds: 10 })), "localized-bugfix", "fix something");
+  eq(glob.kind, "global", "global fallback");
+});
+
+test("estimator bias correction is clamped and recency-weighted", () => {
+  const clamped = estimator.calibrate([0, 1, 2].map((i) => makeOutcome({ summary: `fix distinct thing number ${i} entirely`, actual_minutes: 500, actual_rounds: 10, est_expected: 10 })), "localized-bugfix", "fix another unrelated thing");
+  eq(clamped.correction, estimator.CONFIG.correction_clamp[1], "clamped at the ceiling");
+  const now = new Date("2026-07-08T00:00:00Z");
+  const oldTs = new Date(now.getTime() - 200 * 86400000).toISOString(), newTs = new Date(now.getTime() - 10 * 86400000).toISOString();
+  const history = [
+    makeOutcome({ summary: "alpha beta gamma", actual_minutes: 10, actual_rounds: 5, est_expected: 20, ts: oldTs }),
+    makeOutcome({ summary: "delta epsilon zeta", actual_minutes: 10, actual_rounds: 5, est_expected: 20, ts: oldTs }),
+    makeOutcome({ summary: "eta theta iota", actual_minutes: 40, actual_rounds: 5, est_expected: 20, ts: newTs }),
+  ];
+  // weighted ratios: [0.5, 0.5, 2.0, 2.0] → median 1.25 (unweighted would be 0.5)
+  near(estimator.calibrate(history, "localized-bugfix", "kappa lambda mu", { now }).correction, 1.25, "recent outcome weighs 2×");
+});
+
+test("estimator computeEstimate: labelled when uncalibrated, ordering invariant, risks raise, calibration narrows, empirical spread at n≥15, checkpoint advice", () => {
+  const un = estimator.computeEstimate("fix a bug", "localized-bugfix", [], {}, []);
+  ok(!un.calibrated && un.calibration_basis.includes("UNCALIBRATED") && un.confidence === "low", "uncalibrated → labelled, low confidence");
+  for (const shape of Object.keys(estimator.SHAPES)) {
+    const e = estimator.computeEstimate("do a task", shape, ["unknown-root-cause", "no-tests"], {}, []);
+    ok(e.est_rounds.low <= e.est_rounds.expected && e.est_rounds.expected <= e.est_rounds.high, `${shape} rounds ordered`);
+    ok(e.est_minutes.low <= e.est_minutes.expected && e.est_minutes.expected <= e.est_minutes.high, `${shape} minutes ordered`);
+  }
+  const risky = estimator.computeEstimate("fix a bug", "localized-bugfix", ["unknown-root-cause"], {}, []);
+  ok(risky.est_minutes.expected > un.est_minutes.expected && risky.est_minutes.high > un.est_minutes.high, "risk raises expected and high");
+  const eight = Array.from({ length: 8 }, (_, i) => makeOutcome({ summary: `fix separate defect ${i} elsewhere ${i}`, actual_minutes: 30, actual_rounds: 10, est_expected: 30 }));
+  const rich = estimator.computeEstimate("fix a new bug", "localized-bugfix", [], {}, eight);
+  const spread = (e) => e.est_minutes.high / Math.max(e.est_minutes.low, 0.1);
+  ok(spread(rich) < spread(un), "calibration narrows the range");
+  const sixteen = Array.from({ length: 16 }, (_, i) => makeOutcome({ summary: `fix distinct defect ${i} in area ${i}`, actual_minutes: 30 + i, actual_rounds: 10, est_expected: 30 }));
+  ok(estimator.computeEstimate("fix a new bug", "localized-bugfix", [], {}, sixteen).calibration_basis.includes("empirical p20/p80"), "empirical spread at high n");
+  const big = estimator.computeEstimate("big rework", "cross-cutting-feature", ["large-diff"], {}, []);
+  ok(big.est_minutes.expected > estimator.CONFIG.checkpoint_minutes && big.checkpoint.includes("splitting"), "long task → split advice");
+});
+
+test("estimator sample-history fixture (agent-time's) loads and calibrates sanely", () => {
+  const records = estimator.parseRecords(readFileSync(SAMPLE_HISTORY, "utf8"));
+  eq(estimator.usableOutcomes(records).length, 7, "7 usable outcomes");
+  const est = estimator.computeEstimate("add a --verbose flag to the estimator CLI", "localized-feature", [], {}, records);
+  ok(est.calibrated && est.est_minutes.expected > 15 && est.est_minutes.expected < 120, "calibrated, sane wall-clock for a ~15-round task");
+});
+
+test("estimator per-model: normalizeModel, horizons, checkpoint respects the model horizon, pace factor gated + clamped", () => {
+  eq([estimator.normalizeModel("claude-opus-4-8"), estimator.normalizeModel("Opus 4.8"), estimator.normalizeModel("anthropic/sonnet-4.6"), estimator.normalizeModel(null)], ["opus-4.8", "opus-4.8", "sonnet-4.6", null], "canonical names");
+  eq([estimator.modelHorizon("opus-4.8")[0], estimator.modelHorizon("claude-sonnet-4-6")[0], estimator.modelHorizon("gemini-3.1-pro")[0], estimator.modelHorizon("mystery-model")[0]], [90, 30, 45, estimator.CONFIG.checkpoint_minutes], "horizon lookup + default");
+  const records = estimator.parseRecords(readFileSync(SAMPLE_HISTORY, "utf8"));
+  const slow = estimator.computeEstimate("build a small feature", "localized-feature", [], {}, records, { model: "sonnet-4.6" });
+  const fast = estimator.computeEstimate("build a small feature", "localized-feature", [], {}, records, { model: "opus-4.8" });
+  ok(slow.est_minutes.expected > 30 && fast.est_minutes.expected < 90, "lands between the two horizons");
+  ok(slow.checkpoint.includes("splitting") && !fast.checkpoint.includes("splitting"), "30-min horizon flags, 90-min doesn't");
+  const few = [0, 1, 2].map(() => makeOutcome({ actual_minutes: 20, actual_rounds: 10, model: "opus-4.8" }));
+  eq(estimator.modelPaceFactor(few, "opus-4.8")[0], 1, "too little data → neutral");
+  const opus = Array.from({ length: 5 }, () => makeOutcome({ actual_minutes: 30, actual_rounds: 10, model: "opus-4.8" }));
+  const others = Array.from({ length: 5 }, () => makeOutcome({ actual_minutes: 60, actual_rounds: 10, model: "sonnet-4.6" }));
+  const [factor, note] = estimator.modelPaceFactor([...opus, ...others], "opus-4.8");
+  ok(factor <= 1 && factor >= estimator.CONFIG.model_pace_clamp[0] && note, "faster model → factor ≤ 1, clamped, noted");
+});
+
+test("estimator user-level blending: user-only when local is empty; blended when both qualify", () => {
+  const user = [0, 1, 2, 3].map((i) => makeOutcome({ summary: `fix bug ${i} in parser ${i}`, actual_minutes: 30, actual_rounds: 10 }));
+  const userOnly = estimator.calibrate([], "localized-bugfix", "fix a parser bug", { userRecords: user });
+  ok(["similar", "shape"].includes(userOnly.kind) && userOnly.basis.includes("user-level"), "a user level qualifies");
+  const local = [0, 1, 2].map((i) => makeOutcome({ summary: `fix thing ${i} area ${i}`, actual_minutes: 20, actual_rounds: 10 }));
+  const user2 = [0, 1, 2].map((i) => makeOutcome({ summary: `fix other ${i} zone ${i}`, actual_minutes: 60, actual_rounds: 10 }));
+  const blended = estimator.calibrate(local, "localized-bugfix", "fix a brand new defect", { userRecords: user2 });
+  const localOnly = estimator.calibrate(local, "localized-bugfix", "fix a brand new defect");
+  ok(blended.basis.includes("blended") && blended.mpr >= localOnly.mpr && blended.mpr <= 6, "blended, weighted toward local");
+});
+
+test("estimator records: parseRecords skips junk; buildEstimateRecord snapshots the session; outcome auto-fills deltas and refuses no-actuals", () => {
+  eq(estimator.parseRecords('{"a":1}\nnot json\n\n{"b":2}\n').length, 2, "junk lines skipped");
+  const now = new Date("2026-07-08T10:00:00Z");
+  const est = estimator.computeEstimate("add a flag", "localized-feature", ["no-tests"], {}, []);
+  const base = estimator.buildEstimateRecord(est, { taskId: "t-20260708-abcd", now, model: "opus-4.8", sessionId: "s1", session: { session_id: "s1", rounds: 2, edited_files: [], bash_commands: [] } });
+  eq([base.type, base.status, base.risks, base.round_counter_start, base.ts], ["estimate", "pending", ["no-tests"], 2, "2026-07-08T10:00:00+00:00"], "record shape matches agent-time");
+  const later = new Date("2026-07-08T10:20:00Z");
+  const session = { session_id: "s1", rounds: 7, edited_files: ["x.py", "y.py"], bash_commands: ["pytest -q"] };
+  const out = estimator.buildOutcomeRecord({ base, taskId: base.task_id, now: later, status: "pass", actualMinutes: 20, session });
+  eq([out.actual_rounds, out.files_changed, out.commands_run, out.auto_filled, out.est_minutes], [5, 2, ["pytest"], true, base.est_minutes], "deltas since the estimate, prediction carried");
+  const elapsed = estimator.buildOutcomeRecord({ base, taskId: base.task_id, now: later, status: "pass", actualRounds: 14 });
+  eq(elapsed.actual_minutes, 20, "actual_minutes computed from the estimate timestamp");
+  throws(() => estimator.buildOutcomeRecord({ base, taskId: base.task_id, now: later, status: "pass" }), "--actual-rounds is required", "no actuals and no session → refused (agent-time's wording)");
+  throws(() => estimator.buildOutcomeRecord({ taskId: "t-x", now: later, status: "pass", actualRounds: 9, actualMinutes: 20 }), "--summary and --shape are required", "backfill needs summary + shape");
+  eq(estimator.buildOutcomeRecord({ taskId: "t-x", now: later, status: "pass", actualRounds: 9, actualMinutes: 20, summary: "imported", shape: "localized-bugfix" }).shape, "localized-bugfix", "backfill works");
+  eq(estimator.firstToken("FOO=bar pytest -q"), "pytest", "env prefix ignored");
+});
+
+// WHY: this is the whole point of the slice — with nothing configured, `roadmap estimate` prices natively,
+// appends an agent-time-compatible pending record, and `log` closes the loop against that same history.
+test("native estimate → history.jsonl → log round-trip with no Python and no engine configured", () => {
+  const root = mkdtempSync(join(tmpdir(), "roadmap-native-est-"));
+  mkdirSync(join(root, "docs", "roadmap"), { recursive: true });
+  writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"),
+    `meta:\n  schema_version: 1\n  program: T\npis:\n  - id: a\n    title: A\n    status: active\n    sprints:\n      - { id: s1, title: Build the thing, status: next, invoke: build, shape: localized-feature, risks: [external-api] }\n      - { id: s2, title: Bogus, status: next, invoke: bogus, shape: localized-feature, risks: [cosmic-rays] }\n`, "utf8");
+  const env = { AGENT_TIME_USER_DATA: join(root, "nouser.jsonl") };   // isolate from ~/.claude and $AGENT_TIME_*
+  const r = runEstimate(root, { all: true, env, now: "2026-07-08T10:00:00Z", taskIdHex: "beef" });
+  eq(r.estimated.map((e) => e.invoke), ["build"], "the well-formed slice is priced natively");
+  ok(r.errors.some((x) => x.invoke === "bogus" && x.error.includes("unknown risk factor")), "an unknown risk is an error for that slice, not a guess");
+  const hist = resolveHistory(root, env);
+  const recs = estimator.parseRecords(readFileSync(hist, "utf8"));
+  eq([recs.length, recs[0].type, recs[0].task_id, recs[0].status, recs[0].risks], [1, "estimate", "t-20260708-beef", "pending", ["external-api"]], "pending record appended in agent-time's shape");
+  const sp = parseDocument(readFileSync(join(root, "docs", "roadmap", "roadmap.yaml"), "utf8")).toJS().pis[0].sprints[0];
+  eq(sp.estimate.task_id, "t-20260708-beef", "task_id cached on the slice");
+  ok(sp.estimate.minutes.expected > 0 && sp.estimate.basis.includes("UNCALIBRATED"), "minutes + basis cached");
+
+  // Close the loop: log with explicit actuals → outcome appended; re-fire is idempotent.
+  const l1 = runLog(root, { invoke: "build", status: "pass", actualRounds: 14, actualMinutes: 42, env, now: "2026-07-08T11:00:00Z" });
+  ok(l1.logged && l1.actual_minutes === 42 && l1.actual_rounds === 14, "outcome logged with the given actuals");
+  const recs2 = estimator.parseRecords(readFileSync(hist, "utf8"));
+  eq([recs2.length, recs2[1].type, recs2[1].task_id, recs2[1].est_minutes], [2, "outcome", "t-20260708-beef", recs[0].est_minutes], "outcome carries the prediction for future ratios");
+  ok(runLog(root, { invoke: "build", status: "pass", env }).skipped, "re-fire is idempotent");
+
+  // Without actuals and without session activity the native log is REJECTED (returned, never thrown).
+  runEstimate(root, { invoke: "build", force: true, env, now: "2026-07-08T12:00:00Z", taskIdHex: "cafe" });
+  const rejected = runLog(root, { invoke: "build", status: "pass", env, now: "2026-07-08T12:30:00Z" });
+  ok(rejected.error && rejected.error.includes("--actual-rounds is required"), "no-actuals degradation path surfaces, never throws");
+
+  // With a session file (as agent-time's PostToolUse hook writes) the actuals auto-fill as deltas.
+  const sdir = join(root, ".claude", "agent-time", "sessions");
+  mkdirSync(sdir, { recursive: true });
+  writeFileSync(join(sdir, "s9.json"), JSON.stringify({ session_id: "s9", rounds: 6, edited_files: ["a.js"], bash_commands: ["npm test"] }));
+  runEstimate(root, { invoke: "build", force: true, env, now: "2026-07-08T13:00:00Z", taskIdHex: "f00d" });   // snapshot: 6 rounds
+  writeFileSync(join(sdir, "s9.json"), JSON.stringify({ session_id: "s9", rounds: 11, edited_files: ["a.js", "b.js"], bash_commands: ["npm test", "npm run lint"] }));
+  const auto = runLog(root, { invoke: "build", status: "pass", env, now: "2026-07-08T13:30:00Z" });
+  eq([auto.logged, auto.auto_filled, auto.actual_rounds, auto.actual_minutes], [true, true, 5, 30], "Δ5 rounds auto-filled, 30 min elapsed from the estimate timestamp");
+  eq(readSession(hist, "s9").rounds, 11, "session file read"); eq(resolveSessionId(hist, {}), "s9", "latest session resolved");
+  eq(resolveUserHistory(hist, {}, root), null, "user history that IS the local file is skipped");
+  eq(resolveUserHistory(hist, { AGENT_TIME_USER_DATA: "/elsewhere/h.jsonl" }), "/elsewhere/h.jsonl", "env override honoured");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// ── package boundaries (docs/ARCHITECTURE.md) ─────────────────────────────────
+test("boundary check: core never imports an executor and only the loader reads the work profile", async () => {
+  const { checkBoundaries } = await import("../check-boundaries.mjs");
+  const r = checkBoundaries(resolve("."));
+  eq(r.unexpected, [], "no unexpected core→executor imports or stray work-profile reads");
+  eq(r.stale, [], "every EXPECTED edge still exists (delete cut edges from the list)");
+});
+
 registerEvaluationTests(test);
 registerAuthorizationTests(test);
 registerEvaluationReviewTests(test);
@@ -6842,6 +5361,6 @@ registerAuthorizationIoTests(test);
 registerModelPolicyTests(test);
 registerPortfolioTests(test);
 registerDecisionTests(test);
-await Promise.all(pending);
+const { passed, failed } = await summary();
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

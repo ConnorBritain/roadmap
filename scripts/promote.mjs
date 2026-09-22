@@ -4,8 +4,8 @@
 // carry over; the item is marked promoted with a promoted_to back-link. Both YAMLs are
 // validated before either is written; both generated views re-render.
 
-import { mutateBoth } from "./lib/store.mjs";
-import { performPromotion } from "./lib/backlog-core.mjs";
+import { mutateBoth } from "@connorbritain/roadmap-core/store.mjs";
+import { performPromotion } from "@connorbritain/roadmap-core/backlog-core.mjs";
 
 const args = process.argv.slice(2);
 const val = (n) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : undefined; };

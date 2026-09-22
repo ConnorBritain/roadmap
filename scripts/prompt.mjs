@@ -3,10 +3,10 @@
 // other side-effecting entrypoints. select() uses raw-mode arrow-key navigation when the TTY
 // supports it, and DEGRADES to a numbered text prompt otherwise (so it never hangs on a terminal
 // without raw mode). number() and confirm() are line-based. Ctrl-C / ESC cancel cleanly (restore
-// the TTY, exit 0). The pure decision logic (movement, cap parsing) lives in lib/wizard-core.mjs.
+// the TTY, exit 0). The pure decision logic (movement, cap parsing) lives in packages/exec-engineering/src/wizard-core.mjs.
 
 import readline from "node:readline";
-import { moveSelection, parseCap } from "./lib/wizard-core.mjs";
+import { moveSelection, parseCap } from "@connorbritain/roadmap-exec-engineering/wizard-core.mjs";
 
 const S = {
   reset: "\x1b[0m", bold: "\x1b[1m", dim: "\x1b[2m",

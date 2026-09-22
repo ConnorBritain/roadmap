@@ -2,12 +2,13 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { stringify } from "yaml";
-import { loadGraph } from "./lib/graph.mjs";
-import { LOCAL_CONFIG_REL, BUILTIN_PROFILES, readLocalConfig, configuredProfiles } from "./lib/assistant-core.mjs";
+import { loadGraph } from "@connorbritain/roadmap-core/graph.mjs";
+import { LOCAL_CONFIG_REL, BUILTIN_PROFILES, readLocalConfig, configuredProfiles } from "@connorbritain/roadmap-exec-engineering/assistant-core.mjs";
+import { REL } from "@connorbritain/roadmap-core/cli-core.mjs";
 
 const args = process.argv.slice(2);
 const action = args[0] || "list";
-const graph = loadGraph("docs/roadmap/roadmap.yaml");
+const graph = loadGraph(join(...REL));
 const root = process.cwd();
 const { path, config } = readLocalConfig(root);
 if (action === "list") {

@@ -1,0 +1,693 @@
+// roadmap linear <status|auth|setup|sync> — the ONLY file that talks to Linear's API.
+// The brain is lib/linear-core.mjs (pure); this layer does GraphQL IO (global fetch,
+// injectable for tests), the sync cursor, and the YAML write-backs via lib/store.mjs.
+//
+//   roadmap linear status [--probe] [--json]   state check (probe = one networked viewer query)
+//   roadmap linear auth                        how to set LINEAR_API_KEY (never stored in files)
+//   roadmap linear setup --team KEY [...]      write meta.linear (queries your teams first)
+//   roadmap linear provision                   shape the workspace: labels, views, guidance texts
+//   roadmap linear sync [--dry] [--push-only] [--pull-only]
+//   roadmap linear post-update --pi <id> --body <text|@file>   digest → Linear project update
+
+import { readFileSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { loadGraph, flatten } from "./graph.mjs";
+import { setFields } from "./mcp-core.mjs";
+import { addItem, setItemFields } from "./backlog-core.mjs";
+import { mutateRoadmap, mutateBacklog, loadBacklog, roadmapPaths } from "./store.mjs";
+import { plateDrainKeys, setPlateDoc } from "./plate-core.mjs";
+import { noteBody } from "./journal-core.mjs";
+import {
+  normalizeLinearConfig, linearState, linearStatusLine, buildPushPlan, buildPullProposals, holdsFor,
+  provisionPlan, manualViewChecklist, agentGuidanceText, dispatchGuidance, initiativePlan, initiativeStyle,
+  startStampTargets, milestonePlan, cyclePlan, cycleCandidates, CYCLE_STATUSES, staleKeys, normalizeTitle,
+} from "./linear-core.mjs";
+
+const ENDPOINT = "https://api.linear.app/graphql";
+export const CURSOR_FILE = ".roadmap-linear-state.json";
+
+// ── transport (injectable; deliberately NOT exported — every consumer goes through the
+// run* operations so this stays the only file that talks to the API) ──────────────────
+export async function gql(query, variables, { apiKey, fetchImpl = fetch }) {
+  const res = await fetchImpl(ENDPOINT, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: apiKey },   // personal key: bare, no Bearer
+    body: JSON.stringify({ query, variables }),
+  });
+  if (!res.ok) throw new Error(`Linear API HTTP ${res.status}${res.status === 401 ? " — is LINEAR_API_KEY valid?" : ""}`);
+  const body = await res.json();
+  if (body.errors && body.errors.length) throw new Error(`Linear API: ${body.errors.map((e) => e.message).join("; ")}`);
+  return body.data;
+}
+
+// ── cursor ────────────────────────────────────────────────────────────────────
+export function readCursor(root) {
+  try { return JSON.parse(readFileSync(join(root, CURSOR_FILE), "utf8")); } catch { return null; }
+}
+// Patch-merge: lastSync (pull window) and stale (the election CLI's offline basis) advance
+// independently — persisting one never clobbers the other.
+function writeCursor(root, patch) {
+  const cur = readCursor(root) || { version: 1 };
+  writeFileSync(join(root, CURSOR_FILE), JSON.stringify({ ...cur, ...patch }, null, 2) + "\n", "utf8");
+}
+
+// ── queries ───────────────────────────────────────────────────────────────────
+// withCycle: only the cycles feature asks for activeCycle — with cycles off the query is
+// byte-identical to the pre-cycles tool (the off-path contract every knob keeps).
+export async function fetchTeamBundle(teamKey, io, withCycle = false) {
+  const data = await gql(
+    `query($key: String!) { teams(filter: { key: { eq: $key } }) { nodes {
+       id key name
+       ${withCycle ? "activeCycle { id }\n       " : ""}states { nodes { id name type position } }
+       labels { nodes { id name } } } } }`,
+    { key: teamKey }, io);
+  const team = data.teams.nodes[0];
+  if (!team) throw new Error(`no Linear team with key "${teamKey}" (check meta.linear.team)`);
+  return {
+    id: team.id,
+    activeCycleId: (withCycle && team.activeCycle && team.activeCycle.id) || null,   // null: cycles off in Linear, or between cycles
+    states: [...team.states.nodes].sort((a, b) => a.position - b.position),
+    labels: Object.fromEntries(((team.labels && team.labels.nodes) || []).map((l) => [l.name, l.id])),
+  };
+}
+
+// The one issueUpdate literal — four call sites (push, milestone attach, cycle assign/clear)
+// share the identical mutation shape.
+const updateIssue = (id, input, io) =>
+  gql(`mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { issue { id } } }`, { id, input }, io);
+
+// Project drift snapshot, keyed by the mapped project ids only (NOT all team projects). `content`
+// is a heavy rich-text field — fetching it for every project inside the team bundle blows Linear's
+// 10k query-complexity ceiling, so it lives here, batched small, exactly like fetchIssueSnapshot.
+const mappedProjectIds = (graph) => (graph.pis || []).map((p) => p.linear && p.linear.project).filter(Boolean);
+async function fetchProjectSnapshot(ids, io) {
+  const projects = {};
+  for (let i = 0; i < ids.length; i += 10) {
+    const chunk = ids.slice(i, i + 10);
+    const q = `query { ${chunk.map((id, j) => `p${j}: project(id: "${id}") { id name description content color icon priority startDate targetDate status { id } }`).join(" ")} }`;
+    const data = await gql(q, {}, io);
+    chunk.forEach((_, j) => {
+      const p = data[`p${j}`];
+      if (p) projects[p.id] = { id: p.id, name: p.name, description: p.description || "", content: p.content || "",
+        color: p.color || "", icon: p.icon || "", priority: p.priority || 0, startDate: p.startDate || null, targetDate: p.targetDate || null,
+        statusId: p.status ? p.status.id : null };
+    });
+  }
+  return projects;
+}
+
+// Workspace project-status inventory (live-verified location: organization.projectStatuses).
+// A failure degrades to null — projects simply keep their current Linear status this sync —
+// recorded on the result by the caller, never fatal.
+async function fetchProjectStatuses(io) {
+  const data = await gql(`query { organization { projectStatuses { id name type position } } }`, {}, io);
+  return [...data.organization.projectStatuses].sort((a, b) => a.position - b.position);
+}
+
+// Snapshot of our mapped issues, batched via aliases (identifiers are valid issue(id:) args).
+async function fetchIssueSnapshot(identifiers, io) {
+  const issues = {};
+  for (let i = 0; i < identifiers.length; i += 50) {
+    const chunk = identifiers.slice(i, i + 50);
+    const q = `query { ${chunk.map((id, j) => `i${j}: issue(id: "${id}") { id identifier title description priority estimate state { id } project { id } assignee { id } labels { nodes { id } } }`).join(" ")} }`;
+    const data = await gql(q, {}, io);
+    chunk.forEach((_, j) => {
+      const iss = data[`i${j}`];
+      if (iss) issues[iss.identifier] = { id: iss.id, title: iss.title, description: iss.description || "", priority: iss.priority, estimate: iss.estimate ?? null, stateId: iss.state.id,
+        projectId: iss.project ? iss.project.id : null,
+        assigneeId: iss.assignee ? iss.assignee.id : null,
+        labelIds: ((iss.labels && iss.labels.nodes) || []).map((l) => l.id) };
+    });
+  }
+  return issues;
+}
+
+// Title index of the team's LIVE issues, EXCLUDING the ones we already own (mapped — those go through
+// the snapshot path). Keyed normalizedTitle → [{ id, identifier }] (an ARRAY so a same-title cluster is
+// detectable and never blind-adopted). This is the dedupe-by-title basis: a node whose PID write-back
+// was lost (the 2026-07-11 double-sync) finds its orphaned twin here so the push adopts it instead of
+// creating a duplicate. Dead issues (canceled type, or the "Duplicate" workflow state) are never adopted.
+async function fetchOpenIssueTitleIndex(teamKey, mapped, io) {
+  const owned = new Set(mapped);
+  const byTitle = {};
+  let after = null;
+  for (let page = 0; page < 40; page++) {   // ponytail: 40×250 = 10k open-issue ceiling; a bigger team re-tunes the page cap
+    const data = await gql(
+      `query($filter: IssueFilter, $after: String) { issues(filter: $filter, first: 250, after: $after) { nodes {
+         id identifier title state { type name } } pageInfo { hasNextPage endCursor } } }`,
+      { filter: { team: { key: { eq: teamKey } } }, after }, io);
+    for (const n of data.issues.nodes) {
+      if (owned.has(n.identifier)) continue;   // we already own it (mapped) — not an adoptable twin
+      if (n.state && (n.state.type === "canceled" || n.state.name === "Duplicate")) continue;   // dead — never adopt
+      const key = normalizeTitle(n.title);
+      (byTitle[key] || (byTitle[key] = [])).push({ id: n.id, identifier: n.identifier });
+    }
+    if (!data.issues.pageInfo.hasNextPage) break;
+    after = data.issues.pageInfo.endCursor;
+  }
+  return byTitle;
+}
+
+async function fetchInbound(cfg, since, io) {
+  const sources = [{ team: cfg.team, project: null }, ...cfg.watch];
+  const out = [];
+  for (const src of sources) {
+    const filter = { team: { key: { eq: src.team } }, ...(since ? { updatedAt: { gt: since } } : {}), ...(src.project ? { project: { name: { eq: src.project } } } : {}) };
+    // ponytail: 100 issues per source per sync — cursor-windowed, so backpressure self-heals next run.
+    const data = await gql(
+      `query($filter: IssueFilter) { issues(filter: $filter, first: 100) { nodes {
+         identifier title priority updatedAt state { name type } team { key } project { name } } } }`,
+      { filter }, io);
+    for (const n of data.issues.nodes) {
+      out.push({ identifier: n.identifier, title: n.title, priority: n.priority,
+        state: n.state, team: n.team.key, project: n.project ? n.project.name : null, updatedAt: n.updatedAt });
+    }
+  }
+  return out;
+}
+
+// ── the one sync implementation (CLI + MCP both call this) ───────────────────
+export async function runSync(root, opts = {}) {
+  const env = opts.env || process.env;
+  const graph = loadGraph(roadmapPaths(root).yaml);
+  const cfg = normalizeLinearConfig(graph.meta || {});
+  const state = linearState({ meta: graph.meta, env, cursor: readCursor(root) });
+  if (!state.configured) throw new Error("Linear isn't configured for this roadmap — add meta.linear or run 'roadmap linear setup --team <KEY>'");
+  if (!state.authed) throw new Error("Linear is configured but LINEAR_API_KEY isn't set ('roadmap linear auth' explains)");
+  const io = { apiKey: env.LINEAR_API_KEY, fetchImpl: opts.fetchImpl || fetch };
+  const now = opts.now || new Date().toISOString();
+
+  const backlog = loadBacklog(root);
+  const team = await fetchTeamBundle(cfg.team, io, cfg.cycles === "on");
+  const mapped = collectIdentifiers(graph, backlog);
+  const existing = { issues: await fetchIssueSnapshot(mapped, io), projects: await fetchProjectSnapshot(mappedProjectIds(graph), io),
+    byTitle: await fetchOpenIssueTitleIndex(cfg.team, mapped, io) };
+  const docsUrl = repoDocsUrl(root, graph);
+
+  const result = { pushed: [], proposals: null, cursorAdvanced: false, dry: !!opts.dry };
+
+  // Project-status inventory — lets the push map PI status → project status. Degrades to null
+  // (no status projection) so a workspace/API hiccup can never abort the sync.
+  let projectStatuses = null;
+  try { projectStatuses = await fetchProjectStatuses(io); }
+  catch (e) { result.projectStatusError = e.message; }
+
+  // ── pull FIRST (live-verified ordering): inbound is read before any push executes, so a
+  // human's Linear edit can never be clobbered by the projection while it's still an open
+  // proposal — push holds those fields until the proposal is resolved. In auto mode the
+  // deltas apply to the YAML here, so the subsequent push naturally agrees with them.
+  let holds = new Set();
+  let inboxEmpty = true;
+  if (!opts.pushOnly && cfg.pull !== "off") {
+    const inbound = await fetchInbound(cfg, state.lastSync, io);
+    const proposals = buildPullProposals({ cfg, inbound, graph, backlog });
+    result.proposals = proposals;
+    inboxEmpty = !proposals.newItems.length && !proposals.deltas.length;
+    if (!opts.dry && cfg.pull === "auto") {
+      for (const item of proposals.newItems) mutateBacklog(root, (doc) => addItem(doc, item), { createIfMissing: true });
+      for (const d of proposals.deltas) {
+        if (d.to == null) continue;   // canceled-slice flags stay human decisions even on auto
+        const fields = d.field === "status" ? { status: d.to } : { priority: { ...(currentPriority(root, d) || {}), tier: d.to } };
+        if (d.kind === "slice") mutateRoadmap(root, (doc) => setFields(doc, { invoke: d.key, fields }));
+        else mutateBacklog(root, (doc) => setItemFields(doc, { id: d.key, fields }));
+      }
+      result.applied = proposals;
+    } else {
+      holds = holdsFor(proposals.deltas);
+    }
+  }
+  // Re-read after auto-apply so the push plan reflects the accepted inbound edits.
+  let pushGraph = result.applied ? loadGraph(roadmapPaths(root).yaml) : graph;
+  const pushBacklog = result.applied ? loadBacklog(root) : backlog;
+
+  // ── auto-stamp project start dates ── a PI that's active without an explicit start_date gets one (the
+  // sync date ≈ when it was picked up), so the Linear roadmap timeline has a start. Explicit wins; stamped
+  // once then stable. Write-back BEFORE the push so the new startDate projects this run.
+  const toStamp = opts.dry ? [] : startStampTargets(pushGraph);   // pure decision (linear-core); IO write below
+  if (toStamp.length) {
+    const today = now.slice(0, 10);
+    mutateRoadmap(root, (doc) => {
+      const pis = doc.toJS().pis || [];
+      for (const id of toStamp) { const idx = pis.findIndex((p) => p.id === id); if (idx >= 0) doc.setIn(["pis", idx, "start_date"], today); }
+      return { startStamped: toStamp.length };
+    });
+    pushGraph = loadGraph(roadmapPaths(root).yaml);
+    result.startStamped = toStamp;
+  }
+
+  // ── plate auto-drain (complete-only) ── a finished slice leaves My Issues. Write-back BEFORE the push
+  // so the projection unassigns it. Skipped on dry runs (no writes) and when the feature is off.
+  if (!opts.dry && Array.isArray(pushGraph.meta && pushGraph.meta.plate) && pushGraph.meta.plate.length) {
+    const drop = plateDrainKeys(pushGraph, pushBacklog);
+    if (drop.length) {
+      const keep = pushGraph.meta.plate.filter((k) => !drop.includes(k));
+      mutateRoadmap(root, (doc) => { setPlateDoc(doc, keep); return { plateDrained: drop.length }; });
+      pushGraph = loadGraph(roadmapPaths(root).yaml);
+      result.plateDrained = drop;
+    }
+  }
+  // viewer id — only when the plate feature is on; a fetch failure just disables the assignee projection.
+  let viewerId = null;
+  if (pushGraph.meta && pushGraph.meta.plate != null) {
+    try { viewerId = (await gql(`query { viewer { id } }`, {}, io)).viewer.id; } catch { /* no viewer → no assignee ops */ }
+  }
+
+  // ── staleness basis ── committed work (CYCLE_STATUSES) with journal silence past stale_days
+  // gets the stale label via the push's ordinary label set-diff. Advisory: a fetch failure is a
+  // note, never a failed sync. The set persists to the cursor so the election CLI reads it offline.
+  // Push-adjacent, so pull-only skips it — persisting a stale set the push never applied would
+  // let the cursor drift from Linear's real label state.
+  let stale = new Set();
+  if (cfg.stale_days && !opts.pullOnly) {
+    try {
+      const committed = cycleCandidates(pushGraph).filter((n) => CYCLE_STATUSES.includes(n.status));
+      if (committed.length) {
+        const activity = await fetchActivityBasis(committed.map((n) => n.linear), io);
+        stale = staleKeys({ graph: pushGraph, cfg, activity, now });
+      }
+      if (stale.size) result.stale = [...stale].sort();
+      if (!opts.dry) writeCursor(root, { stale: [...stale].sort() });
+    } catch (e) { result.staleError = e.message; }
+  }
+
+  // ── push ──
+  if (!opts.pullOnly) {
+    const { ops, missingLabels, unmatchedPlate } = buildPushPlan({ graph: pushGraph, backlog: pushBacklog, cfg, teamStates: team.states, existing, docsUrl, holds, labels: team.labels, viewerId, projectStatuses, now, stale });
+    if (missingLabels.length) result.missingLabels = missingLabels;
+    if (unmatchedPlate && unmatchedPlate.length) result.unmatchedPlate = unmatchedPlate;
+    if (opts.dry) {
+      result.pushPlan = ops;
+    } else if (ops.length) {
+      const projectIds = projectIdsByPi(pushGraph);
+      const writeBacks = { pis: [], sprints: [], items: [] };
+      // Unverified-VALUE fields (project icon names, issue completedAt) would abort the whole
+      // push on rejection. Shared degrade: retry ONCE without that one field, else rethrow.
+      // Icon self-heals on a later sync (it's re-diffed); completedAt is create-only, so its
+      // degrade is one-way — the issue stays Done-at-creation-time (acceptable: it's history).
+      const isIconErr = (e) => /icon|argument validation/i.test(e.message || "");
+      const isCompletedAtErr = (e) => /completedAt|argument validation/i.test(e.message || "");
+      // Linear stores issue descriptions as DocumentContent and can refuse the write with
+      // "conflict on insert of DocumentContent" (live-caught 2026-07-10 under concurrent
+      // syncs). The conflict pins to one issue but aborts every op queued behind it.
+      // Description is re-diffed on the next sync, so stripping it self-heals like icon.
+      const isDocContentErr = (e) => /DocumentContent/i.test(e.message || "");
+      const withFieldStripRetry = async (mk, payload, field, isRetryable) => {
+        try { return await mk(payload); }
+        catch (e) {
+          if (payload[field] == null || !isRetryable(e)) throw e;
+          const { [field]: _stripped, ...rest } = payload;
+          return mk(rest);
+        }
+      };
+      // finally-flush: if an op throws mid-push, everything Linear already created still gets
+      // its id written back — otherwise the next sync would create duplicates for those nodes.
+      try {
+        for (const op of ops) {
+          try {
+          if (op.op === "createProject") {
+            const mk = (payload) => gql(`mutation($input: ProjectCreateInput!) { projectCreate(input: $input) { project { id } } }`,
+              { input: { ...payload, teamIds: [team.id] } }, io);   // spread: dropping fields here caused live churn (description)
+            const d = await withFieldStripRetry(mk, op.payload, "icon", isIconErr);
+            projectIds[op.projectRef] = d.projectCreate.project.id;
+            writeBacks.pis.push({ pi: op.writeBack.pi, project: d.projectCreate.project.id });
+          } else if (op.op === "updateProject") {
+            const mk = (payload) => gql(`mutation($id: String!, $input: ProjectUpdateInput!) { projectUpdate(id: $id, input: $input) { project { id } } }`,
+              { id: op.id, input: payload }, io);
+            await withFieldStripRetry(mk, op.payload, "icon", isIconErr);
+          } else if (op.op === "createIssue") {
+            const input = { teamId: team.id, ...op.payload, ...(op.projectRef && projectIds[op.projectRef] ? { projectId: projectIds[op.projectRef] } : {}) };
+            const mkIssue = (inp) => gql(`mutation($input: IssueCreateInput!) { issueCreate(input: $input) { issue { id identifier } } }`,
+              { input: inp }, io);
+            const d = await withFieldStripRetry(mkIssue, input, "completedAt", isCompletedAtErr);
+            const identifier = d.issueCreate.issue.identifier;
+            if (op.writeBack.kind === "sprint") writeBacks.sprints.push({ invoke: op.writeBack.invoke, identifier });
+            else writeBacks.items.push({ id: op.writeBack.id, identifier });
+          } else if (op.op === "updateIssue") {
+            await withFieldStripRetry((payload) => updateIssue(op.id, payload, io), op.payload, "description", isDocContentErr);
+          } else if (op.op === "adoptIssue") {
+            // A same-title twin exists (its PID write-back was lost) — reconcile it to our projection and
+            // CLAIM it via write-back, exactly like createIssue, instead of minting a duplicate. Same
+            // description strip-retry the mapped-update path uses.
+            if (Object.keys(op.payload || {}).length) await withFieldStripRetry((payload) => updateIssue(op.id, payload, io), op.payload, "description", isDocContentErr);
+            if (op.writeBack.kind === "sprint") writeBacks.sprints.push({ invoke: op.writeBack.invoke, identifier: op.identifier });
+            else writeBacks.items.push({ id: op.writeBack.id, identifier: op.identifier });
+          }
+          result.pushed.push(`${op.op}${op.identifier ? ` ${op.identifier}` : op.writeBack ? ` ${op.writeBack.invoke || op.writeBack.id || op.writeBack.pi}` : ""}`);
+          } catch (e) {
+            // Name the failing op — a bare Linear message ("invalid date range") is undebuggable
+            // across a 15-op push. The payload keys narrow WHICH field the API rejected.
+            const who = op.identifier || (op.writeBack && (op.writeBack.invoke || op.writeBack.id || op.writeBack.pi)) || op.projectRef || op.id || "?";
+            e.message = `${op.op} ${who} (fields: ${Object.keys(op.payload || {}).join(",") || "none"}): ${e.message}`;
+            throw e;
+          }
+        }
+      } finally {
+        // one write-back batch per file, through the store's validated path
+        if (writeBacks.pis.length || writeBacks.sprints.length) {
+          mutateRoadmap(root, (doc) => {
+            for (const wb of writeBacks.pis) {
+              const idx = doc.toJS().pis.findIndex((p) => p.id === wb.pi);
+              doc.setIn(["pis", idx, "linear", "project"], wb.project);
+            }
+            for (const wb of writeBacks.sprints) setFields(doc, { invoke: wb.invoke, fields: { linear: wb.identifier } });
+            return { writeBack: writeBacks.pis.length + writeBacks.sprints.length };
+          });
+        }
+        if (writeBacks.items.length) {
+          mutateBacklog(root, (doc) => {
+            for (const wb of writeBacks.items) setItemFields(doc, { id: wb.id, fields: { linear: wb.identifier } });
+            return { writeBack: writeBacks.items.length };
+          });
+        }
+      }
+    }
+  }
+
+  // ── initiatives ── group projects under their declared Linear initiatives. Runs AFTER the
+  // push write-backs so the project ids exist. Best-effort + graceful: a failure (the
+  // initiative API is not yet live-verified) records a note and never fails the sync.
+  if (!opts.dry && !opts.pullOnly) {
+    try { const ir = await syncInitiatives(root, io); if (ir.initiatives.length) result.initiatives = ir; }
+    catch (e) { result.initiativesError = e.message; }
+    // milestones run AFTER initiatives (both post-push): the project ids exist and issues are mapped.
+    try { const mr = await syncMilestones(root, io); if (mr.milestones.length) result.milestones = mr; }
+    catch (e) { result.milestonesError = e.message; }
+    // cycles run last: the team's ACTIVE cycle mirrors active+next slice status (the elected batch).
+    if (cfg.cycles === "on") {
+      if (!team.activeCycleId) result.cyclesNote = "cycles on but the team has no active cycle in Linear — check Team Settings → Cycles";
+      else {
+        try { const cr = await syncCycles(root, io, team.activeCycleId); if (cr.assigned.length || cr.cleared.length) result.cycles = cr; }
+        catch (e) { result.cyclesError = e.message; }
+      }
+    }
+  }
+
+  // ── cursor ── advance only when the inbox is handled (auto) or empty — in propose mode a
+  // non-empty inbox stays in the window so unhandled proposals reappear rather than vanish.
+  if (!opts.dry && !opts.pushOnly) {
+    if (cfg.pull === "off" || cfg.pull === "auto" || inboxEmpty) { writeCursor(root, { lastSync: now }); result.cursorAdvanced = true; }
+  }
+  return result;
+}
+
+// Ensure each declared initiative exists in Linear, carries its meta.initiatives icon/color, and each
+// mapped PI's project is attached. UNVERIFIED API (initiativeCreate/Update/ToProjectCreate) — the caller
+// catches and degrades. Idempotent: skips existing initiatives, re-applies style only on drift (the fetch
+// reads current icon/color back), and skips already-attached projects.
+export async function syncInitiatives(root, io) {
+  const graph = loadGraph(roadmapPaths(root).yaml);
+  const plan = initiativePlan(graph);
+  if (!plan.initiatives.length) return { initiatives: [] };
+  const data = await gql(`query { initiatives(first: 250) { nodes { id name icon color projects { nodes { id } } } } }`, {}, io);
+  const byName = new Map((data.initiatives.nodes || []).map((i) => [i.name, i]));
+  // icon/color are newly-exercised initiative input — degrade like project icons do: a bad name or an
+  // unsupported field drops the initiative to unstyled instead of aborting the whole initiative sync.
+  const isStyleErr = (e) => /icon|color|argument validation/i.test(e.message || "");
+  const created = [], styled = [];
+  for (const name of plan.initiatives) {
+    const style = initiativeStyle(graph.meta, name);
+    if (!byName.has(name)) {
+      const full = { name, ...(style.icon ? { icon: style.icon } : {}), ...(style.color ? { color: style.color } : {}) };
+      const mk = (input) => gql(`mutation($input: InitiativeCreateInput!) { initiativeCreate(input: $input) { initiative { id name } } }`, { input }, io);
+      let d;
+      try { d = await mk(full); if (full.icon || full.color) styled.push(name); }
+      catch (e) { if ((full.icon || full.color) && isStyleErr(e)) d = await mk({ name }); else throw e; }
+      byName.set(name, { ...d.initiativeCreate.initiative, projects: { nodes: [] } });
+      created.push(name);
+      continue;
+    }
+    // existing → apply declared style only when it drifts (idempotent via the fetched icon/color)
+    const cur = byName.get(name);
+    const patch = {};
+    if (style.icon && cur.icon !== style.icon) patch.icon = style.icon;
+    if (style.color && (cur.color || "") !== style.color) patch.color = style.color;
+    if (Object.keys(patch).length) {
+      try {
+        await gql(`mutation($id: String!, $input: InitiativeUpdateInput!) { initiativeUpdate(id: $id, input: $input) { initiative { id } } }`, { id: cur.id, input: patch }, io);
+        styled.push(name);
+      } catch (e) { if (!isStyleErr(e)) throw e; }   // best-effort: unsupported update → leave unstyled
+    }
+  }
+  const attached = [];
+  for (const a of plan.assignments) {
+    const pi = (graph.pis || []).find((p) => p.id === a.pi);
+    const projectId = pi && pi.linear && pi.linear.project;
+    if (!projectId) continue;   // PI has no project (empty/skipped) — nothing to group
+    const init = byName.get(a.initiative);
+    if (((init.projects && init.projects.nodes) || []).some((p) => p.id === projectId)) continue;   // already attached
+    await gql(`mutation($input: InitiativeToProjectCreateInput!) { initiativeToProjectCreate(input: $input) { success } }`, { input: { initiativeId: init.id, projectId } }, io);
+    (init.projects || (init.projects = { nodes: [] })).nodes.push({ id: projectId });   // local dedupe within this run
+    attached.push(`${a.pi} → ${a.initiative}`);
+  }
+  return { initiatives: plan.initiatives, created, styled, attached };
+}
+
+// Mapped issues' current milestone, batched (identifier → { id: uuid, milestoneId }) — like fetchIssueSnapshot.
+async function fetchIssueMilestones(identifiers, io) {
+  const out = {};
+  for (let i = 0; i < identifiers.length; i += 50) {
+    const chunk = identifiers.slice(i, i + 50);
+    const q = `query { ${chunk.map((id, j) => `i${j}: issue(id: "${id}") { id identifier projectMilestone { id } }`).join(" ")} }`;
+    const data = await gql(q, {}, io);
+    chunk.forEach((_, j) => { const iss = data[`i${j}`]; if (iss) out[iss.identifier] = { id: iss.id, milestoneId: iss.projectMilestone ? iss.projectMilestone.id : null }; });
+  }
+  return out;
+}
+
+// Ensure each PI's declared milestones (sp.milestone) exist on its Linear project and each mapped issue is
+// attached to its milestone. Mirrors syncInitiatives one level down (issues within a project). UNVERIFIED
+// API (projectMilestoneCreate) — the caller catches and degrades. Idempotent: skips existing milestones by
+// name, and re-attaches an issue only when its projectMilestoneId drifts from the target.
+export async function syncMilestones(root, io) {
+  const graph = loadGraph(roadmapPaths(root).yaml);
+  const plan = milestonePlan(graph);
+  if (!plan.pis.length) return { milestones: [] };
+  const milestones = [], created = [], attached = [];
+  for (const p of plan.pis) {
+    const pi = (graph.pis || []).find((x) => x.id === p.pi);
+    const projectId = pi && pi.linear && pi.linear.project;
+    if (!projectId) continue;   // PI has no project — nothing to attach milestones to
+    const data = await gql(`query { project(id: "${projectId}") { projectMilestones { nodes { id name } } } }`, {}, io);
+    const byName = new Map(((data.project && data.project.projectMilestones && data.project.projectMilestones.nodes) || []).map((m) => [m.name, m.id]));
+    for (const name of p.milestones) {
+      milestones.push(`${p.pi}/${name}`);
+      if (byName.has(name)) continue;
+      // sortOrder = current milestone count (append after existing), NOT the plan-local index — else a
+      // milestone added between two existing ones on a later run would collide with an existing sortOrder.
+      const d = await gql(`mutation($input: ProjectMilestoneCreateInput!) { projectMilestoneCreate(input: $input) { projectMilestone { id } } }`,
+        { input: { projectId, name, sortOrder: byName.size } }, io);
+      byName.set(name, d.projectMilestoneCreate.projectMilestone.id);
+      created.push(`${p.pi}/${name}`);
+    }
+    const mapped = p.slices.filter((s) => s.linear);
+    if (!mapped.length) continue;
+    const cur = await fetchIssueMilestones(mapped.map((s) => s.linear), io);
+    for (const s of mapped) {
+      const targetId = byName.get(s.milestone);
+      const c = cur[s.linear];
+      if (!c || !targetId || c.milestoneId === targetId) continue;   // unmapped-in-snapshot or already attached
+      await updateIssue(c.id, { projectMilestoneId: targetId }, io);
+      attached.push(`${s.invoke} → ${s.milestone}`);
+    }
+  }
+  return { milestones, created, attached };
+}
+
+// Mapped issues' current cycle, batched (identifier → { id: uuid, cycleId }) — like fetchIssueMilestones.
+async function fetchIssueCycles(identifiers, io) {
+  const out = {};
+  for (let i = 0; i < identifiers.length; i += 50) {
+    const chunk = identifiers.slice(i, i + 50);
+    const q = `query { ${chunk.map((id, j) => `i${j}: issue(id: "${id}") { id identifier cycle { id } }`).join(" ")} }`;
+    const data = await gql(q, {}, io);
+    chunk.forEach((_, j) => { const iss = data[`i${j}`]; if (iss) out[iss.identifier] = { id: iss.id, cycleId: iss.cycle ? iss.cycle.id : null }; });
+  }
+  return out;
+}
+
+// Activity basis for staleness: the newest journal comment's createdAt (max over first 50 —
+// no ordering assumption; same window the journal read uses), falling back to the issue's own
+// createdAt. NEVER issue updatedAt — our own pushes bump that (the stale label would flap).
+async function fetchActivityBasis(identifiers, io) {
+  const out = {};
+  for (let i = 0; i < identifiers.length; i += 50) {
+    const chunk = identifiers.slice(i, i + 50);
+    const q = `query { ${chunk.map((id, j) => `i${j}: issue(id: "${id}") { identifier createdAt comments(first: 50) { nodes { createdAt } } }`).join(" ")} }`;
+    const data = await gql(q, {}, io);
+    chunk.forEach((_, j) => {
+      const iss = data[`i${j}`];
+      if (!iss) return;
+      const stamps = ((iss.comments && iss.comments.nodes) || []).map((c) => c.createdAt).filter(Boolean);
+      out[iss.identifier] = stamps.length ? stamps.sort()[stamps.length - 1] : iss.createdAt;
+    });
+  }
+  return out;
+}
+
+// Keep the team's ACTIVE cycle = the projection of active+next (CYCLE_STATUSES). Runs post-push,
+// so issues created this run (fresh write-backs) get their cycle in the same sync. UNVERIFIED
+// mutation surface (issueUpdate cycleId) — the caller catches and degrades like initiatives/
+// milestones. Idempotent: assign only on drift; clear only CURRENT-cycle membership (a human's
+// future-cycle parking is deliberate planning and stays untouched — cyclePlan's contract).
+export async function syncCycles(root, io, activeCycleId) {
+  const graph = loadGraph(roadmapPaths(root).yaml);
+  const candidates = cycleCandidates(graph);
+  if (!candidates.length) return { assigned: [], cleared: [] };
+  const issues = await fetchIssueCycles(candidates.map((n) => n.linear), io);
+  const plan = cyclePlan({ graph, activeCycleId, issues });
+  const assigned = [], cleared = [];
+  const ops = [...plan.assign.map((a) => ({ ...a, cycleId: activeCycleId })), ...plan.clear.map((c) => ({ ...c, cycleId: null }))];
+  for (const o of ops) {
+    if (!o.id) continue;   // mapped but not in Linear (deleted?) — leave for the human
+    await updateIssue(o.id, { cycleId: o.cycleId }, io);
+    (o.cycleId === null ? cleared : assigned).push(o.invoke);
+  }
+  return { assigned, cleared };
+}
+
+// ── dispatch transport (the only-network-file rule: dispatch.mjs owns the capsule, this
+// owns the wire) — resolve the issue uuid and post the @-mention comment.
+export async function postDispatchComment(identifier, body, io) {
+  const d = await gql(`query { issue(id: "${identifier}") { id identifier } }`, {}, io);
+  if (!d.issue) throw new Error(`mapped issue ${identifier} not found in Linear (deleted?)`);
+  await gql(`mutation($input: CommentCreateInput!) { commentCreate(input: $input) { comment { id } } }`,
+    { input: { issueId: d.issue.id, body } }, io);
+}
+
+// ── the journal (progress notes on the mapped issue) ──────────────────────────
+// A slice invoke key / backlog id → its mapped Linear issue identifier (null when unmapped). Mirrors
+// runDispatch's resolver; used by note/notes so an agent can journal against the work it's picking up.
+function resolveMapped(graph, root, key) {
+  const node = flatten(graph).nodes.find((n) => n.invoke === key);
+  if (node) return { identifier: node.linear };
+  const it = ((loadBacklog(root) || {}).items || []).find((i) => i.id === key);
+  if (it) return { identifier: it.linear };
+  return null;
+}
+// Load the graph + build the API io, gating on the SAME configured+authed check runSync/runProvision use
+// (one auth-state source, one error wording). Returns { graph, io }.
+function journalContext(root, opts) {
+  const env = opts.env || process.env;
+  const graph = loadGraph(roadmapPaths(root).yaml);
+  const st = linearState({ meta: graph.meta, env });
+  if (!st.configured || !st.authed) throw new Error(linearStatusLine(st));
+  return { graph, io: { apiKey: env.LINEAR_API_KEY, fetchImpl: opts.fetchImpl || fetch } };
+}
+
+// Post a progress note to a slice/backlog item's mapped issue. Reuses postDispatchComment's transport.
+// Unknown key → error; a known-but-UNMAPPED slice → soft-skip (best-effort; matches the auto-hook, and
+// keeps journaling frictionless for a worker whose slice just isn't on the tracker).
+export async function runNote(root, key, { kind, text }, opts = {}) {
+  const { graph, io } = journalContext(root, opts);
+  const m = resolveMapped(graph, root, key);
+  if (!m) throw new Error(`no slice or backlog item "${key}"`);
+  if (!m.identifier) return { key, skipped: "unmapped" };
+  await postDispatchComment(m.identifier, noteBody({ kind, text }), io);
+  return { key, identifier: m.identifier };
+}
+
+// Read the mapped issue's comment stream (chronological), so a resuming agent sees where it left off.
+export async function runNotes(root, key, opts = {}) {
+  const { graph, io } = journalContext(root, opts);
+  const m = resolveMapped(graph, root, key);
+  if (!m) throw new Error(`no slice or backlog item "${key}"`);
+  if (!m.identifier) return { key, skipped: "unmapped", notes: [] };
+  const d = await gql(`query { issue(id: "${m.identifier}") { comments(first: 50) { nodes { body createdAt user { name } } } } }`, {}, io);
+  const nodes = (d.issue && d.issue.comments && d.issue.comments.nodes) || [];
+  return { identifier: m.identifier, notes: nodes.map((n) => ({ author: n.user ? n.user.name : "?", createdAt: n.createdAt, body: n.body })) };
+}
+
+// PI digest → a Linear project update (the "where this bet stands" rollup). Degradation-guarded: the
+// projectUpdateCreate shape is unverified, so a rejection is a skip, not a failure.
+export async function runProjectUpdate(root, pi, body, opts = {}) {
+  const { graph, io } = journalContext(root, opts);
+  const piObj = (graph.pis || []).find((p) => p.id === pi);
+  if (!piObj || !piObj.linear || !piObj.linear.project) throw new Error(`PI "${pi}" has no linear.project mapping — push first ('roadmap linear sync')`);
+  try {
+    await gql(`mutation($input: ProjectUpdateCreateInput!) { projectUpdateCreate(input: $input) { projectUpdate { id } } }`,
+      { input: { projectId: piObj.linear.project, body } }, io);
+    return { pi, posted: true };
+  } catch (e) {
+    return { pi, posted: false, error: e.message };
+  }
+}
+
+// ── provision: shape the workspace (idempotent) ───────────────────────────────
+export async function runProvision(root, opts = {}) {
+  const env = opts.env || process.env;
+  const graph = loadGraph(roadmapPaths(root).yaml);
+  const state = linearState({ meta: graph.meta, env });
+  if (!state.configured || !state.authed) throw new Error(linearStatusLine(state));
+  const io = { apiKey: env.LINEAR_API_KEY, fetchImpl: opts.fetchImpl || fetch };
+  const team = await fetchTeamBundle(state.cfg.team, io);
+
+  const plan = provisionPlan({ graph, teamLabels: team.labels, cfg: state.cfg });
+  const result = { labelsCreated: [], labelsExisting: plan.existingLabels, views: [], viewChecklist: null };
+
+  for (const name of plan.createLabels) {
+    try {
+      await gql(`mutation($input: IssueLabelCreateInput!) { issueLabelCreate(input: $input) { issueLabel { id name } } }`,
+        { input: { name, teamId: team.id } }, io);
+      result.labelsCreated.push(name);
+    } catch (e) {
+      if (/already exists|duplicate/i.test(e.message)) result.labelsExisting.push(name);   // creation race
+      else throw e;
+    }
+  }
+
+  // Views (live-verified mutation). Idempotency: skip names that already exist — a re-run
+  // must not duplicate the board (live-caught failure mode). Any rejection degrades to the
+  // manual checklist (the designed fallback, not a failure).
+  let existingViews = new Set();
+  try {
+    const vd = await gql(`query { customViews(first: 100) { nodes { id name } } }`, {}, io);
+    existingViews = new Set(vd.customViews.nodes.map((v) => v.name));
+  } catch { /* view listing unavailable → fall through to create-and-let-it-ride */ }
+  for (const v of plan.views) {
+    if (existingViews.has(v.name)) { result.viewsExisting = [...(result.viewsExisting || []), v.name]; continue; }
+    try {
+      await gql(`mutation($input: CustomViewCreateInput!) { customViewCreate(input: $input) { customView { id } } }`,
+        { input: { name: v.name, teamId: team.id, description: v.hint } }, io);
+      result.views.push(v.name);
+    } catch (e) {
+      result.viewChecklist = { rejected: e.message, checklist: manualViewChecklist(plan.views.filter((x) => !result.views.includes(x.name) && !existingViews.has(x.name))) };
+      break;
+    }
+  }
+  return result;
+}
+
+function collectIdentifiers(graph, backlog) {
+  const ids = [];
+  for (const pi of graph.pis || []) for (const sp of pi.sprints || []) if (sp.linear) ids.push(sp.linear);
+  for (const it of (backlog && backlog.items) || []) if (it.linear) ids.push(it.linear);
+  return ids;
+}
+function projectIdsByPi(graph) {
+  const out = {};
+  for (const pi of graph.pis || []) if (pi.linear && pi.linear.project) out[pi.id] = pi.linear.project;
+  return out;
+}
+function currentPriority(root, d) {
+  if (d.kind === "slice") {
+    for (const pi of loadGraph(roadmapPaths(root).yaml).pis || []) for (const sp of pi.sprints || []) if (sp.invoke === d.key) return sp.priority;
+  } else {
+    const bl = loadBacklog(root);
+    for (const it of (bl && bl.items) || []) if (it.id === d.key) return it.priority;
+  }
+  return null;
+}
+// https://github.com/<owner>/<repo>/blob/<base_branch> — the docs-link base for issue
+// footers. Unknown/non-GitHub remote → null → footers fall back to the relative path.
+export function repoDocsUrl(root, graph) {
+  try {
+    const r = spawnSync("git", ["remote", "get-url", (graph.meta && graph.meta.remote) || "origin"], { cwd: root, encoding: "utf8" });
+    if (r.status !== 0) return null;
+    const m = /github\.com[:/]([^/]+)\/([^/\s]+?)(?:\.git)?\s*$/.exec(r.stdout);
+    if (!m) return null;
+    return `https://github.com/${m[1]}/${m[2]}/blob/${(graph.meta && graph.meta.base_branch) || "main"}`;
+  } catch { return null; }
+}
+

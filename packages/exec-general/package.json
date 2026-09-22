@@ -1,0 +1,32 @@
+{
+  "name": "@connorbritain/roadmap-exec-general",
+  "description": "General (non-engineering) executors for roadmap: human + doc-agent, the git-file GauntletArtifact, checklist gates, no resource ceilings.",
+  "version": "0.7.2",
+  "type": "module",
+  "license": "MIT",
+  "author": "Connor England",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ConnorBritain/roadmap.git",
+    "directory": "packages/exec-general"
+  },
+  "engines": {
+    "node": ">=18.15"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "src/",
+    "index.mjs",
+    "README.md"
+  ],
+  "main": "index.mjs",
+  "exports": {
+    ".": "./index.mjs",
+    "./*": "./src/*"
+  },
+  "dependencies": {
+    "@connorbritain/roadmap-core": "0.7.2"
+  }
+}

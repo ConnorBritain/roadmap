@@ -10,9 +10,9 @@
 
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
-import { findRepoRoot, REL } from "./lib/cli-core.mjs";
-import { loadGraph } from "./lib/graph.mjs";
-import { diffPrStates, belongsToRoadmapPr, checksOf, criticSignalOf } from "./lib/pr-watch-core.mjs";
+import { findRepoRoot, REL } from "@connorbritain/roadmap-core/cli-core.mjs";
+import { loadGraph } from "@connorbritain/roadmap-core/graph.mjs";
+import { diffPrStates, belongsToRoadmapPr, checksOf, criticSignalOf } from "@connorbritain/roadmap-exec-engineering/pr-watch-core.mjs";
 
 const POLL_MS = Number(process.env.ROADMAP_WATCH_INTERVAL_MS || 30000);
 const log = (m) => process.stdout.write(m + "\n");

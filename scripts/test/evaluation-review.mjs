@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { authorizationFixture } from "./authorization.mjs";
-import { authorizationDigest, reserveAuthorizedLaunch } from "../lib/gauntlet-authorization.mjs";
+import { authorizationDigest, reserveAuthorizedLaunch } from "@connorbritain/roadmap-core/gauntlet-authorization.mjs";
 import { evaluationReviewRun, evaluationReviewStatus, assertNextEvaluationReviewer, evaluationAdmissionTotals,
-  sealEvaluationPayload, evaluationAttestation, findEvaluationAttestation } from "../lib/evaluation-review-core.mjs";
-import { renderCriticMarker, renderGauntletLaunchMarker, renderGauntletVerdictAck } from "../lib/gauntlet-core.mjs";
+  sealEvaluationPayload, evaluationAttestation, findEvaluationAttestation } from "@connorbritain/roadmap-core/evaluation-review-core.mjs";
+import { renderCriticMarker, renderGauntletLaunchMarker, renderGauntletVerdictAck } from "@connorbritain/roadmap-core/gauntlet-core.mjs";
 
 const HEAD = "b".repeat(40), SOURCE = "a".repeat(40), NONCE = "c".repeat(32);
 const TIME = "2026-09-05T10:01:00Z";
@@ -13,7 +13,7 @@ function fixture(roles = ["critic"]) {
   state.authorization.required_review_roles = roles;
   state.authorization_digest = authorizationDigest(state.authorization);
   state.evidence_pr = { number: 42, url: "https://github.com/owner/repo/pull/42", base_ref: "main" };
-  return { state, pr: { number: 42, url: state.evidence_pr.url, baseRefName: "main", state: "OPEN", currentHead: HEAD, comments: [], commits: [HEAD] } };
+  return { state, pr: { number: 42, url: state.evidence_pr.url, baseRef: "main", state: "OPEN", currentHead: HEAD, comments: [], commits: [HEAD] } };
 }
 function comment(pr, body, author = "lead") {
   const c = { body, author, url: `${pr.url}#issuecomment-${pr.comments.length + 1}`, createdAt: TIME, updatedAt: TIME };

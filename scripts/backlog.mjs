@@ -8,10 +8,10 @@
 
 import { readFileSync } from "node:fs";
 import YAML from "yaml";
-import { parseAssignments } from "./lib/cli-core.mjs";
-import { loadBacklog, mutateBacklog, originBacklogIds } from "./lib/store.mjs";
-import { addItem, setItemFields, sortByPriority, openCount, KINDS } from "./lib/backlog-core.mjs";
-import { tierBadge } from "./lib/priority.mjs";
+import { parseAssignments } from "@connorbritain/roadmap-core/cli-core.mjs";
+import { loadBacklog, mutateBacklog, originBacklogIds } from "@connorbritain/roadmap-core/store.mjs";
+import { addItem, setItemFields, sortByPriority, openCount, KINDS } from "@connorbritain/roadmap-core/backlog-core.mjs";
+import { tierBadge } from "@connorbritain/roadmap-core/priority.mjs";
 
 const args = process.argv.slice(2);
 const sub = args[0] && !args[0].startsWith("-") ? args[0] : "list";

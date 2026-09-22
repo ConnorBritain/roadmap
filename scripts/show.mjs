@@ -2,13 +2,15 @@
 // roadmap show <invoke> — print one slice's detail (what / deps / read-order / next / gate
 // + branch/worktree), for /slice orientation. Read-only.
 
-import { loadGraph, flatten, statusDisplay, resolveGate } from "./lib/graph.mjs";
-import { branchFor, worktreeFor } from "./lib/brief.mjs";
-import { executionDirectiveLines } from "./lib/execution.mjs";
+import { loadGraph, flatten, statusDisplay, resolveGate } from "@connorbritain/roadmap-core/graph.mjs";
+import { branchFor, worktreeFor } from "@connorbritain/roadmap-exec-engineering/brief.mjs";
+import { executionDirectiveLines } from "@connorbritain/roadmap-core/execution.mjs";
+import { REL } from "@connorbritain/roadmap-core/cli-core.mjs";
+import { join } from "node:path";
 
 const args = process.argv.slice(2);
 const val = (n, d) => { const i = args.indexOf(n); return i >= 0 && args[i + 1] && !args[i + 1].startsWith("--") ? args[i + 1] : d; };
-const inPath = val("--in", "docs/roadmap/roadmap.yaml");
+const inPath = val("--in", join(...REL));
 const invoke = args.find((a) => !a.startsWith("--"));
 
 if (!invoke) { console.error("usage: roadmap show <slice-invoke>"); process.exit(2); }

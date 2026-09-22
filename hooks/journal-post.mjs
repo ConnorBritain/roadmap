@@ -4,6 +4,10 @@
 // is git-derived (branch · recent commits · uncommitted paths); NO handoff.md dependency. Heavily guarded,
 // best-effort, ZERO-noise: any miss (not a roadmap repo, Linear off, no key, branch isn't a mapped slice,
 // nothing to report, network fail) is a SILENT no-op. A journal post must NEVER fail or block a session.
+//
+// The branch → slice mapping is the ENGINEERING executor's convention (one worktree branch per slice).
+// Under the general profile there is no such branch, so the hook is a no-op there (the assignment
+// brief and the conducted run's sidecar are the general profile's trail).
 
 import { readFileSync, existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -28,12 +32,18 @@ if (!root) done();
 if (!process.env.LINEAR_API_KEY) done();   // unauthed → nothing to post to
 
 try {
-  const graphMod = await import(new URL("../scripts/lib/graph.mjs", import.meta.url));
-  const { normalizeLinearConfig } = await import(new URL("../scripts/lib/linear-core.mjs", import.meta.url));
-  const { autoPostPlan, sliceForBranch } = await import(new URL("../scripts/lib/journal-core.mjs", import.meta.url));
+  const graphMod = await import("@connorbritain/roadmap-core/graph.mjs");
+  const { normalizeLinearConfig } = await import("@connorbritain/roadmap-core/linear-core.mjs");
+  const { autoPostPlan, sliceForBranch } = await import("@connorbritain/roadmap-core/journal-core.mjs");
 
   const graph = graphMod.loadGraph(join(root, "docs", "roadmap", "roadmap.yaml"));
   if (!normalizeLinearConfig(graph.meta || {})) done();   // Linear not configured for this roadmap
+
+  // Only the engineering profile maps a branch to a slice (the loader is the one meta.profile reader).
+  const { loadProfile } = await import("@connorbritain/roadmap-cli/profile.mjs");
+  const profile = await loadProfile(graph.meta, { root });
+  if (profile.name !== "engineering") done();
+  const { branchFor } = await import("@connorbritain/roadmap-exec-engineering/brief.mjs");   // the engineering branch convention
 
   const branch = git(root, ["rev-parse", "--abbrev-ref", "HEAD"]);
   const base = (graph.meta && graph.meta.base_branch) || "main";
@@ -41,24 +51,21 @@ try {
   const dirty = git(root, ["status", "-s"]) || "";
 
   // Calibration loop (best-effort, silent): if this branch's slice is now DONE and was estimated, log
-  // its outcome to agent-time so the estimate self-corrects. Idempotent per task_id (runLog checks
-  // agent-time's history), so firing on every session end is safe. Rides this Linear-gated hook, so it's
-  // active when Linear is configured; otherwise use `roadmap estimate log` or agent-time's own hooks.
-  // ponytail: without agent-time's round-counter hook, log() has no actuals and is rejected, so this
-  // re-fires one silent spawnSync every session end on a done+estimated slice until an outcome lands.
-  // Bounded per session, harmless; the upgrade path is enabling that hook (then the first fire succeeds).
+  // its outcome so the estimate self-corrects. Idempotent per task_id (runLog checks the history), so
+  // firing on every session end is safe. Rides this Linear-gated hook, so it's active when Linear is
+  // configured; otherwise use `roadmap estimate log`.
   try {
-    const slice = sliceForBranch(graph, branch);
+    const slice = sliceForBranch(graph, branch, branchFor);
     if (slice && graphMod.isDone(slice.status) && slice.estMinutes) {
-      const { runLog } = await import(new URL("../scripts/estimate.mjs", import.meta.url));
+      const { runLog } = await import("@connorbritain/roadmap-core/estimate-io.mjs");
       runLog(root, { invoke: slice.invoke, status: "pass" });
     }
   } catch { /* best-effort — a calibration miss must never block session end */ }
 
-  const plan = autoPostPlan(graph, { branch, commits, dirty });
+  const plan = autoPostPlan(graph, { branch, commits, dirty, branchFor });
   if (!plan) done();   // branch isn't a mapped slice, or no real work to report
 
-  const { postDispatchComment } = await import(new URL("../scripts/linear.mjs", import.meta.url));
+  const { postDispatchComment } = await import("@connorbritain/roadmap-core/linear-io.mjs");
   await postDispatchComment(plan.identifier, plan.body, { apiKey: process.env.LINEAR_API_KEY, fetchImpl: fetch });
 } catch { /* best-effort — swallow everything */ }
 done();

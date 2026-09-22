@@ -1,0 +1,34 @@
+{
+  "name": "@connorbritain/roadmap-cli",
+  "description": "Thin roadmap CLI/MCP wiring: reads meta.profile once and loads the matching executor package. The `roadmap` bin stays in the root package until the unshim slice.",
+  "version": "0.7.2",
+  "type": "module",
+  "license": "MIT",
+  "author": "Connor England",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ConnorBritain/roadmap.git",
+    "directory": "packages/cli"
+  },
+  "engines": {
+    "node": ">=18.15"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "src/",
+    "index.mjs",
+    "README.md"
+  ],
+  "main": "index.mjs",
+  "exports": {
+    ".": "./index.mjs",
+    "./*": "./src/*"
+  },
+  "dependencies": {
+    "@connorbritain/roadmap-core": "0.7.2",
+    "@connorbritain/roadmap-exec-engineering": "0.7.2",
+    "@connorbritain/roadmap-exec-general": "0.7.2"
+  }
+}

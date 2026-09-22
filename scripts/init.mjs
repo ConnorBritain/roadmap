@@ -14,7 +14,7 @@
 // roadmap they can validate + render immediately. No prior knowledge, no
 // docs required, no risk of an unintended write (--yes is only used for CI).
 //
-// The pure logic lives in lib/init-core.mjs (planInit, renderers,
+// The pure logic lives in packages/core/src/init-core.mjs (planInit, renderers,
 // validators). This file is the IO shell — fs writes, TTY detection, and
 // the interactive prompt orchestration.
 
@@ -23,11 +23,11 @@ import { basename, join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { LOCAL_CONFIG_REL, BUILTIN_PROFILES } from "./lib/assistant-core.mjs";
+import { LOCAL_CONFIG_REL, BUILTIN_PROFILES } from "@connorbritain/roadmap-exec-engineering/assistant-core.mjs";   // the engineering executor's profile table
 import {
   BACKLOG_REL, LOCAL_REL, REL,
   appendToGitignore, planGitignore, planInit, suggestProgramName, validators,
-} from "./lib/init-core.mjs";
+} from "@connorbritain/roadmap-core/init-core.mjs";
 import { select, confirm, text } from "./prompt.mjs";
 
 const S = {
@@ -101,7 +101,7 @@ async function interactiveInit() {
   const withLocal = await confirm(`Also scaffold ${LOCAL_REL.join("/")} (assistant config, gitignored)?`, true);
 
   const existingFiles = detectExistingFiles(root, { includeGitignore: true });
-  const files = planInit({ program, piTitle, sprintTitle, assistant, withBacklog, withLocal }, { existingFiles });
+  const files = planInit({ program, piTitle, sprintTitle, assistant, withBacklog, withLocal }, { existingFiles, profiles: BUILTIN_PROFILES });
   const gi = planGitignore({ currentText: readTextOrEmpty(join(root, ".gitignore")) });
 
   console.log("");
@@ -147,7 +147,7 @@ async function nonInteractiveInit() {
   const sprintTitle = value("--sprint-title", "Bootstrap the roadmap");
 
   const existingFiles = detectExistingFiles(root, { includeGitignore: true });
-  const files = planInit({ program, piTitle, sprintTitle, assistant, withBacklog, withLocal }, { existingFiles });
+  const files = planInit({ program, piTitle, sprintTitle, assistant, withBacklog, withLocal }, { existingFiles, profiles: BUILTIN_PROFILES });
   const gi = planGitignore({ currentText: readTextOrEmpty(join(root, ".gitignore")) });
 
   if (!has("--yes")) {

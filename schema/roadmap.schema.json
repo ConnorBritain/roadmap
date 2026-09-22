@@ -14,6 +14,7 @@
       "properties": {
         "schema_version": { "const": 1 },
         "program": { "type": "string", "description": "Active program label, e.g. Q3-PLATFORM" },
+        "profile": { "enum": ["engineering", "general"], "default": "engineering", "description": "The work profile: which executor package plans and conducts slices. engineering (default; absent = engineering, so existing files need no edit) = worktree sessions, cloud dispatch, GitHub-PR gauntlets, machine ceilings, code-grepping scoper. general = human / doc-agent executors, checklist gates, no ceilings, no touches required. Read in exactly one place (packages/cli/src/profile.mjs)." },
         "north_star": { "type": "string", "description": "Path to the strategy / vision source of truth" },
         "updated": { "type": "string", "description": "ISO date of last hand-edit" },
         "default_gate": { "type": "string", "description": "Verification gate inherited by sprints whose gate is 'default' or interpolates {{default}}" },
@@ -125,7 +126,7 @@
         },
         "estimation": {
           "type": "object", "additionalProperties": false,
-          "description": "Optional agent-time integration: turns calibrated per-slice duration estimates (from the agent-time estimator skill) into projected PI target dates. Absent → estimation off; slices with no `estimate` block simply don't feed the timeline. The shape/risk vocabulary is owned by agent-time (its SHAPES/RISKS tables validate them), not duplicated here.",
+          "description": "Optional estimation config: calibrated per-slice duration estimates (the agent-time model, built in) roll up into projected PI target dates. Absent → defaults apply; slices with no `estimate` block simply don't feed the timeline. `engine` opts into an external estimator.py instead of the native model. The shape/risk vocabulary is estimator-core's SHAPES/RISKS tables, validated at estimate time.",
           "properties": {
             "engine": { "type": "string", "description": "Path to agent-time's estimator.py. Omit to resolve ~/.claude/skills/agent-time-estimator/estimator.py (or $AGENT_TIME_ENGINE)." },
             "python": { "type": "string", "default": "python3", "description": "Python launcher for the estimator (the IO layer falls back to 'python' when 'python3' is absent)." },
@@ -251,7 +252,8 @@
         "deps": { "type": "array", "items": { "type": "string" }, "description": "Dependency edges: sibling sprint id (s2), fully-qualified pi-id/sprint-id, or a PI id (complete-when-all-sprints-complete)" },
         "touches": { "type": "array", "items": { "type": "string" }, "description": "Files this sprint writes; used to detect shared-file contention (two-wave) in the scheduler" },
         "owns": { "type": "array", "items": { "type": "string" }, "description": "Dirs/files this sprint exclusively owns" },
-        "gate": { "type": "string", "description": "'default' (inherit meta.default_gate) or a string; {{default}} interpolates meta.default_gate" },
+        "gate": { "oneOf": [{ "type": "string" }, { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }], "description": "'default' (inherit meta.default_gate) or a command string ({{default}} interpolates meta.default_gate), or a CHECKLIST: a list of criteria a person or critic confirms (the general profile's gate kind; engineering may use it too)" },
+        "artifact": { "type": "string", "description": "Repository-relative path of the deliverable this slice produces (general profile: the git-file gauntlet artifact the critic reviews; defaults to docs/roadmap/artifacts/<invoke>.md)" },
         "gated_on": { "type": "string", "description": "Name of the human this is gated on; such a node never enters the auto-ready set" },
         "optional": { "type": "boolean", "default": false },
         "read_order": { "type": "array", "items": { "type": "string" }, "description": "Ordered docs/sections a session reads to self-orient (markdown link or 'path — note')" },

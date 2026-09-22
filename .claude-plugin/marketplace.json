@@ -1,11 +1,14 @@
 {
   "name": "roadmap",
-  "owner": { "name": "Connor England", "url": "https://github.com/ConnorBritain" },
+  "owner": {
+    "name": "Connor England",
+    "url": "https://github.com/ConnorBritain"
+  },
   "plugins": [
     {
       "name": "roadmap",
       "source": "./",
-      "description": "Roadmap + backlog graph with the GitHub-first Gauntlet Loop as the primary meaningful-work path: /gauntlet conducts frozen-bar implementation, independent exact-SHA criticism, frozen-lead acknowledgment, repair, then fresh re-criticism and fresh acknowledgment. /fanout remains cross-slice concurrency; /sync reconciles durable GitHub results. The graph MCP includes all six Gauntlet tools plus roadmap/backlog planning and comment-preserving mutation."
+      "description": "Roadmap + backlog graph with a work profile. Engineering (default): the GitHub-first Gauntlet Loop \u2014 /gauntlet conducts frozen-bar implementation, independent exact-SHA criticism, frozen-lead acknowledgment, repair and fresh re-criticism; /fanout is cross-slice concurrency; /sync reconciles merged PRs. General (meta.profile: general): the same rituals on document artifacts \u2014 /assign, /conduct, /sync. The graph MCP registers core tools plus the loaded profile's (gauntlet_* or conduct_*)."
     }
   ]
 }

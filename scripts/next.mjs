@@ -6,12 +6,13 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { loadGraph } from "./lib/graph.mjs";
-import { loadBacklog } from "./lib/store.mjs";
-import { pickNext } from "./lib/backlog-core.mjs";
-import { tierBadge } from "./lib/priority.mjs";
+import { loadGraph } from "@connorbritain/roadmap-core/graph.mjs";
+import { loadBacklog } from "@connorbritain/roadmap-core/store.mjs";
+import { pickNext } from "@connorbritain/roadmap-core/backlog-core.mjs";
+import { tierBadge } from "@connorbritain/roadmap-core/priority.mjs";
+import { REL } from "@connorbritain/roadmap-core/cli-core.mjs";
 
-const graph = loadGraph("docs/roadmap/roadmap.yaml");
+const graph = loadGraph(join(...REL));
 const backlog = loadBacklog(process.cwd());
 const next = pickNext(graph, backlog, new Date().toISOString().slice(0, 10));
 

@@ -5,48 +5,11 @@
 // The interview lives in the /cycle skill; this owns the data and the write. Statuses are the
 // bookkeeping: promote = scheduled→next (committed this cycle), demote = next→scheduled. The
 // Linear cycle itself follows on the next sync (cyclePlan mirrors active+next).
-
+// CLI shell: the body lives in @connorbritain/roadmap-core/cycle-io.mjs; this file parses argv and re-exports it.
+export * from "@connorbritain/roadmap-core/cycle-io.mjs";
+import { runCycleLock, runCyclePlan } from "@connorbritain/roadmap-core/cycle-io.mjs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadGraph, flatten } from "./lib/graph.mjs";
-import { roadmapPaths, mutateRoadmap } from "./lib/store.mjs";
-import { normalizeLinearConfig } from "./lib/linear-core.mjs";
-import { electionPlan } from "./lib/cycle-core.mjs";
-import { bulkSet } from "./lib/mcp-core.mjs";
-import { readCursor } from "./linear.mjs";
-
-export function runCyclePlan(root, opts = {}) {
-  const graph = loadGraph(roadmapPaths(root).yaml);
-  const cfg = normalizeLinearConfig(graph.meta || {});
-  const capacity = opts.capacity || (cfg && cfg.cycle_capacity) || 10;
-  const cursor = readCursor(root);
-  return electionPlan(graph, { capacity, staleInvokes: (cursor && cursor.stale) || [] });
-}
-
-// One atomic validated write via bulkSet — all promotions/demotions land together or not at
-// all. Pre-checks give the human a clear refusal instead of a store validation error.
-export function runCycleLock(root, { promote = [], demote = [] } = {}) {
-  if (!promote.length && !demote.length) throw new Error("cycle lock needs --promote and/or --demote invoke keys");
-  const graph = loadGraph(roadmapPaths(root).yaml);
-  const statusOf = new Map(flatten(graph).nodes.map((n) => [n.invoke, n.status]));
-  for (const k of promote) {
-    const s = statusOf.get(k);
-    if (s == null) throw new Error(`no slice "${k}"`);
-    if (s !== "scheduled" && s !== "optionality") throw new Error(`can't promote "${k}" (status ${s}) — the election promotes scheduled/optionality to next`);
-  }
-  for (const k of demote) {
-    const s = statusOf.get(k);
-    if (s == null) throw new Error(`no slice "${k}"`);
-    if (s !== "next") throw new Error(`can't demote "${k}" (status ${s}) — only next (committed, unstarted) demotes back to scheduled`);
-  }
-  const updates = [
-    ...promote.map((invoke) => ({ invoke, fields: { status: "next" } })),
-    ...demote.map((invoke) => ({ invoke, fields: { status: "scheduled" } })),
-  ];
-  mutateRoadmap(root, (doc) => bulkSet(doc, { updates }));
-  return { promoted: promote, demoted: demote };
-}
-
 // ── CLI ───────────────────────────────────────────────────────────────────────
 const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {

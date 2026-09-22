@@ -7,10 +7,10 @@
 //   roadmap plate clear           empty the explicit list (feature stays on; active work still auto-shows)
 // Assignment lands on the next 'roadmap linear sync' (or /sync). Completed slices auto-drain there.
 
-import { loadGraph } from "./lib/graph.mjs";
-import { loadBacklog, mutateRoadmap, roadmapPaths } from "./lib/store.mjs";
-import { setPlateDoc, platedKeys } from "./lib/plate-core.mjs";
-import { normalizeLinearConfig } from "./lib/linear-core.mjs";
+import { loadGraph } from "@connorbritain/roadmap-core/graph.mjs";
+import { loadBacklog, mutateRoadmap, roadmapPaths } from "@connorbritain/roadmap-core/store.mjs";
+import { setPlateDoc, platedKeys } from "@connorbritain/roadmap-core/plate-core.mjs";
+import { normalizeLinearConfig } from "@connorbritain/roadmap-core/linear-core.mjs";
 
 const args = process.argv.slice(2);
 const sub = args[0] && !args[0].startsWith("-") ? args[0] : "list";

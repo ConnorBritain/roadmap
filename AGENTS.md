@@ -6,23 +6,35 @@ This repo is designed to be workable from Codex without any repo-specific bootst
 
 `roadmap` is a Node-based CLI plus MCP server for managing two canonical YAML files —
 `docs/roadmap/roadmap.yaml` (the planned roadmap graph) and `docs/roadmap/backlog.yaml` (the
-erratic-work backlog) — and generating `docs/SLICES.md` + `docs/BACKLOG.md` from them. Its primary
-execution model is the [Gauntlet](docs/GAUNTLET.md): plan -> cloud implementation -> independent
-exact-SHA critic -> frozen-lead acknowledgment -> lead-synthesized repair -> fresh critic and
-acknowledgment -> merge decision -> reconcile.
+erratic-work backlog) — and generating `docs/SLICES.md` + `docs/BACKLOG.md` from them. Its
+execution model is a conducted review loop with a frozen quality bar: plan -> worker ->
+independent critic at an exact version -> frozen-lead acknowledgment -> lead-synthesized repair
+-> fresh critic and acknowledgment -> merge/complete decision -> reconcile. Under the
+**engineering** work profile (the default) that is the [Gauntlet](docs/GAUNTLET.md) on a GitHub
+PR; under **general** (`meta.profile: general`) it is `roadmap conduct` on a file at a commit.
 
-The repo still contains Claude-oriented plugin assets under `.claude-plugin/`, `skills/`, `agents/`, `hooks/`, and `monitors/`. In Codex, the most reliable surfaces are:
+It is an npm-workspaces monorepo ([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)):
 
-- the CLI in [`scripts/cli.mjs`](scripts/cli.mjs)
-- the MCP server in [`scripts/mcp.mjs`](scripts/mcp.mjs) (server name `graph`; roadmap + backlog tools)
-- the pure logic in [`scripts/lib`](scripts/lib)
+- [`packages/core`](packages/core) — the planning + ritual engine and the protocol; imports no executor
+- [`packages/exec-engineering`](packages/exec-engineering) — `worktree-session` + `cloud-dispatch` executors, the `github-pr` artifact, ceilings, doctor, PR watch
+- [`packages/exec-general`](packages/exec-general) — `human` + `doc-agent` executors, the `git-file` artifact, the conducted loop
+- [`packages/cli`](packages/cli) — the profile loader, the ONLY reader of `meta.profile`
+- the CLI in [`scripts/cli.mjs`](scripts/cli.mjs), the MCP server in [`scripts/mcp.mjs`](scripts/mcp.mjs)
+  (server name `graph`; core tools plus the loaded profile's), thin command scripts in `scripts/`
+- there is no `scripts/lib/` any more: import the packages by name.
+
+The Claude plugin assets live under `.claude-plugin/`, `skills/`, `agents/`, `hooks/`, and `monitors/`.
 
 ## Working Agreements
 
 - Treat `docs/roadmap/roadmap.yaml` and `docs/roadmap/backlog.yaml` as canonical when they exist.
 - Treat `docs/SLICES.md` and `docs/BACKLOG.md` as generated output. Never hand-edit them unless the user explicitly asks.
-- Mutations go through the yaml Document API behind a pre-write validation gate (`lib/store.mjs` — `mutateRoadmap` / `mutateBacklog` / `mutateBoth`); never write the YAMLs with ad-hoc string edits.
-- Prefer small changes in the pure libraries under `scripts/lib/` and keep the CLI wrappers thin.
+- Mutations go through the yaml Document API behind a pre-write validation gate (`packages/core/src/store.mjs` — `mutateRoadmap` / `mutateBacklog` / `mutateBoth`); never write the YAMLs with ad-hoc string edits.
+- Prefer small changes in the pure libraries under `packages/*/src/` and keep the CLI wrappers in `scripts/` thin.
+- Keep the split honest: core never imports an executor package; only `packages/cli/src/profile.mjs`
+  reads `meta.profile`; no core command branches on the profile — it asks the loaded profile
+  (`commands`, `validators`, `planContext`, `mcp`, `nudge`, `sessionHint`). `scripts/check-boundaries.mjs`
+  runs in `npm test`. Every `Executor` / `GauntletArtifact` implementation registers the core contract test.
 - Preserve zero-dependency behavior in tests except for the existing `yaml` dependency.
 - Keep changes cross-platform when possible. This repo intentionally supports PowerShell/Windows and tmux/bash flows.
 - Keep Gauntlet V1 GitHub-first and reconstructable. GitHub PRs/comments are durable reality;
@@ -57,13 +69,17 @@ The repo still contains Claude-oriented plugin assets under `.claude-plugin/`, `
 - `npm run mcp`
 - `node scripts/cli.mjs show <slice>`
 - `node scripts/cli.mjs next` · `backlog` · `set <slice> f=v` · `grab <id>` · `promote <id> --pi <pi>` · `review [--json]`
-- `node scripts/cli.mjs gauntlet start|status|critic|ack|repair|cancel ...`
+- `node scripts/cli.mjs gauntlet start|status|critic|ack|repair|cancel ...` (engineering)
+- `node scripts/cli.mjs conduct start|status|critic|verdict|ack|repair|reconcile ...` · `assign <key> --to <who>` (general)
 - Low level: `node scripts/cli.mjs dispatch <key>` · `fan --cloud`; optional projection:
   `linear status|provision|sync`
+- `node scripts/check-boundaries.mjs` · `npm run pack:all && npm run test:packed -- dist`
 
 The matching MCP tools are `gauntlet_start`, `gauntlet_status`, `gauntlet_critic`,
-`gauntlet_ack`, `gauntlet_repair`, and `gauntlet_cancel`. `dispatch` and `fan_cloud` remain
-debuggable lower-level actuators.
+`gauntlet_ack`, `gauntlet_repair`, and `gauntlet_cancel` under engineering (`dispatch` and
+`fan_cloud` remain debuggable lower-level actuators), and `conduct_start`, `conduct_status`,
+`conduct_critic`, `conduct_verdict`, `conduct_ack`, `conduct_repair`, `conduct_reconcile`, `assign`
+under general.
 
 ## Scope discipline
 
@@ -77,10 +93,11 @@ into a repo, PR/comment, or `.roadmap-gauntlet-state.json`. Routine credentials 
 environment variables or the protected machine-local `~/.claude-routines.json`; `LINEAR_API_KEY`
 stays in the environment.
 
-## Gauntlet (primary execution)
+## Gauntlet (primary execution, engineering profile)
 
 Meaningful cloud slices should use `/gauntlet` or the Gauntlet tool/CLI family, not one-shot
-delegation followed by hope. Freeze the quality bar before implementation and carry it in the
+delegation followed by hope. Under the general profile the same protocol runs as `/conduct` on a
+`git-file` artifact ([packages/exec-general/README.md](packages/exec-general/README.md)). Freeze the quality bar before implementation and carry it in the
 ledger plus implementation PR body. Use one fresh critic by default and at most three repair
 rounds by default. Critics are advisory; the long-lived lead deduplicates findings, rejects scope
 creep, acknowledges the exact critic artifact before it can drive state, and writes the repair
@@ -99,12 +116,14 @@ requested tier. See [docs/GAUNTLET.md](docs/GAUNTLET.md) for the full contract.
 
 ## Linear (optional)
 
-When `meta.linear` exists, the YAML projects to Linear (push) and inbound issues arrive as proposals (pull) — see README → Linear. The pure brain is `scripts/lib/linear-core.mjs`; ALL network IO lives in `scripts/linear.mjs` (injectable transport — tests use a fake, never the API). No `meta.linear` → all Linear behavior is off; keep it that way (backward compat is asserted by tests).
+When `meta.linear` exists, the YAML projects to Linear (push) and inbound issues arrive as proposals (pull) — see README → Linear. The pure brain is `packages/core/src/linear-core.mjs`; ALL network IO lives in `packages/core/src/linear-io.mjs` (`scripts/linear.mjs` is its CLI) (injectable transport — tests use a fake, never the API). No `meta.linear` → all Linear behavior is off; keep it that way (backward compat is asserted by tests).
 
 ## Codex-Specific Notes
 
 - Codex can use this repo directly through shell commands; no Claude plugin install is required.
-- The local fanout launcher in [`scripts/fanout.mjs`](scripts/fanout.mjs) still launches `claude`
-  worker processes. Fanout schedules across slices; a Gauntlet iterates within one slice. Keep
-  those dimensions separate.
+- The local fanout launcher (`scripts/fanout.mjs` over the `worktree-session` executor) still
+  launches `claude` worker processes. Fanout schedules across slices; a Gauntlet iterates within
+  one slice. Keep those dimensions separate.
+- Resuming an in-flight initiative on this repo: read [docs/roadmap/STATUS.md](docs/roadmap/STATUS.md)
+  first ([CONTRIBUTING.md](CONTRIBUTING.md) § Resuming work).
 - If you change roadmap/backlog structure or mutation behavior, run both `npm test` and `npm run validate`.

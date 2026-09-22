@@ -4,11 +4,11 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { parse, stringify } from "yaml";
 import { runEvaluation } from "../evaluate.mjs";
-import { evaluationScopeSnapshot } from "../lib/evaluation-core.mjs";
+import { evaluationScopeSnapshot } from "@connorbritain/roadmap-core/evaluation-core.mjs";
 import { authorizationFixture, memoryAuthorityStore, continuationFixtureReceipt } from "./authorization.mjs";
-import { authorizationDigest } from "../lib/gauntlet-authorization.mjs";
-import { evaluationReviewRun } from "../lib/evaluation-review-core.mjs";
-import { renderCriticMarker } from "../lib/gauntlet-core.mjs";
+import { authorizationDigest } from "@connorbritain/roadmap-core/gauntlet-authorization.mjs";
+import { evaluationReviewRun } from "@connorbritain/roadmap-core/evaluation-review-core.mjs";
+import { renderCriticMarker } from "@connorbritain/roadmap-core/gauntlet-core.mjs";
 import { evaluationRepositoryFixture } from "./evaluation.mjs";
 
 function git(root, args) {
@@ -24,7 +24,7 @@ async function fixture() {
   state.authorization.run_id = manifest.run_id; state.authorization.source_sha = manifest.base_sha;
   state.authorization_digest = authorizationDigest(state.authorization);
   const store = memoryAuthorityStore(state);
-  const pr = { number: 42, url: "https://github.com/owner/repo/pull/42", baseRefName: "main", state: "OPEN", checks: "none",
+  const pr = { number: 42, url: "https://github.com/owner/repo/pull/42", baseRef: "main", state: "OPEN", checks: "none",
     currentHead: git(r.root, ["rev-parse", "HEAD"]), comments: [], commits: [] };
   const github = { viewerLogin: () => "lead", isAncestor: () => true, getPr: () => structuredClone(pr),
     addComment(number, body) {

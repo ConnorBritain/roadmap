@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { recordLeadDecision, decisionReport, recordDecisionForPr } from "../lib/gauntlet-decisions.mjs";
+import { recordLeadDecision, decisionReport, recordDecisionForPr } from "@connorbritain/roadmap-core/gauntlet-decisions.mjs";
 import { authorizationFixture, memoryAuthorityStore } from "./authorization.mjs";
-import { assertAuthorizationTransition } from "../lib/gauntlet-authorization.mjs";
-import { authorizationReport } from "../lib/gauntlet-portfolio.mjs";
+import { assertAuthorizationTransition } from "@connorbritain/roadmap-core/gauntlet-authorization.mjs";
+import { authorizationReport } from "@connorbritain/roadmap-core/gauntlet-portfolio-core.mjs";
 
 const NOW = "2026-09-05T10:01:00Z", HEAD = "b".repeat(40);
 const input = () => ({ version: 1, id: "F1", kind: "finding", outcome: "accepted", head: HEAD,

@@ -1,0 +1,5 @@
+{
+ "status": 0,
+ "stdout": "# fanout wave 1 via background (basic adapter)\ngit worktree add \"<ROOT>/_wt/auth-s1\" -b \"auth/s1\" origin/main 2>/dev/null || true   # auth-login\n(cd \"<ROOT>/_wt/auth-s1\" && echo \"auth-login: worktree and .kickoff.md ready; start your configured assistant here.\") &   # background\ngit worktree add \"<ROOT>/_wt/auth-s2\" -b \"auth/s2\" origin/main 2>/dev/null || true   # auth-sessions\n(cd \"<ROOT>/_wt/auth-s2\" && echo \"auth-sessions: worktree and .kickoff.md ready; start your configured assistant here.\") &   # background\n",
+ "stderr": "fanout: wave 1/1 \u00b7 cap 2 (recommended 1, bound by CPU) \u00b7 term=background \u00b7 lane=max \u00b7 dry\nslices: auth-login, auth-sessions\n\n(--dry \u2014 nothing spawned. Drop --dry to launch; --out <file> to save the script.)\n"
+}

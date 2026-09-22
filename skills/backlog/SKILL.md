@@ -15,6 +15,6 @@ You manage the repo's **backlog** — the tracker for erratic work (follow-ups, 
 **Triage** (no arguments): run `roadmap backlog` and walk the open items with the user — set/adjust `priority` (with reasons), drop stale ones (`status=dropped`), and stash pickup instructions on items that are ready to run (`roadmap backlog set <id> prompt=@file` or `backlog_set`). Edits go through `backlog_set` / `roadmap backlog set` only — never hand-edit BACKLOG.md (generated).
 
 **Then route** each actionable item, and say which you'd pick:
-- **Small / self-contained** → `roadmap grab <id>` (own worktree + session, launches directly).
+- **Small / self-contained** → engineering profile: `roadmap grab <id>` (own worktree + session, launches directly); general profile: `roadmap conduct start <id> --executor human --assignee <who>` (assignment brief + review loop on the item's artifact).
 - **Bigger / belongs in the plan** → `roadmap promote <id> --pi <pi>` (becomes a roadmap sprint; keeps the back-link).
 - **Not yet** → leave it captured; `roadmap next` will surface it when it outranks the roadmap's ready work.

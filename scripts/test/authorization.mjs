@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { freezeAuthorization, authorizationStatus, reserveAuthorizedLaunch, recordLaunchOutcome,
-  recordLaunchObservation, recordLaunchNotSubmitted, assertAuthorizationState, assertAuthorizationTransition, authorizationDigest, reconcileLaunchReceipt, recordContinuation, continuationStatus } from "../lib/gauntlet-authorization.mjs";
-import { mutateAuthorization } from "../lib/gauntlet-authorization-io.mjs";
-import { submitWithImplementationCapacity } from "../lib/implementation-authorization.mjs";
+  recordLaunchObservation, recordLaunchNotSubmitted, assertAuthorizationState, assertAuthorizationTransition, authorizationDigest, reconcileLaunchReceipt, recordContinuation, continuationStatus } from "@connorbritain/roadmap-core/gauntlet-authorization.mjs";
+import { mutateAuthorization } from "@connorbritain/roadmap-core/gauntlet-authority.mjs";
+import { submitWithImplementationCapacity } from "@connorbritain/roadmap-core/implementation-authorization.mjs";
 
 const NOW = "2026-09-05T10:00:00Z";
 const HEAD = "a".repeat(40);
