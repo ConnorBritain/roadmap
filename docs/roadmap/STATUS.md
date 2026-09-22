@@ -63,11 +63,12 @@ still accepted through `asGauntletArtifact`); `npm run test:e2e` runs the dry-fa
 the general conduct loop on their own. **The PI is complete.** Gates at the last commit: 524 tests,
 boundary check clean, packed install of all five tarballs green, e2e green.
 
-Open follow-ups live in [`backlog.yaml`](backlog.yaml): b1 (schema meta drift), b2 (fold the
-remaining inline git/gh probe copies in watch-prs.mjs into external-state; session-start's copy is
-already folded).
+The PI merged to `main` in PR #56. The three backlog items are closed: b1 (the schemas now declare
+`command_lane`, `assistants`, `jira` and backlog `meta.audit`; `packages/core/test/schema.mjs` pins
+every meta key the code reads to the schema), b2 (watch-prs and worktree pruning read from
+`external-state`'s one set of gatherers), b3 (MCP server version).
 
-Next command: `roadmap next`.
+Next command: `roadmap next` (nothing is ready; the roadmap is complete).
 
 ## Slices
 
