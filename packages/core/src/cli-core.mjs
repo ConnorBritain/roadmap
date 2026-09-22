@@ -32,11 +32,14 @@ export function route(argv) {
   return { cmd: argv[0], rest: argv.slice(1) };
 }
 
-// Classify a command into an action the wrapper acts on.
-export function classify(cmd) {
+// Classify a command into an action the wrapper acts on. `commands` is the merged command map
+// the profile loader built (core + the loaded profile's); the default is the full historical map
+// so callers without a profile keep working.
+export function classify(cmd, commands = MAP) {
   if (cmd === "help") return { kind: "help" };
   if (NOT_YET[cmd]) return { kind: "notyet", phase: NOT_YET[cmd] };
-  if (MAP[cmd]) return { kind: "run", script: MAP[cmd] };
+  if (commands[cmd]) return { kind: "run", script: commands[cmd] };
+  if (MAP[cmd]) return { kind: "unavailable", script: MAP[cmd] };   // exists, but not under this profile
   return { kind: "unknown" };
 }
 

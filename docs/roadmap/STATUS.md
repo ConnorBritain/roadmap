@@ -32,9 +32,17 @@ are pinned byte for byte by golden fixtures (`scripts/test/fixtures/launchers/`)
 runtime still calls the adapter by its GitHub-era names through `asGauntletArtifact`; the
 canonical-name switch is deferred to `unshim`. Dogfooding note: `roadmap estimate --all` wrote
 native `estimate:` blocks into this PI's slices (uncalibrated priors; the first `roadmap estimate
-log` outcomes will calibrate them). Next is `profile-loader`.
+log` outcomes will calibrate them). Slice 6 `profile-loader` is complete: `packages/cli/src/profile.mjs`
+is the single `meta.profile` reader (engineering when absent; any other value is an error); both
+executor packages export `profile(root)` and the loader merges core's commands/skills on top;
+`cli.mjs`, `validate.mjs`, `scheduler.mjs` and `mcp.mjs` consume the loaded profile (command map,
+validators, plan context, MCP tools); the engineering MCP tables live in
+`packages/exec-engineering/src/mcp-engineering.mjs`; the schema declares `meta.profile`; a general
+roadmap with no `touches` and checklist gates round-trips validate / plan / show / MCP with zero
+edits (`packages/cli/test/profile.mjs`). Backlog b3 (MCP server version) closed in passing. Next is
+`exec-general`.
 
-Next command: `roadmap show profile-loader`.
+Next command: `roadmap show exec-general`.
 
 ## Slices
 
@@ -44,9 +52,9 @@ Next command: `roadmap show profile-loader`.
 | 2 | `workspaces` | complete | `d32b04d` | packages scaffolded; packed check covers all tarballs |
 | 3 | `core-extract` | complete | `384282d` | 24 modules + core tests moved; 7 edges cut; shims remain |
 | 4 | `gauntlet-split` | complete | `dfbc8c9` | 475 tests; contract on memory + github-pr |
-| 5 | `exec-engineering` | complete | (this branch, slice 5 commit) | 499 tests; Executor contract on memory + worktree-session + cloud-dispatch; golden launcher fixtures |
-| 6 | `profile-loader` | next | — | single `meta.profile` reader |
-| 7 | `exec-general` | scheduled | — | general round-trip fixture is the exit test |
+| 5 | `exec-engineering` | complete | `c1bd959` | 499 tests; Executor contract on memory + worktree-session + cloud-dispatch; golden launcher fixtures |
+| 6 | `profile-loader` | complete | (this branch, slice 6 commit) | 504 tests; single reader + rule 1c in the boundary check |
+| 7 | `exec-general` | next | — | general round-trip fixture is the exit test |
 | 8 | `skills-agents` | scheduled | — | |
 | 9 | `docs` | scheduled | — | |
 | 10 | `unshim` | scheduled | — | |

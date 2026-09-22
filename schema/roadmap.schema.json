@@ -14,6 +14,7 @@
       "properties": {
         "schema_version": { "const": 1 },
         "program": { "type": "string", "description": "Active program label, e.g. Q3-PLATFORM" },
+        "profile": { "enum": ["engineering", "general"], "default": "engineering", "description": "The work profile: which executor package plans and conducts slices. engineering (default; absent = engineering, so existing files need no edit) = worktree sessions, cloud dispatch, GitHub-PR gauntlets, machine ceilings, code-grepping scoper. general = human / doc-agent executors, checklist gates, no ceilings, no touches required. Read in exactly one place (packages/cli/src/profile.mjs)." },
         "north_star": { "type": "string", "description": "Path to the strategy / vision source of truth" },
         "updated": { "type": "string", "description": "ISO date of last hand-edit" },
         "default_gate": { "type": "string", "description": "Verification gate inherited by sprints whose gate is 'default' or interpolates {{default}}" },

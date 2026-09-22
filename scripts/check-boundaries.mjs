@@ -5,6 +5,7 @@
 //         packages/core (a relative import that escapes the package) or the exec-*/cli packages
 //         by name. Node builtins and npm dependencies are fine.
 // Rule 2: exactly one file reads meta.profile — the profile loader. Every other read is refused.
+// Rule 1c: only that loader imports the general executor package by name (see below).
 //
 // EXPECTED lists violations that are known and tracked in docs/roadmap/roadmap.yaml. The check
 // fails on any UNEXPECTED violation and ALSO fails when an expected one has disappeared, so the
@@ -70,6 +71,17 @@ export function checkBoundaries(root = process.cwd()) {
           violations.push(`${rel(root, file)} -> ${spec} (an executor imports another executor)`);
         }
       }
+    }
+  }
+
+  // Rule 1c — the general executor package is reached only through the loader: outside its own
+  // package, only the profile loader may import it by name (engineering CLIs import their own
+  // package directly because they ARE the engineering profile's commands).
+  for (const file of [...walk(join(root, "scripts")), ...walk(join(root, "hooks")), ...walk(join(root, "packages", "cli")), ...walk(join(root, "packages", "exec-engineering")), ...walk(join(root, "packages", "core"))]) {
+    const r = rel(root, file);
+    if (r === PROFILE_READER || r.startsWith("packages/cli/test/") || r.startsWith("scripts/test/")) continue;
+    for (const spec of importsOf(readFileSync(file, "utf8"))) {
+      if (spec.startsWith("@connorbritain/roadmap-exec-general")) violations.push(`${r} -> ${spec} (only ${PROFILE_READER} loads the general package)`);
     }
   }
 

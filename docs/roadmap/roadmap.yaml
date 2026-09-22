@@ -140,7 +140,7 @@ pis:
           basis: UNCALIBRATED (static prior 3.0 min/round; only 0 logged outcomes) · sparse-data widening ×1.75 (n=0)
       - id: s6
         title: Profile loader — meta.profile read in exactly one place
-        status: next
+        status: complete
         invoke: profile-loader
         what: packages/cli/src/profile.mjs selects the executor package and adapters; default engineering; command/MCP/validator/skill registries merged by the loader; boundary check refuses any other read.
         deps: [s5]
@@ -162,7 +162,7 @@ pis:
           basis: UNCALIBRATED (static prior 3.0 min/round; only 0 logged outcomes) · sparse-data widening ×1.75 (n=0)
       - id: s7
         title: General executor — human + doc-agent, git-file artifact, checklist gates
-        status: scheduled
+        status: next
         invoke: exec-general
         what: Build exec-general; gates as string arrays; no ceilings; validate a general roadmap with no touches round-trips plan / render / sync / gauntlet start-critic-ack-repair against a markdown artifact.
         deps: [s6]

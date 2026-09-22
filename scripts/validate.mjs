@@ -19,6 +19,7 @@ import { validateGraph } from "./lib/validate-core.mjs";
 import { validateBacklog } from "./lib/backlog-core.mjs";
 import { auditBacklog, AUDIT_CODES, knownDamageOf } from "./lib/backlog-audit.mjs";
 import { REL } from "./lib/cli-core.mjs";
+import { loadProfile } from "@connorbritain/roadmap-cli/profile.mjs";
 
 const path = process.argv[2] || join(...REL);
 
@@ -30,7 +31,12 @@ try {
   process.exit(2);
 }
 
-const graphResult = validateGraph(graph);
+// The work profile adds its own validators (engineering: wave-contention blindness); a bad
+// meta.profile is itself an error, reported here rather than silently defaulting.
+let validators = [];
+try { validators = (await loadProfile(graph.meta, { root: dirname(dirname(dirname(path))) || process.cwd() })).validators; }
+catch (e) { console.error(`✗ ${e.message}`); process.exit(1); }
+const graphResult = validateGraph(graph, { validators });
 for (const w of graphResult.warnings) console.warn(`⚠ ${w}`);
 const graphErrors = graphResult.errors;
 

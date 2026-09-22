@@ -410,5 +410,8 @@ export function computeWaves(model, N = 3, opts = {}) {
 export function resolveGate(node, graph) {
   const def = (graph.meta && graph.meta.default_gate) || "";
   if (!node.gate || node.gate === "default") return def;
-  return node.gate.replace(/\{\{\s*default\s*\}\}/g, def);
+  // A checklist gate (a list of human-verified criteria) renders as bullet lines; each line may
+  // still interpolate the program default.
+  if (Array.isArray(node.gate)) return node.gate.map((g) => `- ${String(g).replace(/\{\{\s*default\s*\}\}/g, def)}`).join("\n");
+  return String(node.gate).replace(/\{\{\s*default\s*\}\}/g, def);
 }

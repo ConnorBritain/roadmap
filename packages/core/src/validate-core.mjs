@@ -16,11 +16,18 @@ const isDone = (s) => !!(STATUS[s] && STATUS[s].done);
 // opts a repo into WARNing when a complete slice omits one.
 export const RECEIPT_KEYS = ["build", "test", "clone_install", "screenshot", "signoff", "publish"];
 
-export function validateGraph(graph) {
+// opts.validators: extra `(graph) → { errors, warnings }` checks the work profile registers
+// (docs/ARCHITECTURE.md § Profile loader). Core never chooses them; the loader passes them in.
+export function validateGraph(graph, { validators = [] } = {}) {
   const errors = [];
   const warnings = [];
   const err = (m) => errors.push(m);
   const warn = (m) => warnings.push(m);
+  for (const v of validators) {
+    const r = v(graph) || {};
+    for (const e of r.errors || []) err(e);
+    for (const w of r.warnings || []) warn(w);
+  }
 
   const meta = graph.meta || {};
   if (meta.schema_version !== 1) err(`meta.schema_version must be 1 (got ${JSON.stringify(meta.schema_version)})`);

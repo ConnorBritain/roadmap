@@ -26,6 +26,16 @@ the generic doc-based scoper, and turned `fanout`/`grab`/`cleanup` into thin CLI
 `cloudDispatchExecutor` beside `runDispatch`; the engineering scoper (`scoper.mjs`) layers
 code-derived `touches` on the generic proposal. Golden dry-run fixtures under
 `scripts/test/fixtures/launchers/` pin the launcher CLIs' output byte for byte across the move.
+The `profile-loader` slice then added `packages/cli/src/profile.mjs` (the single `meta.profile`
+reader; `engineering` when absent, an error for any other value): each executor package exports a
+`profile(root)` factory registering its executor, artifacts, validators, commands, MCP tools,
+skills and plan context, and the loader merges core's own on top. `cli.mjs` classifies commands
+against the merged map (an engineering command under `general` is refused with a message, not
+"unknown"), `validate.mjs` runs the profile's validators after core's (engineering warns on
+contention-blind `next` slices), `scheduler.mjs` and the MCP server take `capacity`/`annotate`
+from the profile, and the MCP tool list is core plus the profile's (the engineering tables live in
+`packages/exec-engineering/src/mcp-engineering.mjs`). The schema declares `meta.profile`; the
+boundary check gained a rule that only the loader imports the general package by name.
 
 ## Why
 

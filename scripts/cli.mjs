@@ -9,6 +9,8 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { route, classify, buildArgs, findRepoRoot, missingRoadmapHelp, expandShort, REL } from "./lib/cli-core.mjs";
+import { loadGraph } from "./lib/graph.mjs";
+import { loadProfileForRoot } from "@connorbritain/roadmap-cli/profile.mjs";
 
 const SCRIPTS = dirname(fileURLToPath(import.meta.url));
 
@@ -20,6 +22,11 @@ function readPackageVersion() {
     const pkgPath = join(SCRIPTS, "..", "package.json");
     return JSON.parse(readFileSync(pkgPath, "utf8")).version || "unknown";
   } catch { return "unknown"; }
+}
+
+// The work profile (meta.profile, read only by the loader) decides which commands exist here.
+function profileFor(root) {
+  return loadProfileForRoot(root, { loadGraph, roadmapPath: root ? join(root, ...REL) : null });
 }
 
 const HELP = `roadmap — roadmap CLI   (run from anywhere inside a repo with ${REL.join("/")})
@@ -118,6 +125,8 @@ if (RAW.length === 1 && (RAW[0] === "--version" || RAW[0] === "-v" || RAW[0] ===
 // scripts (roadmap | cat, CI) are unaffected. `roadmap go` forces the wizard regardless.
 if (RAW.length === 0 && process.stdin.isTTY) {
   const root = findRepoRoot(process.cwd());
+  // The wizard is the engineering profile's console (it launches worktrees); other profiles get the plan.
+  const wizardHere = root ? !!(await profileFor(root)).commands.wizard : false;
   if (!root) {
     // A TTY user with no roadmap wants a way in, not just a wall of help
     // text. Offer to launch the interactive init right there; a decline
@@ -129,19 +138,29 @@ if (RAW.length === 0 && process.stdin.isTTY) {
     console.error("Or run 'roadmap init' now for a guided walkthrough.");
     process.exit(2);
   }
-  const r = spawnSync("node", [join(SCRIPTS, "wizard.mjs")], { stdio: "inherit", cwd: root });
-  process.exit(r.status ?? 0);
+  if (wizardHere) {
+    const r = spawnSync("node", [join(SCRIPTS, "wizard.mjs")], { stdio: "inherit", cwd: root });
+    process.exit(r.status ?? 0);
+  }
 }
 
 // Normal dispatch — reached only when args are present, or bare + non-TTY (the wizard branch above
 // has already handled bare + TTY and exited). The findRepoRoot below is the single root walk on
 // this path (the wizard branch's own walk only runs in the early-exit case).
 const { cmd, rest } = route(process.argv.slice(2));
-const action = classify(cmd);
+const repoRootEarly = findRepoRoot(process.cwd());
+let profile;
+try { profile = await profileFor(repoRootEarly); }
+catch (e) { console.error(`roadmap: ${e.message}`); process.exit(2); }
+const action = classify(cmd, profile.commands);
 
 if (action.kind === "help") { console.log(HELP); process.exit(0); }
 if (action.kind === "notyet") {
   console.error(`roadmap ${cmd}: not built yet (lands in ${action.phase}). For now: edit ${REL.join("/")}, then 'roadmap render'.`);
+  process.exit(2);
+}
+if (action.kind === "unavailable") {
+  console.error(`roadmap ${cmd}: not available under the ${profile.name} work profile. It belongs to the engineering profile — set the work profile in roadmap.yaml to engineering (or remove it) to use it.`);
   process.exit(2);
 }
 if (action.kind === "unknown") { console.error(`roadmap: unknown command "${cmd}".\n\n${HELP}`); process.exit(2); }
