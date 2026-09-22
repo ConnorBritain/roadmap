@@ -204,6 +204,15 @@ export function validateGraph(graph, { validators = [] } = {}) {
       if (!validStatus.has(sp.status)) err(`${where}: status "${sp.status}" invalid`);
       if (!sp.invoke) err(`${where}: invoke key required`);
       if (sp.gated_on && sp.status !== "gated") warn(`${where}: gated_on set but status is "${sp.status}" (expected gated)`);
+      // A gate is a command string ('default' / {{default}} interpolation) or a checklist: a
+      // non-empty array of non-empty strings a person or critic confirms. Anything else is a typo.
+      if (sp.gate != null && typeof sp.gate !== "string"
+        && !(Array.isArray(sp.gate) && sp.gate.length && sp.gate.every((g) => typeof g === "string" && g.trim()))) {
+        err(`${where}: gate must be a string or a non-empty list of non-empty strings (a checklist)`);
+      }
+      if (sp.artifact != null && (typeof sp.artifact !== "string" || !sp.artifact.trim() || /^[\/\\]|^\.\.(\/|\\|$)|(\/|\\)\.\.(\/|\\|$)/.test(sp.artifact))) {
+        err(`${where}: artifact must be a repository-relative path (got ${JSON.stringify(sp.artifact)})`);
+      }
       // Finishing discipline (opt-in): a done slice must carry every required receipt; a missing one
       // means "done" was declared without the evidence. Off entirely when required_receipts is absent.
       if (requiredReceipts.length && isDone(sp.status)) {

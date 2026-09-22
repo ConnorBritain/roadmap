@@ -176,8 +176,11 @@ export function renderMarkdown(graph, opts = {}) {
       if (sp.resume_action) w(`- **Resume / next action:** ${oneLine(sp.resume_action)}`);
       const gateText = !sp.gate || sp.gate === "default"
         ? "default verification gate"
-        : oneLine(sp.gate).replace(/\{\{\s*default\s*\}\}/gi, "default gate");
+        : Array.isArray(sp.gate)
+          ? `checklist — ${sp.gate.map((g) => oneLine(g)).join("; ")}`
+          : oneLine(sp.gate).replace(/\{\{\s*default\s*\}\}/gi, "default gate");
       w(`- **Gate:** ${gateText}`);
+      if (sp.artifact) w(`- **Artifact:** \`${sp.artifact}\``);
       if (sp.gated_on) w(`- **Gated on:** ${sp.gated_on} (an agent prepares; it does not perform the gate).`);
       w("");
     }

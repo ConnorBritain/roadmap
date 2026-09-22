@@ -36,6 +36,15 @@ contention-blind `next` slices), `scheduler.mjs` and the MCP server take `capaci
 from the profile, and the MCP tool list is core plus the profile's (the engineering tables live in
 `packages/exec-engineering/src/mcp-engineering.mjs`). The schema declares `meta.profile`; the
 boundary check gained a rule that only the loader imports the general package by name.
+The `exec-general` slice then filled `packages/exec-general`: the `human` and `doc-agent`
+Executors (assignment briefs under `.roadmap/assignments/` are the receipts), the `git-file`
+GauntletArtifact (a file at a commit; packet and comments in a committed sidecar; claims are atomic
+git refs), general validators, the conducted loop in `conduct.mjs` (start / status / critic /
+verdict / ack / repair / reconcile, driving core's protocol unchanged) with its CLI
+(`roadmap conduct`, `roadmap assign`) and MCP tools. Core gained the `artifact` slice field, checklist
+gate rendering, and gate/artifact shape validation. The exit test in
+`packages/exec-general/test/general.mjs` round-trips a touches-free general roadmap through the
+whole loop on a markdown artifact and survives ledger loss.
 
 ## Why
 

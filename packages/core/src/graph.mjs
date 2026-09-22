@@ -72,6 +72,7 @@ export function flatten(graph) {
         touches: sp.touches || [],
         owns: sp.owns || [],
         gate: sp.gate || "default",
+        artifact: sp.artifact || null,     // optional deliverable path (general profile: the file the slice produces / the git-file gauntlet artifact)
         gatedOn: sp.gated_on || null,
         optional: !!sp.optional,
         execution: sp.execution || null,   // optional staffing-strategy hint (see lib/execution.mjs)

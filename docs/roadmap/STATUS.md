@@ -39,10 +39,16 @@ executor packages export `profile(root)` and the loader merges core's commands/s
 validators, plan context, MCP tools); the engineering MCP tables live in
 `packages/exec-engineering/src/mcp-engineering.mjs`; the schema declares `meta.profile`; a general
 roadmap with no `touches` and checklist gates round-trips validate / plan / show / MCP with zero
-edits (`packages/cli/test/profile.mjs`). Backlog b3 (MCP server version) closed in passing. Next is
-`exec-general`.
+edits (`packages/cli/test/profile.mjs`). Backlog b3 (MCP server version) closed in passing. Slice 7
+`exec-general` is complete: `human` + `doc-agent` Executors (brief files as receipts), the `git-file`
+GauntletArtifact (committed sidecar, atomic git-ref claims) on the core contract, general validators,
+and the conducted loop (`conduct.mjs`: start / status / critic / verdict / ack / repair / reconcile)
+with `roadmap conduct` / `roadmap assign` and `conduct_*` MCP tools; core gained the `artifact`
+field, checklist-gate rendering and gate/artifact validation. The exit test round-trips a
+touches-free general roadmap through the whole loop on a markdown artifact and survives ledger
+loss. Next is `skills-agents`.
 
-Next command: `roadmap show exec-general`.
+Next command: `roadmap show skills-agents`.
 
 ## Slices
 
@@ -53,9 +59,9 @@ Next command: `roadmap show exec-general`.
 | 3 | `core-extract` | complete | `384282d` | 24 modules + core tests moved; 7 edges cut; shims remain |
 | 4 | `gauntlet-split` | complete | `dfbc8c9` | 475 tests; contract on memory + github-pr |
 | 5 | `exec-engineering` | complete | `c1bd959` | 499 tests; Executor contract on memory + worktree-session + cloud-dispatch; golden launcher fixtures |
-| 6 | `profile-loader` | complete | (this branch, slice 6 commit) | 504 tests; single reader + rule 1c in the boundary check |
-| 7 | `exec-general` | next | — | general round-trip fixture is the exit test |
-| 8 | `skills-agents` | scheduled | — | |
+| 6 | `profile-loader` | complete | `75ce038` | 504 tests; single reader + rule 1c in the boundary check |
+| 7 | `exec-general` | complete | (this branch, slice 7 commit) | 522 tests; git-file + human + doc-agent on the contracts; round-trip exit test |
+| 8 | `skills-agents` | next | — | |
 | 9 | `docs` | scheduled | — | |
 | 10 | `unshim` | scheduled | — | |
 

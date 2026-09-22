@@ -162,7 +162,7 @@ pis:
           basis: UNCALIBRATED (static prior 3.0 min/round; only 0 logged outcomes) · sparse-data widening ×1.75 (n=0)
       - id: s7
         title: General executor — human + doc-agent, git-file artifact, checklist gates
-        status: next
+        status: complete
         invoke: exec-general
         what: Build exec-general; gates as string arrays; no ceilings; validate a general roadmap with no touches round-trips plan / render / sync / gauntlet start-critic-ack-repair against a markdown artifact.
         deps: [s6]
@@ -185,7 +185,7 @@ pis:
           basis: UNCALIBRATED (static prior 3.0 min/round; only 0 logged outcomes) · sparse-data widening ×1.75 (n=0)
       - id: s8
         title: Skills, agents, hooks and MCP registration follow the profile
-        status: scheduled
+        status: next
         invoke: skills-agents
         what: /init /imagine /prioritize /debrief /retro /sync /backlog stay core and work under both profiles; /fanout + /gauntlet PR text to engineering; /conduct + /assign for general; hooks/manifests re-pointed at packages/cli.
         deps: [s7]

@@ -118,6 +118,7 @@ import "../../packages/exec-engineering/test/github-pr-artifact.mjs";
 import "../../packages/exec-engineering/test/executors.mjs";
 import "../../packages/exec-engineering/test/launchers.mjs";
 import "../../packages/cli/test/profile.mjs";
+import "../../packages/exec-general/test/general.mjs";
 
 
 // WHY: an evaluation corpus is the durable hand-off from diagnosis to

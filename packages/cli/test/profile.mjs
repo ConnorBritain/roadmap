@@ -84,7 +84,8 @@ test("profile: loadProfile merges core with the real engineering and general pac
   ok(typeof eng.planContext.capacity === "function" && typeof eng.planContext.annotate === "function", "plan context from the executor");
   ok(eng.validators.length >= 1 && typeof eng.artifacts["github-pr"] === "function", "validators + github-pr artifact");
   const gen = await loadProfile({ profile: "general" }, { root: "/nonexistent-gen" });
-  eq([gen.name, gen.executor, gen.commands.fan, gen.mcp.tools.length], ["general", null, undefined, 0], "general: core only until the exec-general slice");
+  eq([gen.name, gen.executor.name, gen.commands.fan, gen.commands.conduct], ["general", "human", undefined, "conduct.mjs"], "general: the human executor, its own commands, no engineering ones");
+  ok(gen.mcp.tools.some((t) => t.name === "conduct_start") && !gen.mcp.tools.some((t) => t.name === "gauntlet_start"), "general MCP tools, no engineering ones");
   eq(await gen.mcp.call("gauntlet_start", {}), undefined, "general answers no engineering tool");
   ok(gen.commands.plan && gen.commands.validate && gen.commands.backlog, "core commands under general");
   eq(await loadProfile({}, { root: "/nonexistent-eng" }), eng, "cached per profile + root");
@@ -111,7 +112,7 @@ test("profile: a general roadmap with no touches and checklist gates validates, 
     eq(p.status, 0, `plan exits 0: ${p.stderr}`);
     ok(p.stdout.includes("onboarding-week1") && !p.stdout.includes("undefined") && !p.stdout.includes("git worktree add"), "plan lists the slice with no machine or worktree lines");
     const j = JSON.parse(run(root, "scheduler.mjs", ["--json"]).stdout);
-    ok(j.binding.why.startsWith("default_concurrency"), "capacity is core's default under general");
+    ok(/^(review|work) —/.test(j.binding.why) && j.candidates.every((c) => !/^(CPU|RAM|disk)/.test(c.why)), "capacity is review/work-bound under general, no machine ceilings");
     const s = run(root, "show.mjs", ["onboarding-week1"]);
     eq(s.status, 0, `show exits 0: ${s.stderr}`);
     ok(s.stdout.includes("Every section has an owner named"), "checklist gate rendered");
@@ -127,7 +128,7 @@ test("profile: a general roadmap with no touches and checklist gates validates, 
     ]);
     const names = list.result.tools.map((t) => t.name);
     ok(names.includes("plan") && names.includes("backlog_add") && !names.includes("gauntlet_start") && !names.includes("dispatch"), "MCP registers core tools only under general");
-    ok(plan.result.content[0].text.includes("default_concurrency"), "plan tool uses default capacity");
+    ok(/"why": "(review|work) —/.test(plan.result.content[0].text), "plan tool uses the general executor's review capacity");
     ok(gs.result.isError && gs.result.content[0].text.includes("unknown tool"), "engineering tool is unknown under general");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

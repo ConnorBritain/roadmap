@@ -18,6 +18,9 @@ import { fileURLToPath } from "node:url";
 export const EXPECTED = [];
 
 export const PROFILE_READER = "packages/cli/src/profile.mjs";
+// The general profile's own CLI commands (registered by packages/exec-general/index.mjs COMMANDS),
+// which import their package the way fanout.mjs imports exec-engineering.
+export const GENERAL_COMMAND_SCRIPTS = ["scripts/conduct.mjs", "scripts/assign.mjs"];
 const PROFILE_READ = /\bmeta\??\.profile\b|\bmeta\[\s*["']profile["']\s*\]|\{[^}]*\bprofile\b[^}]*\}\s*=\s*[\w.?]*\bmeta\b/;
 const IMPORT_RE = /^\s*(?:import\b[^'"]*|export\b[^'"]*\bfrom\s*)['"]([^'"]+)['"]|import\(\s*['"]([^'"]+)['"]\s*\)|import\(\s*new URL\(\s*['"]([^'"]+)['"]/gm;
 
@@ -74,14 +77,14 @@ export function checkBoundaries(root = process.cwd()) {
     }
   }
 
-  // Rule 1c — the general executor package is reached only through the loader: outside its own
-  // package, only the profile loader may import it by name (engineering CLIs import their own
-  // package directly because they ARE the engineering profile's commands).
+  // Rule 1c — the general executor package is reached only through the loader or its own command
+  // scripts: core, exec-engineering, hooks and the rest of scripts/ never import it by name (the
+  // engineering CLIs import their own package the same way, because they ARE that profile's commands).
   for (const file of [...walk(join(root, "scripts")), ...walk(join(root, "hooks")), ...walk(join(root, "packages", "cli")), ...walk(join(root, "packages", "exec-engineering")), ...walk(join(root, "packages", "core"))]) {
     const r = rel(root, file);
-    if (r === PROFILE_READER || r.startsWith("packages/cli/test/") || r.startsWith("scripts/test/")) continue;
+    if (r === PROFILE_READER || GENERAL_COMMAND_SCRIPTS.includes(r) || r.startsWith("packages/cli/test/") || r.startsWith("scripts/test/")) continue;
     for (const spec of importsOf(readFileSync(file, "utf8"))) {
-      if (spec.startsWith("@connorbritain/roadmap-exec-general")) violations.push(`${r} -> ${spec} (only ${PROFILE_READER} loads the general package)`);
+      if (spec.startsWith("@connorbritain/roadmap-exec-general")) violations.push(`${r} -> ${spec} (only ${PROFILE_READER} and the general profile's own command scripts load the general package)`);
     }
   }
 
