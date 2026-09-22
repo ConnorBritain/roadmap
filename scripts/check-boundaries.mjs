@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 // C-verdict modules plus the G→C pure ones (see docs/ARCHITECTURE.md § Dependency map).
 export const CORE_MODULES = [
   "graph", "priority", "store", "render-core", "validate-core", "backlog-core", "backlog-audit",
-  "review-core", "journal-core", "plan", "linear-core", "init-core", "estimate-core", "mcp-core",
+  "review-core", "journal-core", "plan", "linear-core", "init-core", "estimate-core", "estimator-core", "mcp-core",
   "sync-core", "execution", "cli-core", "plate-core", "cycle-core",
   "gauntlet-store", "evaluation-core", "evaluation-packet",
 ];

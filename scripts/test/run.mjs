@@ -33,7 +33,8 @@ import {
 } from "../lib/backlog-core.mjs";
 import { validateGraph } from "../lib/validate-core.mjs";
 import { estimationConfig, estimateArgs, parseEstimateRecord, applyEstimate, validateEstimation, timelinePlan, calendarFromMinutes, logArgs, alreadyLogged } from "../lib/estimate-core.mjs";
-import { runEstimate, resolveEngine, runTimeline, runLog, resolveHistory } from "../estimate.mjs";
+import { runEstimate, resolveEngine, runTimeline, runLog, resolveHistory, resolveUserHistory, resolveSessionId, readSession } from "../estimate.mjs";
+import * as estimator from "../lib/estimator-core.mjs";
 import { mutateRoadmap, mutateBacklog, mutateBoth } from "../lib/store.mjs";
 import {
   normalizeLinearConfig, effectiveGranularity, effectiveVerbosity, linearState, checkPiOverrideAck,
@@ -4831,12 +4832,13 @@ test("validateEstimation: flags a malformed config + bad risks; a clean config p
   eq(good.errors, [], "clean config + fields → no errors");
 });
 
-// WHY: the engine must resolve deterministically (explicit > env > skill) and fail LOUD when absent —
-// a silent miss would leave slices unestimated and the timeline quietly hollow.
-test("resolveEngine: explicit engine wins over env; throws with guidance when none exist", () => {
+// WHY: an EXTERNAL engine is opt-in (explicit > env); nothing configured means native estimation, and a
+// configured-but-missing path must fail LOUD rather than silently falling back to a different model.
+test("resolveEngine: explicit engine wins over env; nothing configured → null (native); a missing configured path throws", () => {
   eq(resolveEngine({ engine: "/x/estimator.py" }, { AGENT_TIME_ENGINE: "/e.py" }, (p) => p === "/x/estimator.py"), "/x/estimator.py", "explicit engine preferred");
   eq(resolveEngine({ engine: null }, { AGENT_TIME_ENGINE: "/e.py" }, (p) => p === "/e.py"), "/e.py", "env fallback");
-  throws(() => resolveEngine({ engine: null }, {}, () => false), "estimator not found", "none present → actionable error");
+  eq(resolveEngine({ engine: null }, {}, () => false), null, "nothing configured → native estimation");
+  throws(() => resolveEngine({ engine: "/gone.py" }, {}, () => false), "estimator not found", "a configured path that doesn't exist → actionable error, no silent fallback");
 });
 
 // WHY: this is the write-back the whole feature hangs on — the estimate must land on the slice (with the
@@ -6831,6 +6833,206 @@ test("Gauntlet ledger lock fails closed with actionable owner metadata", () => {
   writeFileSync(join(root, ".roadmap-gauntlet-state.lock"), JSON.stringify({ pid: 4242, host: "lead-host", created_at: "2026-08-08T12:00:00Z" }));
   throws(() => mutateGauntletLedger(root, () => {}), "pid 4242 on lead-host", "lock collision identifies the owner");
   throws(() => mutateGauntletLedger(root, () => {}), "remove .roadmap-gauntlet-state.lock manually", "stale recovery is explicit and never racy auto-delete");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// ── native estimation engine (agent-time port) ───────────────────────────────
+// Ported from agent-time's tests/test_estimator.py so the JS engine stays faithful to the model it
+// replaces. Same fixtures, same expectations; roadmap-specific IO tests follow at the end.
+const SAMPLE_HISTORY = resolve("scripts/test/fixtures/agent-time/sample-history.jsonl");
+const makeOutcome = ({ shape = "localized-bugfix", summary = "fix a bug in the parser", actual_minutes = 30, actual_rounds = 10, est_expected = 25, ts = null, model = undefined } = {}) => ({
+  type: "outcome", task_id: "t-test", ts: ts || "2026-07-01T12:00:00+00:00", summary, shape,
+  est_minutes: { low: est_expected * 0.5, expected: est_expected, high: est_expected * 2 },
+  actual_minutes, actual_rounds, status: "pass", ...(model !== undefined ? { model } : {}),
+});
+const near = (a, b, msg, tol = 1e-9) => ok(Math.abs(a - b) <= tol, `${msg} (${a} vs ${b})`);
+
+test("estimator core math: PERT, excess-additive risk with cap, unknown risk rejected", () => {
+  near(estimator.pert(6, 12, 24), (6 + 48 + 24) / 6, "PERT");
+  near(estimator.combinedRisk(["no-tests", "unfamiliar-code-path"]), 1 + 0.2 + 0.25, "excess-additive");
+  eq(estimator.combinedRisk(Object.keys(estimator.RISKS)), estimator.CONFIG.risk_cap, "capped at risk_cap");
+  throws(() => estimator.combinedRisk(["cosmic-rays"]), "unknown risk factor", "unknown risk rejected");
+});
+
+test("estimator risk skews right and keeps order; no risk is identity", () => {
+  const [low, mode, high] = estimator.applyRisk(5, 10, 20, 1.5);
+  ok(low < mode && mode < high, "ordered");
+  near(low, 5 * 1.15, "low gets 30% of the excess"); near(mode, 10 * 1.5, "mode 100%"); near(high, 20 * 1.75, "high 150%");
+  eq(estimator.applyRisk(5, 10, 20, 1), [5, 10, 20], "M=1 is identity");
+});
+
+test("estimator buildRounds: numeric override is the mode, triple is literal, unknowns rejected; shape tables well-formed", () => {
+  eq(estimator.buildRounds("localized-bugfix", { discovery: 6 }).discovery, [6 * 0.7, 6, 6 * 1.6], "numeric override → mode with scaled low/high");
+  eq(estimator.buildRounds("localized-bugfix", { implementation: [2, 4, 9] }).implementation, [2, 4, 9], "triple taken literally");
+  throws(() => estimator.buildRounds("mega-task"), "unknown shape", "unknown shape");
+  throws(() => estimator.buildRounds("refactor", { vibes: 3 }), "unknown round category", "unknown category");
+  for (const [shape, table] of Object.entries(estimator.SHAPES)) {
+    eq(Object.keys(table).sort(), [...estimator.CATEGORIES].sort(), `${shape} has every category`);
+    for (const [cat, [low, mode, high]] of Object.entries(table)) ok(low <= mode && mode <= high, `${shape}.${cat} ordered`);
+  }
+});
+
+test("estimator widen narrows monotonically; percentile interpolates; weightedMedian repeats by weight", () => {
+  const widths = Array.from({ length: 30 }, (_, n) => estimator.widen(n));
+  eq(widths, [...widths].sort((a, b) => b - a), "monotone decreasing");
+  ok(widths[0] > 1.7 && widths[29] < 1.15, "sparse → wide, rich → narrow");
+  eq([estimator.percentile([1, 2, 3, 4, 5], 0), estimator.percentile([1, 2, 3, 4, 5], 1), estimator.percentile([1, 2, 3, 4, 5], 0.5)], [1, 5, 3], "percentile ends + median");
+  eq(estimator.weightedMedian([[1, 1], [10, 3]]), 10, "weight repeats the value");
+});
+
+test("estimator keywords strip stopwords; jaccard", () => {
+  const kw = estimator.keywords("Add a --verbose flag to the estimator CLI");
+  ok(kw.has("--verbose") && kw.has("flag") && !kw.has("the"), "tokens kept, stopwords dropped");
+  eq(estimator.jaccard(new Set(), new Set(["x"])), 0, "empty → 0");
+  eq(estimator.jaccard(new Set(["a", "b"]), new Set(["a", "b"])), 1, "identical → 1");
+  near(estimator.jaccard(new Set(["a", "b"]), new Set(["b", "c"])), 1 / 3, "1/3 overlap");
+});
+
+test("estimator calibration cascade: empty → static; shape beats global; similar beats shape; global fallback", () => {
+  const empty = estimator.calibrate([], "localized-bugfix", "fix a bug");
+  eq([empty.kind, empty.mpr], ["static", estimator.CONFIG.static_minutes_per_round], "uncalibrated static prior");
+  ok(empty.basis.includes("UNCALIBRATED"), "labelled");
+  const history = [
+    ...[0, 1, 2].map((i) => makeOutcome({ summary: `fix issue ${i} in module ${i}`, actual_minutes: 20, actual_rounds: 10 })),
+    ...[0, 1, 2, 3].map((i) => makeOutcome({ shape: "refactor", summary: `refactor thing ${i}`, actual_minutes: 50, actual_rounds: 10 })),
+  ];
+  const shape = estimator.calibrate(history, "localized-bugfix", "fix a totally unrelated defect");
+  eq([shape.kind, shape.n], ["shape", 3], "shape median"); near(shape.mpr, 2, "bugfix pace, not refactor pace");
+  const similar = [0, 1, 2].map(() => makeOutcome({ summary: "fix pagination cursor bug in list endpoint", actual_minutes: 40, actual_rounds: 10 }));
+  const other = [0, 1, 2].map((i) => makeOutcome({ summary: `fix flux capacitor ${i} overload ${i}`, actual_minutes: 10, actual_rounds: 10 }));
+  const sim = estimator.calibrate([...similar, ...other], "localized-bugfix", "fix pagination cursor bug in detail endpoint");
+  eq(sim.kind, "similar", "similar tasks win"); near(sim.mpr, 4, "similar pace");
+  const glob = estimator.calibrate([0, 1, 2, 3, 4].map((i) => makeOutcome({ shape: "refactor", summary: `refactor part ${i}`, actual_minutes: 30, actual_rounds: 10 })), "localized-bugfix", "fix something");
+  eq(glob.kind, "global", "global fallback");
+});
+
+test("estimator bias correction is clamped and recency-weighted", () => {
+  const clamped = estimator.calibrate([0, 1, 2].map((i) => makeOutcome({ summary: `fix distinct thing number ${i} entirely`, actual_minutes: 500, actual_rounds: 10, est_expected: 10 })), "localized-bugfix", "fix another unrelated thing");
+  eq(clamped.correction, estimator.CONFIG.correction_clamp[1], "clamped at the ceiling");
+  const now = new Date("2026-07-08T00:00:00Z");
+  const oldTs = new Date(now.getTime() - 200 * 86400000).toISOString(), newTs = new Date(now.getTime() - 10 * 86400000).toISOString();
+  const history = [
+    makeOutcome({ summary: "alpha beta gamma", actual_minutes: 10, actual_rounds: 5, est_expected: 20, ts: oldTs }),
+    makeOutcome({ summary: "delta epsilon zeta", actual_minutes: 10, actual_rounds: 5, est_expected: 20, ts: oldTs }),
+    makeOutcome({ summary: "eta theta iota", actual_minutes: 40, actual_rounds: 5, est_expected: 20, ts: newTs }),
+  ];
+  // weighted ratios: [0.5, 0.5, 2.0, 2.0] → median 1.25 (unweighted would be 0.5)
+  near(estimator.calibrate(history, "localized-bugfix", "kappa lambda mu", { now }).correction, 1.25, "recent outcome weighs 2×");
+});
+
+test("estimator computeEstimate: labelled when uncalibrated, ordering invariant, risks raise, calibration narrows, empirical spread at n≥15, checkpoint advice", () => {
+  const un = estimator.computeEstimate("fix a bug", "localized-bugfix", [], {}, []);
+  ok(!un.calibrated && un.calibration_basis.includes("UNCALIBRATED") && un.confidence === "low", "uncalibrated → labelled, low confidence");
+  for (const shape of Object.keys(estimator.SHAPES)) {
+    const e = estimator.computeEstimate("do a task", shape, ["unknown-root-cause", "no-tests"], {}, []);
+    ok(e.est_rounds.low <= e.est_rounds.expected && e.est_rounds.expected <= e.est_rounds.high, `${shape} rounds ordered`);
+    ok(e.est_minutes.low <= e.est_minutes.expected && e.est_minutes.expected <= e.est_minutes.high, `${shape} minutes ordered`);
+  }
+  const risky = estimator.computeEstimate("fix a bug", "localized-bugfix", ["unknown-root-cause"], {}, []);
+  ok(risky.est_minutes.expected > un.est_minutes.expected && risky.est_minutes.high > un.est_minutes.high, "risk raises expected and high");
+  const eight = Array.from({ length: 8 }, (_, i) => makeOutcome({ summary: `fix separate defect ${i} elsewhere ${i}`, actual_minutes: 30, actual_rounds: 10, est_expected: 30 }));
+  const rich = estimator.computeEstimate("fix a new bug", "localized-bugfix", [], {}, eight);
+  const spread = (e) => e.est_minutes.high / Math.max(e.est_minutes.low, 0.1);
+  ok(spread(rich) < spread(un), "calibration narrows the range");
+  const sixteen = Array.from({ length: 16 }, (_, i) => makeOutcome({ summary: `fix distinct defect ${i} in area ${i}`, actual_minutes: 30 + i, actual_rounds: 10, est_expected: 30 }));
+  ok(estimator.computeEstimate("fix a new bug", "localized-bugfix", [], {}, sixteen).calibration_basis.includes("empirical p20/p80"), "empirical spread at high n");
+  const big = estimator.computeEstimate("big rework", "cross-cutting-feature", ["large-diff"], {}, []);
+  ok(big.est_minutes.expected > estimator.CONFIG.checkpoint_minutes && big.checkpoint.includes("splitting"), "long task → split advice");
+});
+
+test("estimator sample-history fixture (agent-time's) loads and calibrates sanely", () => {
+  const records = estimator.parseRecords(readFileSync(SAMPLE_HISTORY, "utf8"));
+  eq(estimator.usableOutcomes(records).length, 7, "7 usable outcomes");
+  const est = estimator.computeEstimate("add a --verbose flag to the estimator CLI", "localized-feature", [], {}, records);
+  ok(est.calibrated && est.est_minutes.expected > 15 && est.est_minutes.expected < 120, "calibrated, sane wall-clock for a ~15-round task");
+});
+
+test("estimator per-model: normalizeModel, horizons, checkpoint respects the model horizon, pace factor gated + clamped", () => {
+  eq([estimator.normalizeModel("claude-opus-4-8"), estimator.normalizeModel("Opus 4.8"), estimator.normalizeModel("anthropic/sonnet-4.6"), estimator.normalizeModel(null)], ["opus-4.8", "opus-4.8", "sonnet-4.6", null], "canonical names");
+  eq([estimator.modelHorizon("opus-4.8")[0], estimator.modelHorizon("claude-sonnet-4-6")[0], estimator.modelHorizon("gemini-3.1-pro")[0], estimator.modelHorizon("mystery-model")[0]], [90, 30, 45, estimator.CONFIG.checkpoint_minutes], "horizon lookup + default");
+  const records = estimator.parseRecords(readFileSync(SAMPLE_HISTORY, "utf8"));
+  const slow = estimator.computeEstimate("build a small feature", "localized-feature", [], {}, records, { model: "sonnet-4.6" });
+  const fast = estimator.computeEstimate("build a small feature", "localized-feature", [], {}, records, { model: "opus-4.8" });
+  ok(slow.est_minutes.expected > 30 && fast.est_minutes.expected < 90, "lands between the two horizons");
+  ok(slow.checkpoint.includes("splitting") && !fast.checkpoint.includes("splitting"), "30-min horizon flags, 90-min doesn't");
+  const few = [0, 1, 2].map(() => makeOutcome({ actual_minutes: 20, actual_rounds: 10, model: "opus-4.8" }));
+  eq(estimator.modelPaceFactor(few, "opus-4.8")[0], 1, "too little data → neutral");
+  const opus = Array.from({ length: 5 }, () => makeOutcome({ actual_minutes: 30, actual_rounds: 10, model: "opus-4.8" }));
+  const others = Array.from({ length: 5 }, () => makeOutcome({ actual_minutes: 60, actual_rounds: 10, model: "sonnet-4.6" }));
+  const [factor, note] = estimator.modelPaceFactor([...opus, ...others], "opus-4.8");
+  ok(factor <= 1 && factor >= estimator.CONFIG.model_pace_clamp[0] && note, "faster model → factor ≤ 1, clamped, noted");
+});
+
+test("estimator user-level blending: user-only when local is empty; blended when both qualify", () => {
+  const user = [0, 1, 2, 3].map((i) => makeOutcome({ summary: `fix bug ${i} in parser ${i}`, actual_minutes: 30, actual_rounds: 10 }));
+  const userOnly = estimator.calibrate([], "localized-bugfix", "fix a parser bug", { userRecords: user });
+  ok(["similar", "shape"].includes(userOnly.kind) && userOnly.basis.includes("user-level"), "a user level qualifies");
+  const local = [0, 1, 2].map((i) => makeOutcome({ summary: `fix thing ${i} area ${i}`, actual_minutes: 20, actual_rounds: 10 }));
+  const user2 = [0, 1, 2].map((i) => makeOutcome({ summary: `fix other ${i} zone ${i}`, actual_minutes: 60, actual_rounds: 10 }));
+  const blended = estimator.calibrate(local, "localized-bugfix", "fix a brand new defect", { userRecords: user2 });
+  const localOnly = estimator.calibrate(local, "localized-bugfix", "fix a brand new defect");
+  ok(blended.basis.includes("blended") && blended.mpr >= localOnly.mpr && blended.mpr <= 6, "blended, weighted toward local");
+});
+
+test("estimator records: parseRecords skips junk; buildEstimateRecord snapshots the session; outcome auto-fills deltas and refuses no-actuals", () => {
+  eq(estimator.parseRecords('{"a":1}\nnot json\n\n{"b":2}\n').length, 2, "junk lines skipped");
+  const now = new Date("2026-07-08T10:00:00Z");
+  const est = estimator.computeEstimate("add a flag", "localized-feature", ["no-tests"], {}, []);
+  const base = estimator.buildEstimateRecord(est, { taskId: "t-20260708-abcd", now, model: "opus-4.8", sessionId: "s1", session: { session_id: "s1", rounds: 2, edited_files: [], bash_commands: [] } });
+  eq([base.type, base.status, base.risks, base.round_counter_start, base.ts], ["estimate", "pending", ["no-tests"], 2, "2026-07-08T10:00:00+00:00"], "record shape matches agent-time");
+  const later = new Date("2026-07-08T10:20:00Z");
+  const session = { session_id: "s1", rounds: 7, edited_files: ["x.py", "y.py"], bash_commands: ["pytest -q"] };
+  const out = estimator.buildOutcomeRecord({ base, taskId: base.task_id, now: later, status: "pass", actualMinutes: 20, session });
+  eq([out.actual_rounds, out.files_changed, out.commands_run, out.auto_filled, out.est_minutes], [5, 2, ["pytest"], true, base.est_minutes], "deltas since the estimate, prediction carried");
+  const elapsed = estimator.buildOutcomeRecord({ base, taskId: base.task_id, now: later, status: "pass", actualRounds: 14 });
+  eq(elapsed.actual_minutes, 20, "actual_minutes computed from the estimate timestamp");
+  throws(() => estimator.buildOutcomeRecord({ base, taskId: base.task_id, now: later, status: "pass" }), "--actual-rounds is required", "no actuals and no session → refused (agent-time's wording)");
+  throws(() => estimator.buildOutcomeRecord({ taskId: "t-x", now: later, status: "pass", actualRounds: 9, actualMinutes: 20 }), "--summary and --shape are required", "backfill needs summary + shape");
+  eq(estimator.buildOutcomeRecord({ taskId: "t-x", now: later, status: "pass", actualRounds: 9, actualMinutes: 20, summary: "imported", shape: "localized-bugfix" }).shape, "localized-bugfix", "backfill works");
+  eq(estimator.firstToken("FOO=bar pytest -q"), "pytest", "env prefix ignored");
+});
+
+// WHY: this is the whole point of the slice — with nothing configured, `roadmap estimate` prices natively,
+// appends an agent-time-compatible pending record, and `log` closes the loop against that same history.
+test("native estimate → history.jsonl → log round-trip with no Python and no engine configured", () => {
+  const root = mkdtempSync(join(tmpdir(), "roadmap-native-est-"));
+  mkdirSync(join(root, "docs", "roadmap"), { recursive: true });
+  writeFileSync(join(root, "docs", "roadmap", "roadmap.yaml"),
+    `meta:\n  schema_version: 1\n  program: T\npis:\n  - id: a\n    title: A\n    status: active\n    sprints:\n      - { id: s1, title: Build the thing, status: next, invoke: build, shape: localized-feature, risks: [external-api] }\n      - { id: s2, title: Bogus, status: next, invoke: bogus, shape: localized-feature, risks: [cosmic-rays] }\n`, "utf8");
+  const env = { AGENT_TIME_USER_DATA: join(root, "nouser.jsonl") };   // isolate from ~/.claude and $AGENT_TIME_*
+  const r = runEstimate(root, { all: true, env, now: "2026-07-08T10:00:00Z", taskIdHex: "beef" });
+  eq(r.estimated.map((e) => e.invoke), ["build"], "the well-formed slice is priced natively");
+  ok(r.errors.some((x) => x.invoke === "bogus" && x.error.includes("unknown risk factor")), "an unknown risk is an error for that slice, not a guess");
+  const hist = resolveHistory(root, env);
+  const recs = estimator.parseRecords(readFileSync(hist, "utf8"));
+  eq([recs.length, recs[0].type, recs[0].task_id, recs[0].status, recs[0].risks], [1, "estimate", "t-20260708-beef", "pending", ["external-api"]], "pending record appended in agent-time's shape");
+  const sp = parseDocument(readFileSync(join(root, "docs", "roadmap", "roadmap.yaml"), "utf8")).toJS().pis[0].sprints[0];
+  eq(sp.estimate.task_id, "t-20260708-beef", "task_id cached on the slice");
+  ok(sp.estimate.minutes.expected > 0 && sp.estimate.basis.includes("UNCALIBRATED"), "minutes + basis cached");
+
+  // Close the loop: log with explicit actuals → outcome appended; re-fire is idempotent.
+  const l1 = runLog(root, { invoke: "build", status: "pass", actualRounds: 14, actualMinutes: 42, env, now: "2026-07-08T11:00:00Z" });
+  ok(l1.logged && l1.actual_minutes === 42 && l1.actual_rounds === 14, "outcome logged with the given actuals");
+  const recs2 = estimator.parseRecords(readFileSync(hist, "utf8"));
+  eq([recs2.length, recs2[1].type, recs2[1].task_id, recs2[1].est_minutes], [2, "outcome", "t-20260708-beef", recs[0].est_minutes], "outcome carries the prediction for future ratios");
+  ok(runLog(root, { invoke: "build", status: "pass", env }).skipped, "re-fire is idempotent");
+
+  // Without actuals and without session activity the native log is REJECTED (returned, never thrown).
+  runEstimate(root, { invoke: "build", force: true, env, now: "2026-07-08T12:00:00Z", taskIdHex: "cafe" });
+  const rejected = runLog(root, { invoke: "build", status: "pass", env, now: "2026-07-08T12:30:00Z" });
+  ok(rejected.error && rejected.error.includes("--actual-rounds is required"), "no-actuals degradation path surfaces, never throws");
+
+  // With a session file (as agent-time's PostToolUse hook writes) the actuals auto-fill as deltas.
+  const sdir = join(root, ".claude", "agent-time", "sessions");
+  mkdirSync(sdir, { recursive: true });
+  writeFileSync(join(sdir, "s9.json"), JSON.stringify({ session_id: "s9", rounds: 6, edited_files: ["a.js"], bash_commands: ["npm test"] }));
+  runEstimate(root, { invoke: "build", force: true, env, now: "2026-07-08T13:00:00Z", taskIdHex: "f00d" });   // snapshot: 6 rounds
+  writeFileSync(join(sdir, "s9.json"), JSON.stringify({ session_id: "s9", rounds: 11, edited_files: ["a.js", "b.js"], bash_commands: ["npm test", "npm run lint"] }));
+  const auto = runLog(root, { invoke: "build", status: "pass", env, now: "2026-07-08T13:30:00Z" });
+  eq([auto.logged, auto.auto_filled, auto.actual_rounds, auto.actual_minutes], [true, true, 5, 30], "Δ5 rounds auto-filled, 30 min elapsed from the estimate timestamp");
+  eq(readSession(hist, "s9").rounds, 11, "session file read"); eq(resolveSessionId(hist, {}), "s9", "latest session resolved");
+  eq(resolveUserHistory(hist, {}, root), null, "user history that IS the local file is skipped");
+  eq(resolveUserHistory(hist, { AGENT_TIME_USER_DATA: "/elsewhere/h.jsonl" }), "/elsewhere/h.jsonl", "env override honoured");
   rmSync(root, { recursive: true, force: true });
 });
 

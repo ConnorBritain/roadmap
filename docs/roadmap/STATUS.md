@@ -8,18 +8,19 @@ design: [`../ARCHITECTURE.md`](../ARCHITECTURE.md) · narrative: [`../../ROADMAP
 
 ## Resume here
 
-Step 1 (plan) is done: ARCHITECTURE.md, this PI, CONTRIBUTING.md's "Resuming work" rule, and the
-boundary check are committed. Step 2 starts with `estimate-native` (the agent-time fold-in),
-which must land before `estimate-core` moves into `packages/core`.
+Step 1 (plan) landed in `729e343`. Slice 1 `estimate-native` is complete: the agent-time model is
+ported to `scripts/lib/estimator-core.mjs`, `roadmap estimate` prices natively (no Python), the
+history stays agent-time's `history.jsonl` format, and an external `estimator.py` is used only when
+`meta.estimation.engine` / `$AGENT_TIME_ENGINE` is set. Next is `workspaces`.
 
-Next command: `roadmap show estimate-native`.
+Next command: `roadmap show workspaces`.
 
 ## Slices
 
 | # | Slice | Status | Commit | Note |
 |---|---|---|---|---|
-| 1 | `estimate-native` | next | — | port agent-time's estimator to JS; engine override stays |
-| 2 | `workspaces` | scheduled | — | |
+| 1 | `estimate-native` | complete | (this branch, slice 1 commit) | 462 tests; agent-time's test suite ported |
+| 2 | `workspaces` | next | — | |
 | 3 | `core-extract` | scheduled | — | shims at old paths |
 | 4 | `gauntlet-split` | scheduled | — | protocol never learns it's GitHub |
 | 5 | `exec-engineering` | scheduled | — | |

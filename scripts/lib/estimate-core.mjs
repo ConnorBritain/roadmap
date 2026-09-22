@@ -1,11 +1,12 @@
-// roadmap — estimation brain (PURE: no fs, no network, no spawn). Bridges agent-time's
-// estimator.py into the roadmap: builds the estimator CLI args from a slice, parses its
-// JSON record, shapes the compact `estimate` block cached on the slice, and validates the
-// estimation config + fields. The IO (spawning python, YAML write-back) lives in
-// scripts/estimate.mjs; the timeline rollup (Phase 2) adds to this file.
+// roadmap — estimation brain (PURE: no fs, no network, no spawn). The roadmap side of estimation:
+// config, the compact `estimate` block cached on a slice, the timeline rollup, calibration
+// idempotency, and validation. The pricing MODEL is lib/estimator-core.mjs (native, a port of
+// agent-time's estimator.py); this file also keeps the argv builders / record parser for the
+// opt-in external estimator.py path. IO (history.jsonl, python spawn, YAML write-back) lives in
+// scripts/estimate.mjs.
 //
-// agent-time owns the shape/risk vocabulary — its SHAPES/RISKS tables validate and reject
-// unknown values — so the roadmap deliberately does NOT duplicate the enum (no drift).
+// The shape/risk vocabulary is estimator-core's SHAPES/RISKS (validated at estimate time; an
+// unknown value is an error for that slice, never a silent guess).
 
 import { flatten, computeWaves, isDone } from "./graph.mjs";
 
@@ -13,7 +14,7 @@ const DEFAULTS = { python: "python3", hours_per_day: 6, point: "expected", model
 
 // meta.estimation → a filled config (defaults applied). Estimation is an explicit command,
 // so this returns a usable config even when meta.estimation is absent; the block just
-// overrides defaults. `engine: null` → the IO layer resolves the default estimator path.
+// overrides defaults. `engine: null` → native estimation; a path → that external estimator.py.
 export function estimationConfig(meta) {
   const raw = (meta && meta.estimation) || {};
   return {

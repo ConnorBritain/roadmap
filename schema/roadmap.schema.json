@@ -125,7 +125,7 @@
         },
         "estimation": {
           "type": "object", "additionalProperties": false,
-          "description": "Optional agent-time integration: turns calibrated per-slice duration estimates (from the agent-time estimator skill) into projected PI target dates. Absent → estimation off; slices with no `estimate` block simply don't feed the timeline. The shape/risk vocabulary is owned by agent-time (its SHAPES/RISKS tables validate them), not duplicated here.",
+          "description": "Optional estimation config: calibrated per-slice duration estimates (the agent-time model, built in) roll up into projected PI target dates. Absent → defaults apply; slices with no `estimate` block simply don't feed the timeline. `engine` opts into an external estimator.py instead of the native model. The shape/risk vocabulary is estimator-core's SHAPES/RISKS tables, validated at estimate time.",
           "properties": {
             "engine": { "type": "string", "description": "Path to agent-time's estimator.py. Omit to resolve ~/.claude/skills/agent-time-estimator/estimator.py (or $AGENT_TIME_ENGINE)." },
             "python": { "type": "string", "default": "python3", "description": "Python launcher for the estimator (the IO layer falls back to 'python' when 'python3' is absent)." },

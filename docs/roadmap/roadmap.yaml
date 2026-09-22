@@ -21,19 +21,14 @@ pis:
     title: Core + executor packages — plan non-engineering work without a mode flag
     status: active
     theme: >-
-      Split the flat scripts tree into packages/core (planning + ritual + gauntlet protocol) and
-      executor packages (engineering, general) behind two interfaces, Executor and GauntletArtifact,
-      as an npm-workspaces monorepo in this repo.
+      Split the flat scripts tree into packages/core (planning + ritual + gauntlet protocol) and executor packages (engineering, general) behind two interfaces, Executor and GauntletArtifact, as an npm-workspaces monorepo in this repo.
     exit_criteria: >-
-      A general-profile roadmap.yaml with no touches and checklist gates round-trips plan / render /
-      sync / gauntlet start-critic-ack-repair against a markdown artifact; existing engineering
-      roadmaps work with zero edits; shims removed; full suite + packed install + both end-to-end
-      loops green.
+      A general-profile roadmap.yaml with no touches and checklist gates round-trips plan / render / sync / gauntlet start-critic-ack-repair against a markdown artifact; existing engineering roadmaps work with zero edits; shims removed; full suite + packed install + both end-to-end loops green.
     detail: docs/ARCHITECTURE.md
     sprints:
       - id: s1
         title: Native estimation — port agent-time's estimator into estimate-core
-        status: next
+        status: complete
         invoke: estimate-native
         what: Port shapes/risks/PERT/calibration cascade/JSONL history to JS with agent-time's tests; keep meta.estimation.engine as an optional override.
         est_sessions: 3
@@ -44,10 +39,10 @@ pis:
           PLUS node scripts/check-boundaries.mjs
         read_order: ["docs/ARCHITECTURE.md (target layout; estimate-core is core)", "scripts/lib/estimate-core.mjs", "agent-time skills/agent-time-estimator/references/model.md"]
         resume_action: Port estimator.py's CONFIG/SHAPES/RISKS tables and compute_estimate into estimate-core.mjs; runEstimate uses it unless meta.estimation.engine is set.
-        priority: { tier: P0, weight: 90, reason: core must price natively before estimate-core moves into packages/core }
+        priority: {tier: P0, weight: 90, reason: core must price natively before estimate-core moves into packages/core}
       - id: s2
         title: npm workspaces — packages/core, exec-engineering, exec-general, cli
-        status: scheduled
+        status: next
         invoke: workspaces
         what: Create the four workspace packages with package.json + READMEs; root bin still works; decide the tarball `files` deliberately.
         deps: [s1]
