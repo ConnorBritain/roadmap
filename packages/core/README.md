@@ -16,7 +16,8 @@ executor: nothing here knows about CPUs, disks, branches, worktrees, PRs or clou
 | `backlog-core`, `backlog-audit` | the erratic-work tracker and its collision-damage detector |
 | `render-core` | `SLICES.md` renderer |
 | `validate-core` | structural + dependency + cycle validator |
-| `plan` | the execution plan; capacity and per-node annotation are injected by the executor |
+| `plan` | the execution plan; capacity and per-node annotation are injected by the executor (`defaultCapacity` when none) |
+| `executor` | the `Executor` interface: `assertExecutor`, `assertReceipt`, and the generic document-based scoper `genericScope` |
 | `execution` | the `execution:` staffing-topology vocabulary |
 | `sync-core` | scope discipline (capture ratio, sprawl warnings) |
 | `review-core`, `journal-core` | the `/debrief` digest and tracker progress notes (branch resolver injected) |
@@ -39,9 +40,9 @@ old `scripts/lib/<module>.mjs` paths re-export from here.
 `test/harness.mjs` is the tiny shared harness (no framework). Each `test/*.mjs` file runs its
 tests on import; the root `npm test` imports them and adds the engineering and gauntlet suites to
 the same summary. `test/fixtures.mjs` holds the Linear fixtures both runners share.
-`test/contracts/gauntlet-artifact.mjs` is the interface contract every `GauntletArtifact`
-implementation registers; `test/fixtures/memory-artifact.mjs` is the in-memory reference it is
-validated against.
+`test/contracts/gauntlet-artifact.mjs` and `test/contracts/executor.mjs` are the interface contracts
+every `GauntletArtifact` / `Executor` implementation registers; `test/fixtures/memory-artifact.mjs`
+and `test/fixtures/memory-executor.mjs` are the in-memory references they are validated against.
 
 See [`docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md) and
 [`docs/roadmap/STATUS.md`](../../docs/roadmap/STATUS.md).

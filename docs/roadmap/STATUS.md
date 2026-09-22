@@ -50,9 +50,15 @@ loss. Slice 8 `skills-agents` is complete: `/conduct` + `/assign` skills (genera
 on `/fanout` + `/gauntlet`, both-profile wording in `/sync` `/backlog` `/slice` `/init` and the
 agents, hooks re-pointed at the packages and driven by the profile's `nudge` / `sessionHint`
 (the Stop hook is engineering-only), manifests updated; `packages/cli/test/plugin-assets.mjs`
-pins skills to the registries and runs both hooks per profile. Next is `docs`.
+pins skills to the registries and runs both hooks per profile. Slice 9 `docs` is complete: the
+README is concepts + quickstart + work profiles + install (~200 lines) with a pointer per profile;
+the long-form engineering reference moved verbatim to `docs/REFERENCE.md`; `MIGRATION.md` states
+that no YAML changes are required and lists the import-path moves; AGENTS.md, CONTRIBUTING.md,
+DEPLOYMENT.md and the package READMEs point at the packages; the plugin-assets test pins the doc
+set. Next is `unshim` (remove `scripts/lib/*` shims, switch the gauntlet runtime to canonical
+artifact names, full suite, packed install, e2e dry fanout + e2e conduct loop).
 
-Next command: `roadmap show docs`.
+Next command: `roadmap show unshim`.
 
 ## Slices
 
@@ -65,9 +71,9 @@ Next command: `roadmap show docs`.
 | 5 | `exec-engineering` | complete | `c1bd959` | 499 tests; Executor contract on memory + worktree-session + cloud-dispatch; golden launcher fixtures |
 | 6 | `profile-loader` | complete | `75ce038` | 504 tests; single reader + rule 1c in the boundary check |
 | 7 | `exec-general` | complete | `5330492` | 522 tests; git-file + human + doc-agent on the contracts; round-trip exit test |
-| 8 | `skills-agents` | complete | (this branch, slice 8 commit) | 524 tests; skills pinned to the registries; hooks per profile |
-| 9 | `docs` | next | — | |
-| 10 | `unshim` | scheduled | — | |
+| 8 | `skills-agents` | complete | `71d0e4b` | 524 tests; skills pinned to the registries; hooks per profile |
+| 9 | `docs` | complete | (this branch, slice 9 commit) | README 618 → 202 lines; REFERENCE.md; MIGRATION.md |
+| 10 | `unshim` | next | — | |
 
 ## Decisions log
 

@@ -11,6 +11,13 @@ Two rules govern everything on this page:
 > transcripts and must be gitignored. PR bodies/comments retain the auditable bar and exact-SHA
 > verdicts.
 
+> **Work profiles.** Everything below describes the **engineering** profile (`meta.profile`
+> absent or `engineering`): GitHub PRs, Routines, worktrees. A roadmap with `meta.profile: general`
+> needs none of it — no `gh`, no Routine, no ruleset — because its artifact is a file in the
+> repository and its workers are people or a local doc-agent session; see
+> [`../packages/exec-general/README.md`](../packages/exec-general/README.md). The install of the
+> tool itself (CLI / plugin / MCP) is the same for both.
+
 ## The surfaces at a glance
 
 | Surface | What you get | Install | Credentials come from |

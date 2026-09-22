@@ -4,7 +4,7 @@
 
 ```bash
 npm ci
-npm test                      # 448+ pure tests, ~20 s, no network
+npm test                      # 520+ pure tests, ~30 s, no network (includes the boundary check)
 npm run validate              # this repo's own docs/roadmap/roadmap.yaml
 npm run pack:all && npm run test:packed -- dist   # installed-tarball smoke: root + every workspace package
 ```
@@ -14,14 +14,16 @@ The repo is an npm-workspaces monorepo: `packages/core`, `packages/exec-engineer
 `roadmap` bin and depends on the workspace packages by exact version, so `npm ci` links them and
 `npm run pack:all` produces one tarball per package plus the root.
 
-```bash
-```
+`packages/cli/src/profile.mjs` is the only reader of `meta.profile`; it loads the executor package
+and every surface asks it for what differs. `scripts/check-boundaries.mjs` (part of `npm test`)
+refuses a core → executor import, a second `meta.profile` reader, or a stray import of the general
+package. New executors and artifacts register the contract tests under `packages/core/test/contracts/`.
 
 ## Working agreements
 
 The agreements in [`AGENTS.md`](AGENTS.md) apply to humans too. In particular: mutate the YAML
-only through `lib/store.mjs` (comments must survive), keep the pure libraries pure, keep CLI
-wrappers thin, and keep changes cross-platform.
+only through `packages/core/src/store.mjs` (comments must survive), keep the pure libraries pure,
+keep CLI wrappers thin, and keep changes cross-platform.
 
 ## Resuming work
 

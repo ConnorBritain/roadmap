@@ -28,6 +28,11 @@ test("plugin assets: every skills/ directory is registered by core or exactly on
   const plugin = JSON.parse(readFileSync(join(REPO, ".claude-plugin", "plugin.json"), "utf8"));
   ok(plugin.description.includes("/conduct") && plugin.description.includes("/gauntlet"), "the plugin manifest names both profiles' loops");
   eq(plugin.version, JSON.parse(readFileSync(join(REPO, "package.json"), "utf8")).version, "plugin version matches the package");
+  const readme = readFileSync(join(REPO, "README.md"), "utf8");
+  ok(readme.includes("## Work profiles") && readme.includes("/conduct") && readme.includes("/gauntlet") && readme.split("\n").length < 260, "README: concepts + profiles + install, with a pointer per profile, and short");
+  for (const f of ["MIGRATION.md", "docs/REFERENCE.md", "docs/ARCHITECTURE.md", "packages/core/README.md", "packages/exec-engineering/README.md", "packages/exec-general/README.md", "packages/cli/README.md"]) ok(existsSync(join(REPO, f)), `${f} exists`);
+  ok(readFileSync(join(REPO, "MIGRATION.md"), "utf8").includes("need no edits"), "MIGRATION.md states that no YAML changes are required");
+  ok(!readFileSync(join(REPO, "AGENTS.md"), "utf8").includes("pure logic in [`scripts/lib`]"), "AGENTS.md points at the packages, not the shims");
 });
 
 function repo(yaml) {

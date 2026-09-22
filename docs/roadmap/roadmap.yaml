@@ -207,7 +207,7 @@ pis:
           basis: UNCALIBRATED (static prior 3.0 min/round; only 0 logged outcomes) · sparse-data widening ×1.75 (n=0)
       - id: s9
         title: Docs — concepts README, per-package READMEs, AGENTS.md, MIGRATION.md
-        status: next
+        status: complete
         invoke: docs
         what: Retire the 600-line README into concepts + install + a pointer per profile; MIGRATION.md states no YAML changes are required (profile defaults to engineering).
         deps: [s8]
@@ -228,7 +228,7 @@ pis:
           basis: UNCALIBRATED (static prior 3.0 min/round; only 0 logged outcomes) · sparse-data widening ×1.75 (n=0)
       - id: s10
         title: Remove shims; full suite, packed install, end-to-end fanout and conduct loops
-        status: scheduled
+        status: next
         invoke: unshim
         what: Delete the scripts/lib re-export shims; run the full suite, the installation check, a dry fanout on a fixture repo (engineering) and a conduct loop on a markdown artifact (general).
         deps: [s9]

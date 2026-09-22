@@ -52,6 +52,10 @@ agents name their evidence per profile; both hooks import packages by name and a
 profile for what differs (`nudge`, `sessionHint`; the Stop hook is a no-op outside engineering,
 where the branch convention lives); the manifests describe both loops. A test pins skills on disk
 to the registries (`CORE_SKILLS` + each package's `SKILLS`) and drives both hooks per profile.
+The `docs` slice then rewrote the README as concepts + quickstart + work profiles + install with a
+pointer per profile, moved the long-form engineering reference to `docs/REFERENCE.md`, added
+`MIGRATION.md` (no YAML edits required; import-path moves; the enforced rules), and re-pointed
+AGENTS.md, CONTRIBUTING.md, DEPLOYMENT.md and the package READMEs at the packages.
 
 ## Why
 
