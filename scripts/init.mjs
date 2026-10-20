@@ -20,7 +20,6 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join, dirname } from "node:path";
-import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { LOCAL_CONFIG_REL, BUILTIN_PROFILES } from "@connorbritain/roadmap-exec-engineering/assistant-core.mjs";   // the engineering executor's profile table
@@ -222,24 +221,34 @@ function describeAssistant(id, profile) {
   return cmd ? `command: ${cmd}` : "";
 }
 
-// ── MCP writer (legacy flag path, preserved) ─────────────────────────────
+// ── MCP registration (legacy flag path) ──────────────────────────────────
 // The interactive walkthrough deliberately does NOT touch the user's Codex
 // or Claude config — those are personal settings, and a first-run init
 // should scaffold this repo, not modify the machine. `roadmap init --client
-// codex --apply` remains for users who want that step done for them.
+// codex --apply` hands the step to Codex's own `codex mcp add`, which owns
+// config.toml (and replaces an existing entry rather than duplicating it).
+
+function codexMcpAddArgs({ node, mcpPath, projectDir }) {
+  return ["mcp", "add", "roadmap", "--env", `CODEX_PROJECT_DIR=${projectDir}`, "--", node, mcpPath];
+}
 
 function writeMcpConfigIfRequested() {
   const client = value("--client", value("--assistant") === "codex" ? "codex" : null);
   if (!client) return;
   const mcpPath = join(dirname(fileURLToPath(import.meta.url)), "mcp.mjs");
   if (client === "codex") {
-    const codexConfig = join(process.env.CODEX_HOME || join(homedir(), ".codex"), "config.toml");
-    const section = `[mcp_servers.roadmap]\ncommand = ${JSON.stringify(process.execPath)}\nargs = [${JSON.stringify(mcpPath)}]\n\n[mcp_servers.roadmap.env]\nCODEX_PROJECT_DIR = ${JSON.stringify(root)}\n`;
-    console.log(`\nCodex MCP preview (${codexConfig}):\n${section}`);
+    const args = codexMcpAddArgs({ node: process.execPath, mcpPath, projectDir: root });
+    const shown = ["codex", ...args].map((a) => (/[\s"']/.test(a) ? JSON.stringify(a) : a)).join(" ");
+    console.log(`\nCodex MCP registration:\n  ${shown}`);
     if (has("--apply")) {
-      const current = existsSync(codexConfig) ? readFileSync(codexConfig, "utf8") : "";
-      if (current.includes("[mcp_servers.roadmap]")) console.log("Codex MCP entry already exists; no change made.");
-      else { writeFileSync(codexConfig, `${current.trimEnd()}\n\n${section}`, "utf8"); console.log(`applied Codex MCP entry to ${codexConfig}`); }
+      // codex is a .cmd shim on Windows, which needs the shell; quote what the shell would split.
+      const win = process.platform === "win32";
+      const run = spawnSync("codex", win ? args.map((a) => (/[\s"]/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a)) : args, { stdio: "inherit", shell: win });
+      if (run.error) console.log("Could not run `codex`; run the command above yourself.");
+      else if (run.status !== 0) console.log(`codex exited ${run.status}; run the command above yourself.`);
+      if (run.error || run.status !== 0) process.exitCode = 1;
+    } else {
+      console.log("Run it yourself, or pass --apply to have Codex run it.");
     }
   } else {
     console.log(`\nMCP preview: node ${mcpPath} (set CODEX_PROJECT_DIR or CLAUDE_PROJECT_DIR to ${root})`);
