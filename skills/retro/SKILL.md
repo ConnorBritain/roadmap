@@ -16,7 +16,7 @@ You run the whole ritual: look back honestly, decide forward deliberately, apply
    - Aging held work (`aging` in the digest) gets "unblock, re-scope, or kill?" — held-forever is a decision someone didn't make.
    - One question at a time; the user's words become the reasons.
 
-3. **Apply via the existing tools only** — `bulk_set` for priority shifts (reasons from step 2), `set_status` for kills/defers, `prune` for removals, `backlog_set` for item triage/drops. Never hand-edit sprint fields. If tiering deserves its own full pass, don't half-do it here: name `/roadmap:prioritize` for the user to run after this ritual.
+3. **Apply via the existing tools only** — `bulk_set` for priority shifts (reasons from step 2), `set_status` for kills/defers, `prune` for removals, `backlog_set` for item triage/drops. Never hand-edit sprint fields. If tiering deserves its own full pass, run the prioritize skill's flow here (its steps are in `../prioritize/SKILL.md` beside this file) rather than half-doing it.
 
 4. **Reset check.** If the digest + decisions show real drift (north star stale, bets no longer believed), suggest the user run `/roadmap:imagine` for the strategy re-interview — don't run it inline; this ritual ends first.
 
