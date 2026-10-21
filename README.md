@@ -138,17 +138,32 @@ cd roadmap && npm install && npm link
 
 `npm link` puts `roadmap` on your PATH in every shell. On Windows it writes `roadmap.cmd`/`roadmap.ps1` shims (PowerShell and cmd) plus a unix bin (WSL/bash; run `npm link` once in each Node environment you use). `npm unlink -g roadmap` removes it.
 
+### Across harnesses
+
+| | Claude Code | Codex | Cursor |
+|---|---|---|---|
+| Skills | plugin | plugin | plugin |
+| Agents | plugin | not loaded | plugin |
+| SessionStart / Stop hooks | plugin | plugin, once trusted | not ported |
+| `graph` MCP server | plugin (`.mcp.json`) | `roadmap init --client codex --apply` | add to `.cursor/mcp.json` by hand |
+
 ### In Codex
 
-No plugin install is required. Open the repo in Codex, use the commands above, and rely on [`AGENTS.md`](AGENTS.md) for repo-local guidance.
+The repo is also a Codex plugin (`.codex-plugin/`): `codex plugin marketplace add ConnorBritain/roadmap`,
+then install `roadmap` from `/plugins`. Codex loads the skills and, once you trust them with
+`/hooks`, the SessionStart and Stop hooks. It does not load the plugin's agents. Register the
+MCP server with `roadmap init --client codex --apply`, which runs Codex's own
+`codex mcp add roadmap …` (without `--apply` it prints the command). Inside this repo,
+[`AGENTS.md`](AGENTS.md) carries the conventions. Facts read from Codex 0.163.0 on 2026-10-20.
 
-For MCP usage in agent environments, run:
+The checked-in [`.mcp.json`](.mcp.json) remains the Claude-plugin entrypoint (server name `graph`);
+`npm run mcp` starts the same server anywhere.
 
-```bash
-npm run mcp
-```
+### In Cursor
 
-The checked-in [`.mcp.json`](.mcp.json) remains the Claude-plugin entrypoint (server name `graph`).
+Cursor loads the skills and agents from `.cursor-plugin/plugin.json`. The hooks and the MCP
+server are not ported: Cursor's plugin MCP config has no verified plugin-root variable for a
+local server, so add `node <checkout>/scripts/mcp.mjs` to `.cursor/mcp.json` yourself.
 
 **Alias fallback (no npm):** drop a shim in your shell profile instead.
 

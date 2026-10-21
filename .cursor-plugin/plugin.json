@@ -1,0 +1,13 @@
+{
+  "name": "roadmap",
+  "displayName": "Roadmap",
+  "version": "0.7.2",
+  "description": "Roadmap + backlog graph with a work profile: engineering (GitHub-first Gauntlet Loop — frozen-bar cloud implementation, independent exact-SHA criticism, frozen-lead acknowledgment, lead-synthesized repair, fresh re-criticism; /fanout across slices, /gauntlet within one, /sync reconciles merged PRs) or general (meta.profile: general — the same planning rituals and review loop on document artifacts: /assign hands a slice to a person, /conduct runs critic → ack → repair on a file at a commit, /sync reconciles acknowledged passes). YAML is canonical planning state.",
+  "author": { "name": "Connor England" },
+  "homepage": "https://github.com/ConnorBritain/roadmap",
+  "repository": "https://github.com/ConnorBritain/roadmap",
+  "license": "MIT",
+  "keywords": ["roadmap", "backlog", "planning", "review-loop", "gauntlet"],
+  "skills": "./skills/",
+  "agents": "./agents/"
+}

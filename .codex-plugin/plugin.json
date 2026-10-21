@@ -1,0 +1,24 @@
+{
+  "name": "roadmap",
+  "version": "0.7.2",
+  "description": "Roadmap + backlog graph with a work profile: engineering (GitHub-first Gauntlet Loop — frozen-bar cloud implementation, independent exact-SHA criticism, frozen-lead acknowledgment, lead-synthesized repair, fresh re-criticism; /fanout across slices, /gauntlet within one, /sync reconciles merged PRs) or general (meta.profile: general — the same planning rituals and review loop on document artifacts: /assign hands a slice to a person, /conduct runs critic → ack → repair on a file at a commit, /sync reconciles acknowledged passes). YAML is canonical planning state.",
+  "author": { "name": "Connor England", "url": "https://github.com/ConnorBritain" },
+  "homepage": "https://github.com/ConnorBritain/roadmap",
+  "repository": "https://github.com/ConnorBritain/roadmap",
+  "license": "MIT",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Roadmap",
+    "shortDescription": "A roadmap and backlog graph with conducted, independently reviewed execution.",
+    "longDescription": "Roadmap keeps docs/roadmap/roadmap.yaml and backlog.yaml canonical and renders SLICES.md and BACKLOG.md from them. Skills plan, scope, prioritize and run the review loop: the Gauntlet on GitHub PRs under the engineering profile, conduct on a file at a commit under the general profile. NOTE: in Codex the skills and hooks load from this plugin (hooks once trusted); the graph MCP server is registered separately with roadmap init --client codex --apply, which runs codex mcp add. The plugin's agents are not loaded by Codex.",
+    "developerName": "Connor England",
+    "category": "Developer Tools",
+    "capabilities": ["Interactive"],
+    "websiteURL": "https://github.com/ConnorBritain/roadmap",
+    "defaultPrompt": [
+      "Plan the next slice of the roadmap",
+      "Triage the backlog",
+      "Reconcile the roadmap with merged PRs"
+    ]
+  }
+}
