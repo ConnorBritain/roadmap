@@ -46,6 +46,13 @@ open slice's `artifact`. `touches` can stay or go; nothing reads it under genera
 `roadmap validate`; the general validators warn on missing gates and error on two open slices
 sharing an artifact path.
 
+## 0.8.0: the planning rituals run by name
+
+No YAML changes. `/init`, `/imagine`, `/prioritize`, `/debrief`, `/retro` and `/cycle` no longer
+start on their own: the model sees seven skills instead of thirteen, and suggests a ritual rather
+than running it. Ask for one by name (`/roadmap:retro` in Claude Code, `$roadmap:retro` in Codex).
+`/sync`, `/backlog`, `/slice`, `/fanout`, `/gauntlet`, `/conduct` and `/assign` are unchanged.
+
 ## Upgrading from `slice-roadmap` (≤ 0.1.x)
 
 See the README's Install section: the plugin, marketplace entry and npm package were renamed

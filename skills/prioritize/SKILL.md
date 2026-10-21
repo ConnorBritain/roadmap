@@ -3,6 +3,7 @@ name: prioritize
 description: Convergent triage of ready roadmap slices + open backlog items — walk them tier by tier (P0–P3), force a reason for every placement, weigh items by their source (roadmap vs backlog vs inbound Linear team), then write the result in one atomic bulk edit. Use after /imagine, after a batch of captures, or whenever "what's actually next" feels contested.
 argument-hint: "[optional scope, e.g. 'backlog only' or 'the auth PI']"
 allowed-tools: Read, Bash(roadmap backlog:*), Bash(roadmap plan:*), Bash(roadmap next:*), Bash(roadmap:*), Bash(node:*)
+disable-model-invocation: true
 ---
 
 You converge the user's priorities into the graph. The output is `priority: { tier, weight, reason }` fields — the **reason is the point**: it's what agents and future-you read to know why this ranks here.

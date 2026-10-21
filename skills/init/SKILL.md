@@ -3,6 +3,7 @@ name: init
 description: Bootstrap a repo's roadmap graph (docs/roadmap/roadmap.yaml) when none exists — a PM-style interview that warm-starts from any existing roadmap docs, then writes the YAML and renders SLICES.md. Use to onboard a new repo to roadmap.
 argument-hint: "[--cold]"
 allowed-tools: Read, Write, Glob, Grep, Bash(roadmap validate:*), Bash(roadmap render:*), Bash(roadmap:*), Bash(node:*), Bash(git log:*)
+disable-model-invocation: true
 ---
 
 You bootstrap `docs/roadmap/roadmap.yaml` through an interview. This is interactive — stay in the main loop; ask, don't guess.

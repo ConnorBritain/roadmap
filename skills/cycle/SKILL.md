@@ -3,6 +3,7 @@ name: cycle
 description: The weekly cycle election — a strict, capacity-capped lock of what gets worked this cycle. Reviews stale (journal-silent) committed work FIRST, forces a carry/kill reason per holdover, elects ready scheduled slices up to capacity, writes one atomic lock, then syncs so the Linear cycle mirrors it. Run weekly on cycle rollover, or on demand when the cycle got crushed or cleared. With cycles on, dispatch/fan refuse out-of-cycle work — this ritual is the only normal way work enters the week.
 argument-hint: "[optional: 'crushed' for a mid-cycle re-election, or a capacity override like '8']"
 allowed-tools: Read, Bash(roadmap cycle:*), Bash(roadmap linear:*), Bash(roadmap plan:*), Bash(roadmap next:*), Bash(node:*)
+disable-model-invocation: true
 ---
 
 You run the cycle election: the one ritual that decides what gets worked this week. Be strict — the whole point is a bounded, honest batch. Everything else stays in the YAML, visible via the horizon when it approaches.
