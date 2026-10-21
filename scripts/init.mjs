@@ -28,6 +28,7 @@ import {
   appendToGitignore, planGitignore, planInit, suggestProgramName, validators,
 } from "@connorbritain/roadmap-core/init-core.mjs";
 import { select, confirm, text } from "./prompt.mjs";
+import { codexCommand, shellPreview } from "@connorbritain/roadmap-cli/codex-command.mjs";
 
 const S = {
   reset: "\x1b[0m", bold: "\x1b[1m", dim: "\x1b[2m",
@@ -238,12 +239,11 @@ function writeMcpConfigIfRequested() {
   const mcpPath = join(dirname(fileURLToPath(import.meta.url)), "mcp.mjs");
   if (client === "codex") {
     const args = codexMcpAddArgs({ node: process.execPath, mcpPath, projectDir: root });
-    const shown = ["codex", ...args].map((a) => (/[\s"']/.test(a) ? JSON.stringify(a) : a)).join(" ");
-    console.log(`\nCodex MCP registration:\n  ${shown}`);
+    console.log(`\nCodex MCP registration:\n  ${shellPreview(["codex", ...args])}`);
     if (has("--apply")) {
-      // codex is a .cmd shim on Windows, which needs the shell; quote what the shell would split.
-      const win = process.platform === "win32";
-      const run = spawnSync("codex", win ? args.map((a) => (/[\s"]/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a)) : args, { stdio: "inherit", shell: win });
+      // Never through a shell: on Windows, Codex's JS entry runs under Node (codex-command.mjs).
+      const cmd = codexCommand(args);
+      const run = cmd ? spawnSync(cmd.command, cmd.args, { stdio: "inherit" }) : { error: new Error("codex not found") };
       if (run.error) console.log("Could not run `codex`; run the command above yourself.");
       else if (run.status !== 0) console.log(`codex exited ${run.status}; run the command above yourself.`);
       if (run.error || run.status !== 0) process.exitCode = 1;

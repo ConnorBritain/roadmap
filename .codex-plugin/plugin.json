@@ -6,7 +6,7 @@
   "homepage": "https://github.com/ConnorBritain/roadmap",
   "repository": "https://github.com/ConnorBritain/roadmap",
   "license": "MIT",
-  "skills": "skills",
+  "skills": "./skills/",
   "interface": {
     "displayName": "Roadmap",
     "shortDescription": "A roadmap and backlog graph with conducted, independently reviewed execution.",

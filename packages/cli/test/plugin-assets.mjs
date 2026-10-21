@@ -8,6 +8,7 @@ import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, eq, ok } from "../../core/test/harness.mjs";
 import { CORE_SKILLS } from "@connorbritain/roadmap-cli/profile.mjs";
+import { codexCommand, shellPreview } from "@connorbritain/roadmap-cli/codex-command.mjs";
 import { SKILLS as ENGINEERING_SKILLS } from "@connorbritain/roadmap-exec-engineering";
 import { SKILLS as GENERAL_SKILLS } from "@connorbritain/roadmap-exec-general";
 
@@ -108,4 +109,19 @@ test("init --client codex: previews the codex mcp add line; --apply runs it; a m
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+// On Windows a path like C:\work\R&D must never reach cmd.exe: `&` would split the command.
+test("codex command: Windows runs Codex's JS entry under Node, no shell; POSIX runs codex", () => {
+  const args = ["mcp", "add", "roadmap", "--env", "CODEX_PROJECT_DIR=C:\\work\\R&D", "--", "node.exe", "C:\\r\\mcp.mjs"];
+  const npmDir = "C:\\Users\\c\\AppData\\Roaming\\npm";
+  const files = new Set([`${npmDir}\\codex.cmd`, `${npmDir}\\node_modules\\@openai\\codex\\bin\\codex.js`]);
+  const win = codexCommand(args, { platform: "win32", node: "C:\\node\\node.exe", pathEnv: `C:\\Windows;${npmDir}`, exists: (f) => files.has(f) });
+  eq(win, { command: "C:\\node\\node.exe", args: [`${npmDir}\\node_modules\\@openai\\codex\\bin\\codex.js`, ...args] }, "the R&D path is one argv entry, never shell text");
+  eq(codexCommand(args, { platform: "win32", pathEnv: npmDir, exists: (f) => f.endsWith("codex.cmd") }), null, "a shim without its JS entry is not run through cmd.exe");
+  eq(codexCommand(args, { platform: "linux" }), { command: "codex", args }, "POSIX runs codex directly");
+});
+test("codex preview: pasteable without expansion in POSIX shells and PowerShell", () => {
+  eq(shellPreview(["codex", "--env", "CODEX_PROJECT_DIR=/w/$(id) `x`", "it's"], { platform: "linux" }), "codex --env 'CODEX_PROJECT_DIR=/w/$(id) `x`' 'it'\\''s'");
+  eq(shellPreview(["codex", "C:\\work\\R&D", "it's $HOME"], { platform: "win32" }), "codex 'C:\\work\\R&D' 'it''s $HOME'");
 });
