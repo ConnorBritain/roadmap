@@ -45,6 +45,22 @@ test("plugin assets: every skills/ directory is registered by core or exactly on
   ok(!readFileSync(join(REPO, "AGENTS.md"), "utf8").includes("pure logic in [`scripts/lib`]"), "AGENTS.md points at the packages, not the shims");
 });
 
+// The planning rituals run only when asked for by name, so every session's always-on skill list
+// holds the seven working skills, not all thirteen. Claude Code (and Cursor) read the frontmatter
+// flag; Codex reads agents/openai.yaml.
+const RITUALS = ["cycle", "debrief", "imagine", "init", "prioritize", "retro"];
+test("plugin assets: exactly the six rituals are hidden from implicit invocation, in Claude Code and Codex", () => {
+  const dirs = readdirSync(join(REPO, "skills")).filter((d) => existsSync(join(REPO, "skills", d, "SKILL.md"))).sort();
+  const frontmatter = (d) => (readFileSync(join(REPO, "skills", d, "SKILL.md"), "utf8").match(/^---\r?\n([\s\S]*?)\r?\n---/) || ["", ""])[1];
+  const flagged = dirs.filter((d) => /^disable-model-invocation: true$/m.test(frontmatter(d)));
+  const codexHidden = dirs.filter((d) => existsSync(join(REPO, "skills", d, "agents", "openai.yaml")));
+  eq(flagged, RITUALS, "disable-model-invocation: true on the six rituals and nowhere else");
+  eq(codexHidden, RITUALS, "agents/openai.yaml on the six rituals and nowhere else");
+  for (const d of RITUALS) ok(/^policy:\r?\n\s+allow_implicit_invocation: false\s*$/m.test(readFileSync(join(REPO, "skills", d, "agents", "openai.yaml"), "utf8")), `${d}: Codex policy turns implicit invocation off`);
+  eq(dirs.filter((d) => !RITUALS.includes(d)), ["assign", "backlog", "conduct", "fanout", "gauntlet", "slice", "sync"], "seven skills stay model-invocable");
+  eq(JSON.parse(readFileSync(join(REPO, ".codex-plugin", "plugin.json"), "utf8")).skills, "./skills/", "Codex loads skills (and their agents/openai.yaml) from ./skills/");
+});
+
 function repo(yaml) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "roadmap-hooks-")));
   mkdirSync(join(root, "docs", "roadmap"), { recursive: true });

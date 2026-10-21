@@ -1,6 +1,6 @@
 # Status — PI `core-executor-split`
 
-Last updated: 2026-09-22 · branch `claude/roadmap-core-executor-split-hjrbxn` · baseline `main@565f96c`
+Last updated: 2026-10-21 (b4, 0.8.0) · branch `ccr-777bc14a-uh72lo` · PI baseline `main@565f96c`
 (448 tests passing; 499 after slice 5).
 
 Canonical state: [`roadmap.yaml`](roadmap.yaml) · rendered: [`../SLICES.md`](../SLICES.md) ·
@@ -67,6 +67,13 @@ The PI merged to `main` in PR #56. The three backlog items are closed: b1 (the s
 `command_lane`, `assistants`, `jira` and backlog `meta.audit`; `packages/core/test/schema.mjs` pins
 every meta key the code reads to the schema), b2 (watch-prs and worktree pruning read from
 `external-state`'s one set of gatherers), b3 (MCP server version).
+
+0.8.0 closes b4: the six planning rituals (`init`, `imagine`, `prioritize`, `debrief`, `retro`,
+`cycle`) run only when asked by name (`disable-model-invocation` for Claude Code,
+`agents/openai.yaml` for Codex), so the model's always-on skill list drops from 13 to 7. The
+rituals' hand-offs name the slash command (`/roadmap:prioritize`) instead of running it;
+`packages/cli/test/plugin-assets.mjs` pins the hidden set. Whether Cursor honours the flag is
+unverified.
 
 Next command: `roadmap next` (nothing is ready; the roadmap is complete).
 

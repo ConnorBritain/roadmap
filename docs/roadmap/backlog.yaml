@@ -32,3 +32,20 @@ items:
     touches: [scripts/mcp.mjs]
     est_sessions: 0.25
     gate: default
+  - id: b4
+    title: Six planning rituals (init, imagine, prioritize, debrief, retro, cycle) run only when asked by name; the always-on skill list drops from 13 to 7
+    kind: chore
+    status: done
+    priority:
+      tier: P2
+      reason: every repo with roadmap installed lists all 13 skills to the model in every session
+    source:
+      date: 2026-10-21
+      note: requested 2026-10-21; copies compounder/cairn's disable-model-invocation + agents/openai.yaml pattern
+    est_sessions: 0.5
+    touches:
+      - skills/
+      - packages/cli/test/plugin-assets.mjs
+      - README.md
+      - MIGRATION.md
+    gate: default

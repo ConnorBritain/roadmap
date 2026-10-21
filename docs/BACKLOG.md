@@ -12,4 +12,5 @@ _No open items._
 | `b1` | roadmap.schema.json meta is additionalProperties:false but code reads command_lane, assistants, jira, audit; backlog.schema.json lacks meta.audit | done | — | — |
 | `b2` | Fold the inline gh/git probe copies in hooks/session-start.mjs, watch-prs.mjs, cleanup.mjs into external-state.mjs (its own TODO at lines 12-14) | done | — | — |
 | `b3` | mcp.mjs SERVER_INFO.version is hardcoded 0.6.0; read package.json | done | — | — |
+| `b4` | Six planning rituals (init, imagine, prioritize, debrief, retro, cycle) run only when asked by name; the always-on skill list drops from 13 to 7 | done | — | — |
 

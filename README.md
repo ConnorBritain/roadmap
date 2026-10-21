@@ -73,8 +73,10 @@ runs the review loop on the committed file. Full reference:
 [`packages/exec-general/README.md`](packages/exec-general/README.md).
 
 The operating loop is `plan → conduct → merge/complete decision → /sync → plan again`. In a
-session the same loop is `/slice`, `/gauntlet` or `/conduct`, `/sync`; `/backlog`, `/prioritize`,
-`/debrief`, `/retro`, `/imagine` and `/init` are the planning rituals and work under both profiles.
+session the same loop is `/slice`, `/gauntlet` or `/conduct`, `/sync`, with `/backlog` for captures.
+`/init`, `/imagine`, `/prioritize`, `/debrief`, `/retro` and `/cycle` are the planning rituals and
+work under both profiles. They run only when you ask for one by name (`/roadmap:retro` in Claude
+Code, `$roadmap:retro` in Codex), so every session lists seven skills instead of thirteen.
 
 ---
 
@@ -146,6 +148,7 @@ cd roadmap && npm install && npm link
 | Agents | plugin | not loaded | plugin |
 | SessionStart / Stop hooks | plugin | plugin, once trusted | not ported |
 | `graph` MCP server | plugin (`.mcp.json`) | `roadmap init --client codex --apply` | add to `.cursor/mcp.json` by hand |
+| Rituals by name only | `disable-model-invocation` | `agents/openai.yaml` | same flag; unverified |
 
 ### In Codex
 

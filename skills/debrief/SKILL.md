@@ -3,6 +3,7 @@ name: debrief
 description: Date-anchored lookback on the roadmap — what shipped vs what grew since the last review, presented high-signal/no-noise, logged to REVIEWS.md, anchor updated. LOOKBACK ONLY — no graph mutations; for the full review-and-redirect ritual use /retro. Use when the wave of agent work has outrun your picture of it.
 argument-hint: "[--since <rev|YYYY-MM-DD>]"
 allowed-tools: Read, Edit, Bash(roadmap review:*), Bash(roadmap validate:*), Bash(roadmap linear:*), Bash(roadmap:*), Bash(node:*), Bash(git log:*)
+disable-model-invocation: true
 ---
 
 You run the lookback half of the review ritual. **You do not mutate the graph** — no status flips, no priority changes, no prunes. Your product is an honest picture, a log entry, and a fresh anchor. (Decisions belong to /retro or the user's explicit follow-up.)
@@ -21,4 +22,4 @@ You run the lookback half of the review ritual. **You do not mutate the graph** 
    - Append a **≤10-line entry, newest first**, to `docs/roadmap/REVIEWS.md` — the captain's log. Hand-authored: your words for what the window showed and what it implies, NOT a paste of the digest. Create the file with a `# Reviews` heading if missing.
    - If Linear is wired (`roadmap linear status`): optionally post the digest to active PIs' projects via `roadmap linear post-update`; if it reports the API rejected it, skip with a one-line note.
 
-4. **Hand off.** If the digest warrants action (sprawl warnings, aging work, drifted priorities), end with one line: which of `/retro` (decide and apply), `/prioritize` (re-tier), or `/imagine` (strategy reset) you'd run and why — then stop.
+4. **Hand off.** If the digest warrants action (sprawl warnings, aging work, drifted priorities), end with one line: which of `/roadmap:retro` (decide and apply), `/roadmap:prioritize` (re-tier), or `/roadmap:imagine` (strategy reset) you'd suggest the user run and why — then stop. Those rituals run only when asked for by name, so name the command; don't start it.

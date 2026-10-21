@@ -1,6 +1,6 @@
 {
   "name": "@connorbritain/roadmap",
-  "version": "0.7.2",
+  "version": "0.8.0",
   "description": "Roadmap + backlog graph with conducted, independently evaluated cloud-agent execution. YAML canonical; GitHub is durable run reality.",
   "type": "module",
   "private": false,
@@ -58,10 +58,10 @@
     "test:e2e": "node scripts/test/e2e.mjs"
   },
   "dependencies": {
-    "@connorbritain/roadmap-cli": "0.7.2",
-    "@connorbritain/roadmap-core": "0.7.2",
-    "@connorbritain/roadmap-exec-engineering": "0.7.2",
-    "@connorbritain/roadmap-exec-general": "0.7.2",
+    "@connorbritain/roadmap-cli": "0.8.0",
+    "@connorbritain/roadmap-core": "0.8.0",
+    "@connorbritain/roadmap-exec-engineering": "0.8.0",
+    "@connorbritain/roadmap-exec-general": "0.8.0",
     "yaml": "^2.5.0"
   }
 }

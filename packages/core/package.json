@@ -1,7 +1,7 @@
 {
   "name": "@connorbritain/roadmap-core",
   "description": "The planning + ritual engine: graph, store, priority, render, validate, backlog, review, plan, linear, estimate, and the Gauntlet protocol. Executor and GauntletArtifact interfaces + contract tests. Imports no executor.",
-  "version": "0.7.2",
+  "version": "0.8.0",
   "type": "module",
   "license": "MIT",
   "author": "Connor England",
